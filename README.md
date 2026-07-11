@@ -206,9 +206,14 @@ G_CICON(44)`.
 
 - Menu-tree (`GK_MENU`) and `G_IMAGE`/BITBLK pixel editing are read-preserved but
   not yet authored in the UI.
-- Imported coordinate cell height is assumed 8×16; resources designed at 8×8 will
-  look tall until a per-document cell-size control is added (`rockscli --cell 8x8`
-  sets it for an export).
+- Coordinates are packed against an 8×16 character cell, the same constant
+  `fpga-xt/gem` uses, and pack/unpack is exactly inverse — every packed
+  coordinate word in the corpus (1108 objects) survives a rewrite byte-for-byte.
+  GEM's packing is *cell-relative by design* (a character count plus a pixel
+  offset, which the AES scales by the current screen's `gl_hchar`), so a resource
+  is not "designed at" a cell size and nothing gets stretched; the constant simply
+  says which screen you are looking at. With one uniform 1920×1080 target there is
+  nothing to configure. (`rockscli --cell WxH` can still repack, if ever needed.)
 - `G_CICON` is an fpga-xt extension; classic editors won't render it.
 - A `.rsc` carries no tree names, so an imported one exports as `TREE0`, `TREE1`…
   until you rename the trees. Names live in the `.gemproj`.
