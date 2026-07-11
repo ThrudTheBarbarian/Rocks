@@ -29,4 +29,8 @@ NSData * _Nullable GPAMFromPlanar(NSData *data, NSData * _Nullable mask,
                                   int w, int h, int planes,
                                   const uint8_t * _Nullable palette /* 256*3 */);
 
+// Render a classic BITBLK: 1bpp, `wb` bytes per row, `hl` rows.  A set bit is
+// drawn in VDI pen `color`; a clear bit is transparent (a BITBLK has no mask).
+NSImage * _Nullable GImageFromBitblk(NSData *data, int wb, int hl, int color);
+
 NS_ASSUME_NONNULL_END

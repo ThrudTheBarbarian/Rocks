@@ -133,8 +133,15 @@ G_CICON(44)`.
   fpga-xt uses.
 - **Free strings** (`rsrc_gaddr(R_STRING, i)`) are read, kept, and exported as
   `#define STR_…` — real resources are full of them (EmuTOS's desktop has 64).
-- **Lossy imports are never silent:** anything Rocks reads past but cannot preserve
-  (BITBLKs, free images) is reported on import.
+- **BITBLKs** (monochrome bit forms) are read, rendered, round-tripped and exported —
+  both the ones a `G_IMAGE` points at and the free-image table
+  (`rsrc_gaddr(R_IMAGE, i)`). A classic `G_IMAGE` is a BITBLK; Rocks' older files
+  pointed it at a PAM instead, and the two are told apart by the PAM's `P7` magic
+  (a PAM-bearing `G_IMAGE` is retyped to `G_PAMICON` on read, so from then on
+  `G_IMAGE` means exactly "classic bit form").
+- **Import is lossless.** Trees, free strings, free images, BITBLKs, mono icons and
+  colour icons all survive a read → write round-trip; `--images` and `--cicons`
+  render what came in so it can be checked by eye rather than assumed.
 - **Write:** classic big-endian, coordinates re-packed so the same tools read it
   back. Extended widgets keep their type numbers; a `G_CICON` embeds its P7 PAM
   blob in the image-data section (`ob_spec` → the PAM). Standard files stay

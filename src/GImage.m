@@ -178,3 +178,36 @@ NSData *GPAMFromPlanar(NSData *data, NSData *mask, int w, int h, int planes,
     [pam appendData:rgba];
     return pam;
 }
+
+// ---- classic BITBLK (monochrome bit form) ----------------------------------
+
+NSImage *GImageFromBitblk(NSData *data, int wb, int hl, int color) {
+    if (!data || wb <= 0 || hl <= 0) return nil;
+    if (data.length < (NSUInteger)wb * hl) return nil;
+    int w = wb * 8, h = hl;
+
+    // VDI pen for the set bits; anything out of range falls back to black.
+    const uint8_t *pen = (color >= 0 && color < 16) ? kVDIPalette[color] : kVDIPalette[1];
+    const uint8_t *src = data.bytes;
+
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+        pixelsWide:w pixelsHigh:h bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES
+        isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:w * 4 bitsPerPixel:32];
+    uint8_t *out = rep.bitmapData;
+
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            int byte = src[(size_t)y * wb + (x >> 3)];
+            BOOL set = (byte >> (7 - (x & 7))) & 1;
+            uint8_t *px = out + ((size_t)y * w + x) * 4;
+            // premultiplied: a clear bit is fully transparent, not white
+            px[0] = set ? pen[0] : 0;
+            px[1] = set ? pen[1] : 0;
+            px[2] = set ? pen[2] : 0;
+            px[3] = set ? 255 : 0;
+        }
+
+    NSImage *img = [[NSImage alloc] initWithSize:NSMakeSize(w, h)];
+    [img addRepresentation:rep];
+    return img;
+}

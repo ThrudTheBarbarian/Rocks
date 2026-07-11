@@ -82,6 +82,7 @@ static NSString *uniqueSym(NSMutableSet *used, NSString *want, int idx) {
 @property (strong) NSMutableArray<GObject *> *teds;    // objects with a TEDINFO
 @property (strong) NSMutableArray<GObject *> *icons;   // G_ICON -> ICONBLK
 @property (strong) NSMutableArray<GObject *> *cicons;  // G_CICON / G_IMAGE -> CICON
+@property (strong) NSMutableArray<GBitblk *> *bitblks; // BITBLKs: objects' and free
 @property (strong) NSMutableArray<NSData *> *blobs;    // bitplanes + PAM payloads
 @property (strong) NSMutableDictionary<NSData *, NSNumber *> *blobIndex;
 @end
@@ -114,7 +115,9 @@ static BOOL specIsTed(GObject *o)    { return [o hasTedinfo]; }
 static BOOL specIsIcon(GObject *o)   { return o.type == GT_ICON; }
 // A CICONBLK imported from a real Atari file already carries a derived RGBA PAM,
 // so it exports through the same path as Rocks' own colour icons.
-static BOOL specIsCicon(GObject *o)  { return o.type == GT_CICON || o.type == GT_CICONBLK || o.type == GT_IMAGE; }
+static BOOL specIsCicon(GObject *o)  { return o.type == GT_CICON || o.type == GT_CICONBLK; }
+// A classic G_IMAGE points at a BITBLK bit form.
+static BOOL specIsBitblk(GObject *o) { return o.type == GT_IMAGE && o.bitblk != nil; }
 
 // The PAM bytes a colour icon will export (embedded, external file, or rendered).
 static NSData *cicoPAM(GObject *o) {
@@ -134,6 +137,7 @@ static GXPlan *buildPlan(GResource *res) {
     p.strings = [NSMutableArray array];   p.strIndex = [NSMutableDictionary dictionary];
     p.teds = [NSMutableArray array];      p.icons = [NSMutableArray array];
     p.cicons = [NSMutableArray array];    p.blobs = [NSMutableArray array];
+    p.bitblks = [NSMutableArray array];
     p.blobIndex = [NSMutableDictionary dictionary];
 
     NSMutableSet *used = [NSMutableSet set];
@@ -171,6 +175,9 @@ static GXPlan *buildPlan(GResource *res) {
                 internStr(p, gi.label);
                 internBlob(p, cicoPAM(o));
                 [p.cicons addObject:o];
+            } else if (specIsBitblk(o)) {
+                internBlob(p, o.bitblk.data);
+                [p.bitblks addObject:o.bitblk];
             }
         }
         xt.objects = objs;
@@ -188,6 +195,11 @@ static GXPlan *buildPlan(GResource *res) {
     }
     p.freeStrings = fs;
     p.freeSyms = fsym;
+
+    for (GBitblk *bb in res.freeImages) {
+        internBlob(p, bb.data);
+        [p.bitblks addObject:bb];
+    }
 
     p.trees = out;
     return p;
@@ -347,6 +359,11 @@ NSString *GExportHeader(GResource *res, NSString *stem) {
       "    uint32_t pam_len;\n"
       "    char    *text;\n"
       "} CICON;\n\n"
+      "/* A monochrome bit form: 1bpp, bi_wb bytes per row, bi_hl rows. */\n"
+      "typedef struct {\n"
+      "    uint8_t *bi_pdata;\n"
+      "    int16_t  bi_wb, bi_hl, bi_x, bi_y, bi_color;\n"
+      "} BITBLK;\n\n"
       "typedef struct {\n"
       "    int16_t  ob_next, ob_head, ob_tail;\n"
       "    uint16_t ob_type, ob_flags, ob_state;\n"
@@ -379,12 +396,23 @@ NSString *GExportHeader(GResource *res, NSString *stem) {
         [s appendFormat:@"#define %-28s %d\n\n", "NUM_FREE_STRINGS", (int)p.freeStrings.count];
     }
 
+    if (res.freeImages.count) {
+        [s appendString:@"/* ---- free images — rsrc_gaddr(R_IMAGE, i) ----------------------------- */\n"];
+        for (int i = 0; i < (int)res.freeImages.count; i++) {
+            GBitblk *bb = res.freeImages[i];
+            [s appendFormat:@"#define IMG_%-24d %-4d /* %dx%d */\n", i, i, bb.wb * 8, bb.hl];
+        }
+        [s appendFormat:@"#define %-28s %d\n\n", "NUM_FREE_IMAGES", (int)res.freeImages.count];
+    }
+
     [s appendString:@"/* ---- data (defined in the generated .c) -------------------------------- */\n"];
     for (GXTree *xt in p.trees)
         [s appendFormat:@"extern OBJECT %@[%d];\n", xt.var, (int)xt.objects.count];
     [s appendFormat:@"extern OBJECT *rs_trees[%d];\n", (int)p.trees.count];
     if (p.freeStrings.count)
         [s appendFormat:@"extern char *rs_free_strings[%d];\n", (int)p.freeStrings.count];
+    if (res.freeImages.count)
+        [s appendFormat:@"extern BITBLK *rs_free_images[%d];\n", (int)res.freeImages.count];
     [s appendString:@"\n"];
     [s appendFormat:@"#endif /* %@ */\n", guard];
     return s;
@@ -472,6 +500,22 @@ NSString *GExportCSource(GResource *res, NSString *stem) {
         [s appendString:@"};\n\n"];
     }
 
+    // BITBLKs (classic G_IMAGE bit forms, and the free-image table)
+    NSMutableDictionary<NSValue *, NSNumber *> *bbOf = [NSMutableDictionary dictionary];
+    if (p.bitblks.count) {
+        [s appendString:@"/* ---- BITBLK (monochrome bit forms) ------------------------------------ */\n"];
+        [s appendFormat:@"static BITBLK rs_bb[%d] = {\n", (int)p.bitblks.count];
+        for (int i = 0; i < (int)p.bitblks.count; i++) {
+            GBitblk *bb = p.bitblks[i];
+            bbOf[[NSValue valueWithNonretainedObject:bb]] = @(i);
+            int bi = internBlob(p, bb.data);
+            [s appendFormat:@"    { %@, %d, %d, %d, %d, %d },\n",
+                bi < 0 ? @"0" : [NSString stringWithFormat:@"rs_blob%d", bi],
+                bb.wb, bb.hl, bb.x, bb.y, bb.color];
+        }
+        [s appendString:@"};\n\n"];
+    }
+
     // object trees
     [s appendString:@"/* ---- object trees ----------------------------------------------------- */\n"];
     for (GXTree *xt in p.trees) {
@@ -493,6 +537,9 @@ NSString *GExportCSource(GResource *res, NSString *stem) {
             else if (specIsCicon(o))
                 spec = [NSString stringWithFormat:@"RS_SPEC(&rs_ci[%@])",
                                  cicoOf[[NSValue valueWithNonretainedObject:o]]];
+            else if (specIsBitblk(o))
+                spec = [NSString stringWithFormat:@"RS_SPEC(&rs_bb[%@])",
+                                 bbOf[[NSValue valueWithNonretainedObject:o.bitblk]]];
 
             [s appendFormat:@"    { %4d, %4d, %4d, 0x%04X, 0x%04X, 0x%04X, %@ %4d, %4d, %4d, %4d },"
                              "  /* %@ */\n",
@@ -514,6 +561,13 @@ NSString *GExportCSource(GResource *res, NSString *stem) {
         for (int i = 0; i < (int)p.freeStrings.count; i++)
             [s appendFormat:@"    rs_str%d,%@/* %@ */\n", internStr(p, p.freeStrings[i]),
                             @"   ", p.freeSyms[i]];
+        [s appendString:@"};\n"];
+    }
+    if (res.freeImages.count) {
+        [s appendFormat:@"\nBITBLK *rs_free_images[%d] = {\n", (int)res.freeImages.count];
+        for (int i = 0; i < (int)res.freeImages.count; i++)
+            [s appendFormat:@"    &rs_bb[%@],\n",
+                            bbOf[[NSValue valueWithNonretainedObject:res.freeImages[i]]]];
         [s appendString:@"};\n"];
     }
     return s;
@@ -588,6 +642,11 @@ NSString *GExportXtc(GResource *res, NSString *stem) {
       "typedef struct {\n"
       "    u32 pam; u32 pam_len; u32 text;\n"
       "} CICON;\n\n"
+      "// A monochrome bit form: 1bpp, bi_wb bytes per row, bi_hl rows.\n"
+      "typedef struct {\n"
+      "    u32 bi_pdata;\n"
+      "    i16 bi_wb; i16 bi_hl; i16 bi_x; i16 bi_y; i16 bi_color;\n"
+      "} BITBLK;\n\n"
       "typedef struct {\n"
       "    i16 ob_next; i16 ob_head; i16 ob_tail;\n"
       "    u16 ob_type; u16 ob_flags; u16 ob_state;\n"
@@ -644,6 +703,20 @@ NSString *GExportXtc(GResource *res, NSString *stem) {
         }
         [s appendString:@"};\n\n"];
     }
+    NSMutableDictionary<NSValue *, NSNumber *> *bbOf = [NSMutableDictionary dictionary];
+    if (p.bitblks.count) {
+        [s appendString:@"// ---- BITBLK (bi_pdata filled in by the fixup) ------------------------\n"];
+        [s appendFormat:@"BITBLK rs_bb[%d] = {\n", (int)p.bitblks.count];
+        for (int i = 0; i < (int)p.bitblks.count; i++) {
+            GBitblk *bb = p.bitblks[i];
+            bbOf[[NSValue valueWithNonretainedObject:bb]] = @(i);
+            [s appendFormat:@"    { 0, %d, %d, %d, %d, %d }%@\n",
+                bb.wb, bb.hl, bb.x, bb.y, bb.color,
+                (i + 1 < (int)p.bitblks.count) ? @"," : @""];
+        }
+        [s appendString:@"};\n\n"];
+    }
+
     NSMutableDictionary<NSValue *, NSNumber *> *cicoOf = [NSMutableDictionary dictionary];
     if (p.cicons.count) {
         [s appendString:@"// ---- CICON (pam/text filled in by the fixup) -------------------------\n"];
@@ -682,6 +755,9 @@ NSString *GExportXtc(GResource *res, NSString *stem) {
     if (p.freeStrings.count)
         [s appendFormat:@"u32 rs_free_strings[%d];    // filled in by the fixup\n",
                         (int)p.freeStrings.count];
+    if (res.freeImages.count)
+        [s appendFormat:@"u32 rs_free_images[%d];     // filled in by the fixup\n",
+                        (int)res.freeImages.count];
     [s appendString:@"\n"];
 
     [s appendString:@"// ---- fixup: resolve every address once, at start-up ------------------\n"];
@@ -706,7 +782,12 @@ NSString *GExportXtc(GResource *res, NSString *stem) {
         if (bi >= 0) [s appendFormat:@"    rs_ci[%d].pam  = (u32)rs_blob%d;\n", i, bi];
         [s appendFormat:@"    rs_ci[%d].text = (u32)rs_str%d;\n", i, internStr(p, g.label)];
     }
-    if (p.teds.count || p.icons.count || p.cicons.count) [s appendString:@"\n"];
+    for (int i = 0; i < (int)p.bitblks.count; i++) {
+        int bi = internBlob(p, p.bitblks[i].data);
+        [s appendFormat:@"    rs_bb[%d].bi_pdata = %@;\n", i,
+            bi < 0 ? @"0" : [NSString stringWithFormat:@"(u32)rs_blob%d", bi]];
+    }
+    if (p.teds.count || p.icons.count || p.cicons.count || p.bitblks.count) [s appendString:@"\n"];
 
     for (GXTree *xt in p.trees) {
         for (int i = 0; i < (int)xt.objects.count; i++) {
@@ -723,6 +804,9 @@ NSString *GExportXtc(GResource *res, NSString *stem) {
             else if (specIsCicon(o))
                 rhs = [NSString stringWithFormat:@"(u32)&rs_ci[%@]",
                                 cicoOf[[NSValue valueWithNonretainedObject:o]]];
+            else if (specIsBitblk(o))
+                rhs = [NSString stringWithFormat:@"(u32)&rs_bb[%@]",
+                                bbOf[[NSValue valueWithNonretainedObject:o.bitblk]]];
             if (rhs) [s appendFormat:@"    %@[%s].ob_spec = %@;\n",
                                      xt.var, xt.syms[i].UTF8String, rhs];
         }
@@ -731,7 +815,10 @@ NSString *GExportXtc(GResource *res, NSString *stem) {
     for (int i = 0; i < (int)p.freeStrings.count; i++)
         [s appendFormat:@"    rs_free_strings[%s] = (u32)rs_str%d;\n",
                         p.freeSyms[i].UTF8String, internStr(p, p.freeStrings[i])];
-    if (p.freeStrings.count) [s appendString:@"\n"];
+    for (int i = 0; i < (int)res.freeImages.count; i++)
+        [s appendFormat:@"    rs_free_images[%d] = (u32)&rs_bb[%@];\n", i,
+                        bbOf[[NSValue valueWithNonretainedObject:res.freeImages[i]]]];
+    if (p.freeStrings.count || res.freeImages.count) [s appendString:@"\n"];
 
     for (int ti = 0; ti < (int)p.trees.count; ti++)
         [s appendFormat:@"    rs_trees[%@] = &%@[0];\n", p.trees[ti].sym, p.trees[ti].var];

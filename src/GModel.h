@@ -90,6 +90,17 @@ static inline GColorWord gcw_default(void) {
 @property (assign) GColorWord color;
 @end
 
+// A classic monochrome bitmap (BITBLK): 1bpp, `wb` bytes per row, `hl` rows.
+// Set bits are drawn in VDI pen `color`; clear bits are transparent — a BITBLK is
+// a bit *form* and has no mask.  Carried by G_IMAGE objects and by the free-image
+// table (rsrc_gaddr(R_IMAGE, i)).
+@interface GBitblk : NSObject
+@property (nullable, copy) NSData *data;      // wb * hl bytes
+@property int wb, hl, x, y, color;
+@property (nullable, strong) NSImage *cachedImage;
+- (nullable NSImage *)image;
+@end
+
 @interface GIcon : NSObject
 @property BOOL isColor;
 @property (copy) NSString *label;
@@ -126,6 +137,7 @@ static inline GColorWord gcw_default(void) {
 @property (nullable, strong) GTedinfo *ted;
 @property (nullable, strong) GBox *box;
 @property (nullable, strong) GIcon *icon;
+@property (nullable, strong) GBitblk *bitblk;   // a classic G_IMAGE's bit form
 @property (strong) NSMutableArray<GObject *> *children;
 
 + (instancetype)objectOfType:(GObType)type frame:(NSRect)f;
@@ -141,6 +153,7 @@ static inline GColorWord gcw_default(void) {
 - (BOOL)hasTedinfo;
 - (BOOL)hasBox;
 - (BOOL)hasIcon;
+- (BOOL)hasBitblk;
 - (BOOL)canHaveChildren;
 @end
 
@@ -174,6 +187,8 @@ typedef struct { __unsafe_unretained GObject *obj; int next, head, tail; } GFlat
 // Free strings: rsrc_gaddr(R_STRING, i).  They hang off no object, so nothing in
 // the tree references them — but real resources are full of them.
 @property (strong) NSMutableArray<NSString *> *freeStrings;
+// Free images: rsrc_gaddr(R_IMAGE, i).  Like free strings, they hang off no object.
+@property (strong) NSMutableArray<GBitblk *> *freeImages;
 @property BOOL bigEndian;      // classic 68000 GEM fidelity
 @property BOOL packedCoords;   // char/pixel packing on write
 @property BOOL embedIcons;     // embed PAM vs external path

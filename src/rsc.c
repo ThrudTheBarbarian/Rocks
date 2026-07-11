@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { SZ_OBJ = 24, SZ_TED = 28, SZ_IB = 34, SZ_HDR = 36 };
+enum { SZ_OBJ = 24, SZ_TED = 28, SZ_IB = 34, SZ_BB = 14, SZ_HDR = 36 };
 
 /* ---- arena (block list; pointers stay valid for the resource's lifetime) -- */
 typedef struct ArenaBlock { struct ArenaBlock *next; size_t used, cap; } ArenaBlock;
@@ -20,9 +20,8 @@ struct RSC {
     RSC_RGB       *palette;                 /* 256 entries, or NULL */
     /* free strings: rsrc_gaddr(R_STRING, i) */
     char         **strings; int nstring, string_cap;
-    /* things the file carried that we read past but do not model yet — reported
-     * so an import is never silently lossy */
-    int            n_bitblk, n_freeimg;
+    /* free images: rsrc_gaddr(R_IMAGE, i) */
+    RSC_BITBLK   **freeimg; int nfreeimg, freeimg_cap;
 };
 
 static void *arena_alloc(RSC *r, size_t n) {
@@ -85,7 +84,7 @@ static uint32_t pam_len(const uint8_t *p, size_t len, uint32_t off) {
 static int is_box(int t)    { return t==G_BOX || t==G_IBOX || t==G_BOXCHAR; }
 static int is_string(int t) { return t==G_STRING||t==G_BUTTON||t==G_TITLE||t==G_CHECKBOX||t==G_RADIO||t==G_POPUP; }
 static int is_ted(int t)    { return t==G_TEXT||t==G_BOXTEXT||t==G_FTEXT||t==G_FBOXTEXT||t==G_FIELD; }
-static int is_pam(int t)    { return t==G_PAMICON || t==G_IMAGE; }
+static int is_pam(int t)    { return t==G_PAMICON; }   /* G_IMAGE is handled separately */
 
 static char *dup_cstr(RSC *r, const uint8_t *p, size_t len, uint32_t off) {
     if (off == 0 || off >= len) return arena_alloc(r, 1);   /* "" */
@@ -93,6 +92,23 @@ static char *dup_cstr(RSC *r, const uint8_t *p, size_t len, uint32_t off) {
     char *s = arena_alloc(r, e - off + 1);
     if (s) memcpy(s, p + off, e - off);
     return s;
+}
+
+/* A BITBLK: 14 bytes on disk, then bi_wb * bi_hl bytes of 1bpp data. */
+static RSC_BITBLK *read_bitblk(RSC *r, const uint8_t *p, size_t len, uint32_t off, int be) {
+    if (!off || off + SZ_BB > len) return NULL;
+    RSC_BITBLK *bb = rsc_new_bitblk(r);
+    if (!bb) return NULL;
+    const uint8_t *b = p + off;
+    uint32_t pdata  = rd32(b + 0, be);
+    bb->bi_wb    = (int16_t)rd16(b + 4, be);
+    bb->bi_hl    = (int16_t)rd16(b + 6, be);
+    bb->bi_x     = (int16_t)rd16(b + 8, be);
+    bb->bi_y     = (int16_t)rd16(b + 10, be);
+    bb->bi_color = (int16_t)rd16(b + 12, be);
+    uint32_t bytes = (uint32_t)(bb->bi_wb > 0 ? bb->bi_wb : 0) * (uint32_t)(bb->bi_hl > 0 ? bb->bi_hl : 0);
+    if (pdata && bytes && pdata + bytes <= len) bb->bi_pdata = rsc_intern_bytes(r, p + pdata, bytes);
+    return bb;
 }
 
 /* ---- the extended (CICONBLK) section -------------------------------------
@@ -296,6 +312,20 @@ static RSC *try_parse(const uint8_t *p, size_t len, int be) {
                 if (pmask && pmask + bytes <= len) ib->ib_pmask = rsc_intern_bytes(r, p + pmask, bytes);
             }
             g->ob_spec = ib;
+        } else if (t == G_IMAGE) {
+            /* A classic G_IMAGE points at a BITBLK; Rocks' older files pointed it
+             * at a PAM instead.  The "P7" magic tells them apart — and a PAM one
+             * is RETYPED to G_PAMICON here, so from this point on G_IMAGE means
+             * exactly "classic bit form" and nothing has to guess. */
+            uint32_t pl = pam_len(p, len, spec);
+            if (pl) {
+                RSC_PAMICON *ci = rsc_new_pamicon(r);
+                if (ci) { ci->pam = rsc_intern_bytes(r, p + spec, pl); ci->pam_len = pl; }
+                g->ob_spec = ci;
+                g->ob_type = (uint16_t)((g->ob_type & 0xFF00) | G_PAMICON);
+            } else {
+                g->ob_spec = read_bitblk(r, p, len, spec, be);
+            }
         } else if (is_pam(t)) {
             RSC_PAMICON *ci = rsc_new_pamicon(r);
             uint32_t pl = pam_len(p, len, spec);
@@ -318,8 +348,15 @@ static RSC *try_parse(const uint8_t *p, size_t len, int be) {
     }
     if (r->ntree == 0) { rsc_free(r); return NULL; }
 
-    r->n_bitblk  = (int16_t)h[14];      /* rsh_nbb     */
-    r->n_freeimg = (int16_t)h[16];      /* rsh_nimages */
+    /* Free images: a table of LONG offsets to BITBLKs (rsrc_gaddr(R_IMAGE, i)). */
+    uint32_t frimg = h[8];
+    int nimages = (int16_t)h[16];
+    if (nimages > 0 && frimg && frimg + (size_t)nimages * 4 <= len) {
+        for (int i = 0; i < nimages; i++) {
+            RSC_BITBLK *bb = read_bitblk(r, p, len, rd32(p + frimg + (size_t)i * 4, be), be);
+            if (bb) rsc_add_freeimage(r, bb);
+        }
+    }
 
     /* Free strings: a table of LONG offsets, reached by rsrc_gaddr(R_STRING, i).
      * They belong to no object, so nothing above would have picked them up. */
@@ -378,14 +415,19 @@ int rsc_write(const RSC *r, uint8_t **out_p, size_t *out_len, const char **err) 
     int cw = r->cell_w, ch = r->cell_h;
 
     StrVec strs = {0};
-    PtrVec teds = {0}, ibs = {0}, cics = {0};
+    PtrVec teds = {0}, ibs = {0}, cics = {0}, bbs = {0};
+    uint32_t *bb_off = NULL;
     /* image data (icon bitplanes + embedded PAMs), built up-front */
     uint8_t *imdata = NULL; uint32_t imlen = 0, imcap = 0;
     #define IM_APPEND(ptr, n) do { if (imlen + (n) > imcap) { imcap = (imlen + (n)) * 2 + 64; imdata = realloc(imdata, imcap); } \
         memcpy(imdata + imlen, (ptr), (n)); imlen += (n); } while (0)
     uint32_t *ib_data_off = NULL, *ib_mask_off = NULL, *cic_off = NULL;
 
-    /* pass 1: collect */
+    /* pass 1: collect.  Everything that ends up in the string pool must be
+     * interned HERE — the layout below hands out an offset per interned string,
+     * so anything interned later would get no offset at all. */
+    for (int i = 0; i < r->nstring; i++) sv_intern(&strs, r->strings[i]);   /* free strings */
+
     for (int i = 0; i < nobs; i++) {
         RSC_OBJECT *o = &r->obj[i];
         int t = o->ob_type & 0xFF;
@@ -409,16 +451,36 @@ int rsc_write(const RSC *r, uint8_t **out_p, size_t *out_len, const char **err) 
             cic_off = realloc(cic_off, cics.cap*sizeof(uint32_t));
             cic_off[idx] = imlen;
             if (ci->pam && ci->pam_len) IM_APPEND(ci->pam, ci->pam_len);
+        } else if (t == G_IMAGE && o->ob_spec && pv_find(&bbs, o->ob_spec) < 0) {
+            RSC_BITBLK *bb = o->ob_spec;
+            int idx = pv_add(&bbs, bb);
+            bb_off = realloc(bb_off, bbs.cap*sizeof(uint32_t));
+            bb_off[idx] = imlen;
+            uint32_t bytes = (uint32_t)(bb->bi_wb > 0 ? bb->bi_wb : 0) * (uint32_t)(bb->bi_hl > 0 ? bb->bi_hl : 0);
+            if (bb->bi_pdata && bytes) IM_APPEND(bb->bi_pdata, bytes);
         }
     }
-    int nted = teds.n, nib = ibs.n;
+    /* free images are BITBLKs too, and may not be referenced by any object */
+    for (int i = 0; i < r->nfreeimg; i++) {
+        RSC_BITBLK *bb = r->freeimg[i];
+        if (!bb || pv_find(&bbs, bb) >= 0) continue;
+        int idx = pv_add(&bbs, bb);
+        bb_off = realloc(bb_off, bbs.cap*sizeof(uint32_t));
+        bb_off[idx] = imlen;
+        uint32_t bytes = (uint32_t)(bb->bi_wb > 0 ? bb->bi_wb : 0) * (uint32_t)(bb->bi_hl > 0 ? bb->bi_hl : 0);
+        if (bb->bi_pdata && bytes) IM_APPEND(bb->bi_pdata, bytes);
+    }
+    int nted = teds.n, nib = ibs.n, nbb = bbs.n;
+    int nstring = r->nstring, nimages = r->nfreeimg;
 
     /* layout */
     uint32_t objBase = SZ_HDR;
     uint32_t tedBase = objBase + (uint32_t)nobs * SZ_OBJ;
     uint32_t ibBase  = tedBase + (uint32_t)nted * SZ_TED;
-    uint32_t bbBase  = ibBase + (uint32_t)nib * SZ_IB;   /* nbb = 0 */
-    uint32_t trindex = bbBase;
+    uint32_t bbBase  = ibBase + (uint32_t)nib * SZ_IB;
+    uint32_t frstr   = bbBase + (uint32_t)nbb * SZ_BB;      /* free-string table  */
+    uint32_t frimg   = frstr + (uint32_t)nstring * 4;       /* free-image table   */
+    uint32_t trindex = frimg + (uint32_t)nimages * 4;
     uint32_t strBase = trindex + (uint32_t)ntree * 4;
     uint32_t cur = strBase;
     /* string data + offsets */
@@ -433,9 +495,10 @@ int rsc_write(const RSC *r, uint8_t **out_p, size_t *out_len, const char **err) 
     /* header */
     uint16_t hdr[18] = {0};
     hdr[0]=0; hdr[1]=(uint16_t)objBase; hdr[2]=(uint16_t)tedBase; hdr[3]=(uint16_t)ibBase;
-    hdr[4]=(uint16_t)bbBase; hdr[5]=(uint16_t)bbBase; hdr[6]=(uint16_t)strBase; hdr[7]=(uint16_t)imBase;
-    hdr[8]=(uint16_t)bbBase; hdr[9]=(uint16_t)trindex; hdr[10]=(uint16_t)nobs; hdr[11]=(uint16_t)ntree;
-    hdr[12]=(uint16_t)nted; hdr[13]=(uint16_t)nib; hdr[14]=0; hdr[15]=0; hdr[16]=0; hdr[17]=(uint16_t)total;
+    hdr[4]=(uint16_t)bbBase; hdr[5]=(uint16_t)frstr; hdr[6]=(uint16_t)strBase; hdr[7]=(uint16_t)imBase;
+    hdr[8]=(uint16_t)frimg; hdr[9]=(uint16_t)trindex; hdr[10]=(uint16_t)nobs; hdr[11]=(uint16_t)ntree;
+    hdr[12]=(uint16_t)nted; hdr[13]=(uint16_t)nib; hdr[14]=(uint16_t)nbb;
+    hdr[15]=(uint16_t)nstring; hdr[16]=(uint16_t)nimages; hdr[17]=(uint16_t)total;
     for (int i=0;i<18;i++) wr16(buf + i*2, hdr[i]);
 
     /* objects */
@@ -453,6 +516,7 @@ int rsc_write(const RSC *r, uint8_t **out_p, size_t *out_len, const char **err) 
         else if (is_ted(t)) spec = tedBase + (uint32_t)pv_find(&teds, o->ob_spec) * SZ_TED;
         else if (t == G_ICON) spec = ibBase + (uint32_t)pv_find(&ibs, o->ob_spec) * SZ_IB;
         else if (is_pam(t)) { int k = pv_find(&cics, o->ob_spec); spec = k>=0 ? imBase + cic_off[k] : 0; }
+        else if (t == G_IMAGE) { int k = pv_find(&bbs, o->ob_spec); spec = k>=0 ? bbBase + (uint32_t)k * SZ_BB : 0; }
         wr32(d+12, spec);
         wr16(d+16, pack_coord(o->ob_x, cw)); wr16(d+18, pack_coord(o->ob_y, ch));
         wr16(d+20, pack_coord(o->ob_w, cw)); wr16(d+22, pack_coord(o->ob_h, ch));
@@ -484,6 +548,23 @@ int rsc_write(const RSC *r, uint8_t **out_p, size_t *out_len, const char **err) 
         wr16(d+26,(uint16_t)ib->ib_xtext); wr16(d+28,(uint16_t)ib->ib_ytext);
         wr16(d+30,(uint16_t)ib->ib_wtext); wr16(d+32,(uint16_t)ib->ib_htext);
     }
+    /* bitblk */
+    for (int i = 0; i < nbb; i++) {
+        RSC_BITBLK *bb = bbs.items[i];
+        uint8_t *d = buf + bbBase + (size_t)i * SZ_BB;
+        uint32_t bytes = (uint32_t)(bb->bi_wb > 0 ? bb->bi_wb : 0) * (uint32_t)(bb->bi_hl > 0 ? bb->bi_hl : 0);
+        wr32(d+0, (bb->bi_pdata && bytes) ? imBase + bb_off[i] : 0);
+        wr16(d+4,(uint16_t)bb->bi_wb);  wr16(d+6,(uint16_t)bb->bi_hl);
+        wr16(d+8,(uint16_t)bb->bi_x);   wr16(d+10,(uint16_t)bb->bi_y);
+        wr16(d+12,(uint16_t)bb->bi_color);
+    }
+    /* free strings / free images: tables of offsets into what we just laid out */
+    for (int i = 0; i < nstring; i++)
+        wr32(buf + frstr + (size_t)i * 4, strs.off[sv_intern(&strs, r->strings[i])]);
+    for (int i = 0; i < nimages; i++) {
+        int k = pv_find(&bbs, r->freeimg[i]);
+        wr32(buf + frimg + (size_t)i * 4, k >= 0 ? bbBase + (uint32_t)k * SZ_BB : 0);
+    }
     /* tree index */
     for (int i = 0; i < ntree; i++) wr32(buf + trindex + (size_t)i * 4, objBase + (uint32_t)r->trees[i] * SZ_OBJ);
     /* string data */
@@ -492,13 +573,13 @@ int rsc_write(const RSC *r, uint8_t **out_p, size_t *out_len, const char **err) 
     if (imlen) memcpy(buf + imBase, imdata, imlen);
 
     *out_p = buf; *out_len = total;
-    free(strs.items); free(strs.off); free(teds.items); free(ibs.items); free(cics.items);
-    free(imdata); free(ib_data_off); free(ib_mask_off); free(cic_off);
+    free(strs.items); free(strs.off); free(teds.items); free(ibs.items); free(cics.items); free(bbs.items);
+    free(imdata); free(ib_data_off); free(ib_mask_off); free(cic_off); free(bb_off);
     (void)strbytes;
     return 0;
 fail:
-    free(strs.items); free(strs.off); free(teds.items); free(ibs.items); free(cics.items);
-    free(imdata); free(ib_data_off); free(ib_mask_off); free(cic_off);
+    free(strs.items); free(strs.off); free(teds.items); free(ibs.items); free(cics.items); free(bbs.items);
+    free(imdata); free(ib_data_off); free(ib_mask_off); free(cic_off); free(bb_off);
     return 1;
 }
 
@@ -513,7 +594,7 @@ void rsc_free(RSC *r) {
     if (!r) return;
     ArenaBlock *b = r->arena;
     while (b) { ArenaBlock *n = b->next; free(b); b = n; }
-    free(r->obj); free(r->trees); free(r->strings); free(r);
+    free(r->obj); free(r->trees); free(r->strings); free(r->freeimg); free(r);
 }
 void rsc_set_cell(RSC *r, int cw, int ch) { r->cell_w = cw > 0 ? cw : 8; r->cell_h = ch > 0 ? ch : 16; }
 
@@ -574,8 +655,22 @@ int rsc_add_string(RSC *r, const char *s) {
     return r->nstring++;
 }
 
-int rsc_nbitblks(const RSC *r)   { return r ? r->n_bitblk : 0; }
-int rsc_nfreeimages(const RSC *r) { return r ? r->n_freeimg : 0; }
+RSC_BITBLK *rsc_new_bitblk(RSC *r) { return arena_alloc(r, sizeof(RSC_BITBLK)); }
+
+int rsc_nfreeimages(const RSC *r) { return r ? r->nfreeimg : 0; }
+RSC_BITBLK *rsc_freeimage(const RSC *r, int i) {
+    return (r && i >= 0 && i < r->nfreeimg) ? r->freeimg[i] : NULL;
+}
+int rsc_add_freeimage(RSC *r, RSC_BITBLK *bb) {
+    if (r->nfreeimg == r->freeimg_cap) {
+        int cap = r->freeimg_cap ? r->freeimg_cap * 2 : 8;
+        RSC_BITBLK **n = realloc(r->freeimg, (size_t)cap * sizeof(RSC_BITBLK *));
+        if (!n) return -1;
+        r->freeimg = n; r->freeimg_cap = cap;
+    }
+    r->freeimg[r->nfreeimg] = bb;
+    return r->nfreeimg++;
+}
 
 int rsc_nciconblks(const RSC *r) { return r ? r->ncib : 0; }
 RSC_CICONBLK *rsc_ciconblk(const RSC *r, int i) {

@@ -89,6 +89,23 @@ static GIcon *GIconFromCICONBLK(RSC_CICONBLK *cb, const uint8_t *palette) {
     return ic;
 }
 
+// A classic monochrome bit form.
+static GBitblk *GBitblkFrom(RSC_BITBLK *bb) {
+    if (!bb) return nil;
+    GBitblk *g = [GBitblk new];
+    g.wb = bb->bi_wb; g.hl = bb->bi_hl;
+    g.x = bb->bi_x;   g.y = bb->bi_y;   g.color = bb->bi_color;
+    uint32_t bytes = (uint32_t)(bb->bi_wb > 0 ? bb->bi_wb : 0) * (uint32_t)(bb->bi_hl > 0 ? bb->bi_hl : 0);
+    if (bb->bi_pdata && bytes) g.data = [NSData dataWithBytes:bb->bi_pdata length:bytes];
+    return g;
+}
+
+static void fillBitblk(RSC *r, RSC_BITBLK *bb, GBitblk *g) {
+    bb->bi_wb = g.wb; bb->bi_hl = g.hl;
+    bb->bi_x = g.x;   bb->bi_y = g.y;   bb->bi_color = g.color;
+    if (g.data.length) bb->bi_pdata = rsc_intern_bytes(r, g.data.bytes, (uint32_t)g.data.length);
+}
+
 // ---- read: C OBJECT tree -> GObject --------------------------------------
 
 static GObject *buildG(RSC_OBJECT *objs, int base, int rel, int nobj) {
@@ -134,6 +151,10 @@ static GObject *buildG(RSC_OBJECT *objs, int base, int rel, int nobj) {
             if (ib->ib_pmask && bytes) ic.monoMask = [NSData dataWithBytes:ib->ib_pmask length:bytes];
         }
         g.icon = ic;
+    } else if (t == G_IMAGE) {
+        // rsc.c retypes a PAM-bearing G_IMAGE to G_PAMICON, so reaching here means
+        // a genuine classic bit form.
+        g.bitblk = GBitblkFrom((RSC_BITBLK *)o->ob_spec);
     } else if (typeIsPam(t)) {
         RSC_PAMICON *ci = o->ob_spec;
         GIcon *ic = [GIcon new]; ic.isColor = YES;
@@ -168,19 +189,8 @@ GResource *GRscRead(NSData *data, NSString **err) {
     RSC *r = rsc_read(data.bytes, data.length, &cerr);
     if (!r) { if (err) *err = NSStr(cerr); return nil; }
 
-    // Say plainly what we read past and will not write back.
-    NSMutableArray *lost = [NSMutableArray array];
-    if (rsc_nbitblks(r))
-        [lost addObject:[NSString stringWithFormat:@"%d BITBLK bitmap%s",
-                         rsc_nbitblks(r), rsc_nbitblks(r) == 1 ? "" : "s"]];
-    if (rsc_nfreeimages(r))
-        [lost addObject:[NSString stringWithFormat:@"%d free image%s",
-                         rsc_nfreeimages(r), rsc_nfreeimages(r) == 1 ? "" : "s"]];
-    if (lost.count)
-        gImportWarning = [NSString stringWithFormat:
-            @"This resource carries %@, which Rocks does not preserve yet. "
-             "Everything else — trees, free strings and colour icons — imports intact.",
-            [lost componentsJoinedByString:@" and "]];
+    // Nothing is dropped silently: anything read past but not modelled is reported.
+    // (BITBLKs, free images, free strings and colour icons are all preserved now.)
 
     GResource *res = [GResource new];
     res.trees = [NSMutableArray array];
@@ -192,6 +202,13 @@ GResource *GRscRead(NSData *data, NSString **err) {
     for (int i = 0; i < rsc_nstrings(r); i++)
         [fs addObject:NSStr(rsc_string(r, i))];
     res.freeStrings = fs;
+
+    NSMutableArray *fi = [NSMutableArray array];
+    for (int i = 0; i < rsc_nfreeimages(r); i++) {
+        GBitblk *bb = GBitblkFrom(rsc_freeimage(r, i));
+        if (bb) [fi addObject:bb];
+    }
+    res.freeImages = fi;
 
     int nobj = 0;
     RSC_OBJECT *objs = rsc_objects(r, &nobj);
@@ -214,6 +231,15 @@ GResource *GRscRead(NSData *data, NSString **err) {
 NSData *GRscWrite(GResource *res, NSString **err) {
     RSC *r = rsc_new();
     rsc_set_cell(r, res.charWidth ?: 8, res.charHeight ?: 16);
+
+    // Free strings and free images belong to no object, so they have to be handed
+    // over explicitly or they would be dropped on write.
+    for (NSString *fs in res.freeStrings) rsc_add_string(r, dupLatin1(r, fs));
+    for (GBitblk *g in res.freeImages) {
+        RSC_BITBLK *bb = rsc_new_bitblk(r);
+        fillBitblk(r, bb, g);
+        rsc_add_freeimage(r, bb);
+    }
 
     for (GTree *tree in res.trees) {
         GFlatNode *flat = NULL;
@@ -255,6 +281,10 @@ NSData *GRscWrite(GResource *res, NSString **err) {
                 if (gi.monoData.length) ib->ib_pdata = rsc_intern_bytes(r, gi.monoData.bytes, (uint32_t)gi.monoData.length);
                 if (gi.monoMask.length) ib->ib_pmask = rsc_intern_bytes(r, gi.monoMask.bytes, (uint32_t)gi.monoMask.length);
                 o->ob_spec = ib;
+            } else if (t == G_IMAGE) {
+                RSC_BITBLK *bb = rsc_new_bitblk(r);
+                if (g.bitblk) fillBitblk(r, bb, g.bitblk);
+                o->ob_spec = bb;
             } else if (typeIsPam(t)) {
                 GIcon *gi = g.icon;
                 RSC_PAMICON *ci = rsc_new_pamicon(r);

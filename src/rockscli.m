@@ -86,6 +86,11 @@ static int listResource(GResource *r) {
     if (r.freeStrings.count) printf("  free strings: %d\n", (int)r.freeStrings.count);
     if (cicon) printf("  colour icons (CICONBLK): %d  (%d with a SELECTED form)\n", cicon, withSel);
     if (mono)  printf("  mono icons (ICONBLK):    %d\n", mono);
+    int bb = 0;
+    for (GTree *t in r.trees)
+        for (GObject *o in [t allObjects]) if (o.bitblk) bb++;
+    if (bb) printf("  bitmaps (BITBLK):        %d\n", bb);
+    if (r.freeImages.count) printf("  free images:             %d\n", (int)r.freeImages.count);
     NSDictionary *syms = GExportSymbols(r);
     for (int i = 0; i < (int)r.trees.count; i++) {
         GTree *t = r.trees[i];

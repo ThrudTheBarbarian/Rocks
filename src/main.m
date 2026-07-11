@@ -299,6 +299,48 @@ static int ciconshot(const char *rsc, const char *out) {
     return 0;
 }
 
+// Rocks --images <file.rsc> <out.png> — render every BITBLK a file carries
+// (G_IMAGE objects and the free-image table), so the bit forms can be looked at.
+static int imageshot(const char *rsc, const char *out) {
+    NSData *d = [NSData dataWithContentsOfFile:[NSString stringWithUTF8String:rsc]];
+    NSString *err = nil;
+    GResource *res = d ? GRscRead(d, &err) : nil;
+    if (!res) { printf("cannot read %s: %s\n", rsc, err.UTF8String ?: "?"); return 1; }
+
+    NSMutableArray<GBitblk *> *bbs = [NSMutableArray array];
+    for (GTree *t in res.trees)
+        for (GObject *o in [t allObjects]) if (o.bitblk.data) [bbs addObject:o.bitblk];
+    int inObjects = (int)bbs.count;
+    for (GBitblk *bb in res.freeImages) if (bb.data) [bbs addObject:bb];
+    if (!bbs.count) { printf("%s: no BITBLKs\n", rsc); return 1; }
+
+    int cols = 8, cell = 48;
+    int rows = ((int)bbs.count + cols - 1) / cols;
+    int W = cols * cell, H = rows * cell;
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+        pixelsWide:W pixelsHigh:H bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES
+        isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:W*4 bitsPerPixel:32];
+    NSGraphicsContext *gc = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
+    [NSGraphicsContext saveGraphicsState]; [NSGraphicsContext setCurrentContext:gc];
+    [[NSColor colorWithWhite:0.75 alpha:1] set]; NSRectFill(NSMakeRect(0,0,W,H));
+
+    for (int i = 0; i < (int)bbs.count; i++) {
+        NSImage *img = [bbs[i] image];
+        if (!img) continue;
+        int cx = (i % cols) * cell, cy = (i / cols) * cell;
+        NSSize s = img.size;
+        CGFloat sc = MIN(1.0, MIN((cell-8) / s.width, (cell-8) / s.height));
+        [img drawInRect:NSMakeRect(cx + 4, H - cy - 4 - s.height*sc, s.width*sc, s.height*sc)
+               fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1];
+    }
+    [NSGraphicsContext restoreGraphicsState];
+    [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+        writeToFile:[NSString stringWithUTF8String:out] atomically:YES];
+    printf("%s: %d BITBLK(s) — %d on objects, %d free -> %s\n", rsc,
+           (int)bbs.count, inObjects, (int)res.freeImages.count, out);
+    return 0;
+}
+
 // Rocks --slice <name> renders that theme slice at several sizes to scratch.
 static int sliceTest(const char *name) {
     GTheme *th = [GTheme defaultTheme];
@@ -341,6 +383,9 @@ int main(int argc, const char *argv[]) {
     }
     if (argc > 2 && strcmp(argv[1], "--clicktest") == 0) {
         @autoreleasepool { return clicktest(argv[2]); }
+    }
+    if (argc > 3 && strcmp(argv[1], "--images") == 0) {
+        @autoreleasepool { return imageshot(argv[2], argv[3]); }
     }
     if (argc > 3 && strcmp(argv[1], "--cicons") == 0) {
         @autoreleasepool { return ciconshot(argv[2], argv[3]); }

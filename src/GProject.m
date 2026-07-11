@@ -19,6 +19,14 @@ static NSData *unb64(NSString *s) {
     return s ? [[NSData alloc] initWithBase64EncodedString:s options:0] : nil;
 }
 
+static NSArray *freeImagesToArray(GResource *r) {
+    NSMutableArray *a = [NSMutableArray array];
+    for (GBitblk *bb in r.freeImages)
+        [a addObject:@{ @"data": b64(bb.data) ?: @"", @"wb": @(bb.wb), @"hl": @(bb.hl),
+                        @"x": @(bb.x), @"y": @(bb.y), @"color": @(bb.color) }];
+    return a;
+}
+
 static NSDictionary *objToDict(GObject *o) {
     NSMutableDictionary *m = [NSMutableDictionary dictionary];
     m[@"type"] = @(o.type); m[@"flags"] = @(o.flags); m[@"state"] = @(o.state);
@@ -36,6 +44,11 @@ static NSDictionary *objToDict(GObject *o) {
     if (o.box) {
         m[@"box"] = @{ @"character": @(o.box.character), @"thickness": @(o.box.thickness),
                        @"color": cwDict(o.box.color) };
+    }
+    if (o.bitblk) {
+        m[@"bitblk"] = @{ @"data": b64(o.bitblk.data) ?: @"", @"wb": @(o.bitblk.wb),
+                          @"hl": @(o.bitblk.hl), @"x": @(o.bitblk.x),
+                          @"y": @(o.bitblk.y), @"color": @(o.bitblk.color) };
     }
     if (o.icon) {
         NSMutableDictionary *ic = [NSMutableDictionary dictionary];
@@ -88,6 +101,13 @@ static GObject *objFromDict(NSDictionary *d) {
         b.thickness = [bd[@"thickness"] intValue]; b.color = cwFrom(bd[@"color"]);
         o.box = b;
     }
+    NSDictionary *bbd = d[@"bitblk"];
+    if (bbd) {
+        GBitblk *bb = [GBitblk new];
+        bb.data = unb64(bbd[@"data"]); bb.wb = [bbd[@"wb"] intValue]; bb.hl = [bbd[@"hl"] intValue];
+        bb.x = [bbd[@"x"] intValue]; bb.y = [bbd[@"y"] intValue]; bb.color = [bbd[@"color"] intValue];
+        o.bitblk = bb;
+    }
     NSDictionary *id_ = d[@"icon"];
     if (id_) {
         GIcon *ic = [GIcon new];
@@ -115,6 +135,7 @@ NSDictionary *GResourceToDictionary(GResource *r) {
     }
     return @{ @"version": @1, @"bigEndian": @(r.bigEndian),
               @"freeStrings": r.freeStrings ?: @[],
+              @"freeImages": freeImagesToArray(r),
               @"packedCoords": @(r.packedCoords), @"embedIcons": @(r.embedIcons),
               @"charWidth": @(r.charWidth), @"charHeight": @(r.charHeight),
               @"trees": trees };
@@ -129,6 +150,13 @@ GResource *GResourceFromDictionary(NSDictionary *d) {
     r.charWidth = d[@"charWidth"] ? [d[@"charWidth"] intValue] : 8;
     r.charHeight = d[@"charHeight"] ? [d[@"charHeight"] intValue] : 16;
     r.freeStrings = [(d[@"freeStrings"] ?: @[]) mutableCopy];
+    r.freeImages = [NSMutableArray array];
+    for (NSDictionary *bd in d[@"freeImages"]) {
+        GBitblk *bb = [GBitblk new];
+        bb.data = unb64(bd[@"data"]); bb.wb = [bd[@"wb"] intValue]; bb.hl = [bd[@"hl"] intValue];
+        bb.x = [bd[@"x"] intValue]; bb.y = [bd[@"y"] intValue]; bb.color = [bd[@"color"] intValue];
+        [r.freeImages addObject:bb];
+    }
     r.trees = [NSMutableArray array];
     for (NSDictionary *td in d[@"trees"]) {
         GTree *t = [GTree new];

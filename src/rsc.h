@@ -129,6 +129,18 @@ typedef struct {
     char    *text;      /* optional label */
 } RSC_PAMICON;
 
+/* A classic monochrome bitmap: 1 bit per pixel, bi_wb bytes per row, bi_hl rows,
+ * so the data is bi_wb * bi_hl bytes.  Set bits are drawn in VDI pen bi_color;
+ * clear bits are left alone (a BITBLK has no mask — it is a bit *form*).
+ *
+ * Reached two ways: a G_IMAGE object's ob_spec, and the free-image table
+ * (rsrc_gaddr(R_IMAGE, i)).  Note Rocks also uses G_IMAGE for its own embedded
+ * PAM; the two are told apart on read by the PAM's "P7" magic. */
+typedef struct {
+    uint8_t *bi_pdata;
+    int16_t  bi_wb, bi_hl, bi_x, bi_y, bi_color;
+} RSC_BITBLK;
+
 /* ---- the standard Atari colour icon (G_CICON) ---------------------------- */
 /* One colour version of an icon, at one screen depth.  The data is PLANAR and
  * palette-indexed and the mask is 1 bit per pixel — a CICONBLK cannot carry
@@ -201,10 +213,11 @@ const RSC_RGB *rsc_palette(const RSC *r);
 /* Was this file in the extended (CICONBLK-bearing) format? */
 int          rsc_is_extended(const RSC *r);
 
-/* What the file carried that this library reads past but does not yet model.
- * Non-zero means an import would be lossy if written straight back out. */
-int          rsc_nbitblks(const RSC *r);
+/* Free images: rsrc_gaddr(R_IMAGE, i) — a table of monochrome bitmaps that
+ * belongs to the resource but hangs off no object. */
 int          rsc_nfreeimages(const RSC *r);
+RSC_BITBLK  *rsc_freeimage(const RSC *r, int index);
+int          rsc_add_freeimage(RSC *r, RSC_BITBLK *bb);   /* returns its index */
 
 /* The colour icons an extended file carried.  A G_CICON object's ob_spec points
  * straight at one of these once rsc_read has resolved it. */
@@ -232,6 +245,7 @@ RSC_TEDINFO  *rsc_new_tedinfo(RSC *r);
 RSC_ICONBLK  *rsc_new_iconblk(RSC *r);
 RSC_PAMICON  *rsc_new_pamicon(RSC *r);
 RSC_CICONBLK *rsc_new_ciconblk(RSC *r);
+RSC_BITBLK   *rsc_new_bitblk(RSC *r);
 
 /* Coordinate cell used when packing/unpacking (default 8×16). */
 void rsc_set_cell(RSC *r, int cw, int ch);

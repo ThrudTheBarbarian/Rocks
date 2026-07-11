@@ -37,6 +37,15 @@ NSString *GObTypeName(GObType t) {
 }
 @end
 
+@implementation GBitblk
+- (NSImage *)image {
+    if (_cachedImage) return _cachedImage;
+    if (_data && _wb > 0 && _hl > 0)
+        _cachedImage = GImageFromBitblk(_data, _wb, _hl, _color);
+    return _cachedImage;
+}
+@end
+
 @implementation GIcon
 - (instancetype)init {
     if ((self = [super init])) { _isColor = YES; _label = @""; }
@@ -96,6 +105,7 @@ NSString *GObTypeName(GObType t) {
     }
 }
 - (BOOL)hasIcon { return _type == GT_ICON || _type == GT_CICON || _type == GT_CICONBLK || _type == GT_IMAGE; }
+- (BOOL)hasBitblk { return _type == GT_IMAGE; }
 - (BOOL)canHaveChildren {
     switch (_type) {
         case GT_BOX: case GT_IBOX: case GT_BOXTEXT: case GT_IMAGE: return YES;
@@ -138,6 +148,10 @@ NSString *GObTypeName(GObType t) {
     if (_box) { GBox *b = [GBox new];
         b.character = _box.character; b.thickness = _box.thickness; b.color = _box.color;
         n.box = b; }
+    if (_bitblk) { GBitblk *bb = [GBitblk new];
+        bb.data = _bitblk.data; bb.wb = _bitblk.wb; bb.hl = _bitblk.hl;
+        bb.x = _bitblk.x; bb.y = _bitblk.y; bb.color = _bitblk.color;
+        n.bitblk = bb; }
     if (_icon) { GIcon *ic = [GIcon new];
         ic.isColor = _icon.isColor; ic.label = _icon.label;
         ic.pam = _icon.pam; ic.externalPath = _icon.externalPath;
@@ -247,6 +261,7 @@ NSString *GObTypeName(GObType t) {
     GResource *r = [GResource new];
     r.trees = [NSMutableArray array];
     r.freeStrings = [NSMutableArray array];
+    r.freeImages = [NSMutableArray array];
     r.bigEndian = YES; r.packedCoords = YES; r.embedIcons = YES;
     r.charWidth = 8; r.charHeight = 16;
     GObject *root = [GObject objectOfType:GT_BOX frame:NSMakeRect(0, 0, 320, 200)];
@@ -261,6 +276,7 @@ NSString *GObTypeName(GObType t) {
     if ((self = [super init])) {
         _trees = [NSMutableArray array];
         _freeStrings = [NSMutableArray array];
+        _freeImages = [NSMutableArray array];
         _bigEndian = YES; _packedCoords = YES; _embedIcons = YES; _charWidth = 8; _charHeight = 16;
     }
     return self;

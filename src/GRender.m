@@ -410,7 +410,8 @@ static void strokeBox(NSRect r, int thickness, int pen) {
             break;
         }
         case GT_IMAGE: {
-            NSImage *img = [o.icon image];
+            // A classic G_IMAGE is a BITBLK bit form; Rocks' own is a PAM icon.
+            NSImage *img = o.bitblk ? [o.bitblk image] : [o.icon image];
             if (img) {
                 [img drawInRect:r fromRect:NSZeroRect operation:NSCompositingOperationSourceOver
                        fraction:1 respectFlipped:YES hints:nil];
