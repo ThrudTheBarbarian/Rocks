@@ -127,7 +127,14 @@ static inline GColorWord gcw_default(void) {
 
 @interface GObject : NSObject
 @property GObType type;
-@property uint8_t extType;   // ob_type high byte (Atari extended type). Bit 0 = rounded field.
+// The ob_type high byte, when it carries ROCKS' meaning: corner rounding (bits
+// 4-7), the "rounded field" / group-box flag (bit 0), a G_POPUP's linked tree.
+@property uint8_t extType;
+// The same byte when it came from someone ELSE's resource.  Other editors use it
+// as a free "extended type" field, so it is kept verbatim and written back out,
+// but is not allowed to mean anything here — otherwise a legacy G_BUTTON with
+// 0x12 would come in as a rounded box.  See RSC_VRSN_ROCKS in rsc.h.
+@property uint8_t legacyExtType;
 @property GFlags flags;
 @property GState state;
 @property int x, y, w, h;

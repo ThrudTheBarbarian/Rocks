@@ -60,12 +60,17 @@ check: $(CLI) $(BIN)
 	    ./$(BIN) --clicktest "$(RSC_SAMPLE)"; \
 	fi
 
-# Bundle the Aristo2 theme into the app so it renders self-contained.
+# Bundle the Aristo2 theme into the app so it renders self-contained.  If it is
+# not there the app is not shippable, so say so rather than quietly building one
+# that only works on this machine (no absolute path is baked into the source).
 theme:
 	@if [ -d "$(THEME_SRC)/Aristo2" ]; then \
 		rm -rf "$(BUNDLE)/Contents/Resources/themes/Aristo2"; \
 		mkdir -p "$(BUNDLE)/Contents/Resources/themes"; \
 		cp -R "$(THEME_SRC)/Aristo2" "$(BUNDLE)/Contents/Resources/themes/"; \
+	elif [ ! -d "$(BUNDLE)/Contents/Resources/themes/Aristo2" ]; then \
+		echo "warning: no theme at $(THEME_SRC)/Aristo2 — the app will fall back to plain GEM."; \
+		echo "         set GEM_DIR=<path to fpga-xt/gem> to bundle it."; \
 	fi
 
 # Bundle the XTOS UI font.

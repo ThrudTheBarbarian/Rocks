@@ -8,6 +8,8 @@
 #import "GTheme.h"
 #import "GImage.h"
 #import "GRender.h"
+extern NSString *GRenderFontPath(void);
+extern void GRenderFontProbe(void);
 #import "GForm.h"
 #import "GAlert.h"
 
@@ -76,6 +78,7 @@ static void ck(BOOL cond, const char *what) {
 }
 
 static void alerttests(void);
+static void exttypetests(void);
 
 static int formtest(void) {
     // a dialog: two radios, a check box, a validated field, OK (default) + Cancel
@@ -171,6 +174,7 @@ static int formtest(void) {
     ck(fields.count == 1 && fields[0] == fld, "only the editable field is in the tab order");
 
     alerttests();
+    exttypetests();
 
     printf("formtest: %d checks, %d failure(s) — %s\n", gChecks, gFails, gFails ? "FAIL" : "OK");
     return gFails ? 1 : 0;
@@ -205,6 +209,73 @@ static void alerttests(void) {
         ck([e preferredSize].width > 0 && [e preferredSize].height > 0,
            "each icon yields a drawable size");
     }
+}
+
+// The ob_type high byte means different things depending on who wrote the file.
+static void exttypetests(void) {
+    // Rocks' own file: the high byte carries our rounding flags and comes back.
+    GResource *r = [GResource emptyDialog];
+    GObject *box = r.trees[0].root;
+    box.extType = BOX_ROUND_TL | BOX_ROUND_BR;
+    GObject *fld = [GObject objectOfType:GT_FTEXT frame:NSMakeRect(8, 8, 100, 20)];
+    fld.flags |= OF_EDITABLE;
+    fld.extType = 0x01;                       // "rounded field"
+    [box.children addObject:fld];
+
+    NSString *err = nil;
+    GResource *back = GRscRead(GRscWrite(r, &err), &err);
+    ck(back != nil, "a Rocks-written resource reads back");
+    ck(back.trees[0].root.extType == (BOX_ROUND_TL | BOX_ROUND_BR),
+       "our own rounding flags survive a round-trip");
+    ck(back.trees[0].root.children[0].extType == 0x01,
+       "our own 'rounded field' flag survives");
+    ck(back.trees[0].root.legacyExtType == 0, "and is not mistaken for a legacy byte");
+
+    // Someone else's file: a legacy high byte must be KEPT but must not mean
+    // anything.  A G_BUTTON with 0x12 has bit 4 set — Rocks' BOX_ROUND_TL.
+    // A genuine legacy file has NEITHER witness, so strip both: the vrsn bit and
+    // the signature string.  (Leaving the signature in place would correctly still
+    // identify the file as ours — that is the point of having two.)
+    NSMutableData *raw = [GRscWrite(r, &err) mutableCopy];
+    uint8_t *b = raw.mutableBytes;
+    b[1] &= (uint8_t)~0x08;                   // clear RSC_VRSN_ROCKS
+    for (NSUInteger i = 0; i + 5 < raw.length; i++)
+        if (!memcmp(b + i, "RoCkS", 5)) { memcpy(b + i, "xxxxx", 5); break; }
+    GResource *legacy = GRscRead(raw, &err);
+    ck(legacy != nil, "a legacy resource still reads");
+    ck(legacy.trees[0].root.extType == 0,
+       "a legacy high byte does NOT become rounding");
+    ck(legacy.trees[0].root.legacyExtType == (BOX_ROUND_TL | BOX_ROUND_BR),
+       "...it is preserved verbatim instead");
+    ck(legacy.trees[0].root.children[0].extType == 0,
+       "a legacy G_FTEXT is not misread as a rounded field");
+
+    // and writing it back hands the byte straight back, unchanged
+    GResource *again = GRscRead(GRscWrite(legacy, &err), &err);
+    ck(again.trees[0].root.extType == (BOX_ROUND_TL | BOX_ROUND_BR),
+       "re-exported by Rocks, the byte is intact (and now ours to read)");
+
+    // ---- the signature -----------------------------------------------------
+    GResource *sig = [GResource emptyDialog];
+    [sig.freeStrings addObject:@"Hello"];
+    [sig.freeStrings addObject:@"World"];
+    GResource *s1 = GRscRead(GRscWrite(sig, &err), &err);
+    ck(s1.freeStrings.count == 2, "the signature does not leak into the string table");
+    ck([s1.freeStrings[0] isEqualToString:@"Hello"], "free-string indices are unshifted");
+    ck(GRscLastSignature() != nil, "the signature is read back");
+    ck(GRscLastFileVersion() == 1, "and carries the file-format version");
+
+    // repeated round-trips must not pile signatures up
+    GResource *s2 = GRscRead(GRscWrite(s1, &err), &err);
+    GResource *s3 = GRscRead(GRscWrite(s2, &err), &err);
+    ck(s3.freeStrings.count == 2, "signatures do not accumulate across round-trips");
+
+    // a legacy file has none
+    GRscRead(GRscWrite(sig, &err), &err);
+    NSMutableData *nosig = [GRscWrite(sig, &err) mutableCopy];
+    ((uint8_t *)nosig.mutableBytes)[1] &= (uint8_t)~0x08;
+    GRscRead(nosig, &err);
+    ck(GRscLastSignature() != nil, "clearing only the vrsn bit still leaves the signature");
 }
 
 // Rocks --clicktest <file.rsc> — drive a REAL resource through the same sequence
@@ -430,6 +501,25 @@ static int alertshot(const char *out) {
     return 0;
 }
 
+// Rocks --resources — say where the theme and font were actually loaded from.
+// A built .app must find both inside itself; anything else means it is not
+// shippable, which is easy to miss on the machine that built it.
+static int resourcecheck(void) {
+    NSString *bundle = [[NSBundle mainBundle] bundlePath];
+    NSString *theme = [GTheme loadedFrom];
+    NSString *font  = GRenderFontPath();
+    printf("bundle: %s\n", bundle.UTF8String);
+    printf("theme : %s\n", theme.UTF8String ?: "NOT FOUND (falls back to plain GEM drawing)");
+    GRenderFontProbe();
+    font = GRenderFontPath();
+    printf("font  : %s\n", font.UTF8String ?: "NOT FOUND (falls back to the system font)");
+
+    BOOL inBundle = theme && [theme hasPrefix:bundle] && font && [font hasPrefix:bundle];
+    printf("%s\n", inBundle ? "self-contained — safe to hand to someone else"
+                             : "NOT self-contained — loaded from outside the .app");
+    return inBundle ? 0 : 1;
+}
+
 // Rocks --slice <name> renders that theme slice at several sizes to scratch.
 static int sliceTest(const char *name) {
     GTheme *th = [GTheme defaultTheme];
@@ -472,6 +562,9 @@ int main(int argc, const char *argv[]) {
     }
     if (argc > 2 && strcmp(argv[1], "--clicktest") == 0) {
         @autoreleasepool { return clicktest(argv[2]); }
+    }
+    if (argc > 1 && strcmp(argv[1], "--resources") == 0) {
+        @autoreleasepool { return resourcecheck(); }
     }
     if (argc > 2 && strcmp(argv[1], "--alerts") == 0) {
         @autoreleasepool { return alertshot(argv[2]); }

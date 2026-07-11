@@ -22,6 +22,12 @@ Requires the Xcode command-line toolchain (clang). No Xcode project, no XIB — 
 UI is built in code. The theme, the UI font and the `make check` sample come from
 a sibling `fpga-xt/gem` checkout; override its location with `GEM_DIR=<path>`.
 
+The theme and font are **copied into the .app**, so a built Rocks is self-contained
+and can be handed to someone else. `Rocks --resources` says where each was actually
+loaded from and fails if either came from outside the bundle — no absolute path is
+baked into the source, so a broken bundle can't quietly keep working on the machine
+that built it. Running from a source tree, `ROCKS_GEM_DIR` points at a gem checkout.
+
 ## Window
 
 - **Palette (left):** drag a widget type onto the canvas to create it.

@@ -108,6 +108,10 @@ static void fillBitblk(RSC *r, RSC_BITBLK *bb, GBitblk *g) {
 
 // ---- read: C OBJECT tree -> GObject --------------------------------------
 
+// Set for the duration of one GRscRead: did we write this file?  If not, its
+// ob_type high byte is somebody else's extended type, not our flags.
+static BOOL gFileIsRocks = NO;
+
 static GObject *buildG(RSC_OBJECT *objs, int base, int rel, int nobj) {
     int idx = base + rel;
     if (idx < 0 || idx >= nobj) return nil;
@@ -115,7 +119,9 @@ static GObject *buildG(RSC_OBJECT *objs, int base, int rel, int nobj) {
     GObject *g = [GObject new];
     int t = o->ob_type & 0xFF;
     g.type = (GObType)t;
-    g.extType = (o->ob_type >> 8) & 0xFF;
+    uint8_t hi = (o->ob_type >> 8) & 0xFF;
+    if (gFileIsRocks) g.extType = hi;      // our own rounding / popup-link flags
+    else              g.legacyExtType = hi; // someone else's extended type: keep, ignore
     g.flags = (GFlags)o->ob_flags;
     g.state = (GState)o->ob_state;
     g.x = o->ob_x; g.y = o->ob_y; g.w = o->ob_w; g.h = o->ob_h;
@@ -180,8 +186,24 @@ static GObject *buildG(RSC_OBJECT *objs, int base, int rel, int nobj) {
     return g;
 }
 
+NSString *const GRscSignaturePrefix = @"RoCkS;";
+
+// Bump ROCKS_FILE_VERSION when the on-disk meaning of anything changes, so a
+// future Rocks can tell what it is looking at rather than guessing.
+#define ROCKS_EDITOR_VERSION "1.0"
+#define ROCKS_FILE_VERSION   1
+
 static NSString *gImportWarning = nil;
+static NSString *gSignature = nil;
+static int gFileVersion = 0;
 NSString *GRscLastImportWarning(void) { return gImportWarning; }
+NSString *GRscLastSignature(void) { return gSignature; }
+int GRscLastFileVersion(void) { return gFileVersion; }
+
+static NSString *rocksSignature(void) {
+    return [NSString stringWithFormat:@"%@v=%s;f=%d",
+            GRscSignaturePrefix, ROCKS_EDITOR_VERSION, ROCKS_FILE_VERSION];
+}
 
 GResource *GRscRead(NSData *data, NSString **err) {
     const char *cerr = NULL;
@@ -196,12 +218,35 @@ GResource *GRscRead(NSData *data, NSString **err) {
     res.trees = [NSMutableArray array];
     res.bigEndian = YES; res.packedCoords = YES; res.charWidth = 8; res.charHeight = 16;
     setPalette(rsc_palette(r));            // used while expanding CICONBLKs below
+    int nobjAll = 0;
+    RSC_OBJECT *objsAll = rsc_objects(r, &nobjAll);
 
     // Free strings belong to no object; without this they are simply lost.
     NSMutableArray *fs = [NSMutableArray array];
     for (int i = 0; i < rsc_nstrings(r); i++)
         [fs addObject:NSStr(rsc_string(r, i))];
+    // Our signature rides as the last free string; take it back off so it never
+    // reaches the user's string table or the export.
+    gSignature = nil; gFileVersion = 0;
+    if (fs.count && [fs.lastObject hasPrefix:GRscSignaturePrefix]) {
+        gSignature = fs.lastObject;
+        for (NSString *kv in [gSignature componentsSeparatedByString:@";"])
+            if ([kv hasPrefix:@"f="]) gFileVersion = [kv substringFromIndex:2].intValue;
+        [fs removeLastObject];
+    }
     res.freeStrings = fs;
+
+    // Three independent witnesses that the ob_type high byte is ours.  The vrsn
+    // bit survives a string rewrite; the signature survives a header rewrite; and
+    // the extended widget types (G_CHECKBOX..G_PAMICON, 40..44) simply cannot
+    // occur in anyone else's resource — which is what identifies the fpga-xt
+    // resources written before the marker existed.
+    BOOL hasOurTypes = NO;
+    for (int i = 0; i < nobjAll && !hasOurTypes; i++) {
+        int t = objsAll[i].ob_type & 0xFF;
+        if (t >= G_CHECKBOX && t <= G_PAMICON) hasOurTypes = YES;
+    }
+    gFileIsRocks = (rsc_is_rocks(r) != 0) || (gSignature != nil) || hasOurTypes;
 
     NSMutableArray *fi = [NSMutableArray array];
     for (int i = 0; i < rsc_nfreeimages(r); i++) {
@@ -249,6 +294,7 @@ NSData *GRscWrite(GResource *res, NSString **err) {
     // Free strings and free images belong to no object, so they have to be handed
     // over explicitly or they would be dropped on write.
     for (NSString *fs in res.freeStrings) rsc_add_string(r, dupLatin1(r, fs));
+    rsc_add_string(r, dupLatin1(r, rocksSignature()));   // last: indices above are untouched
     for (GBitblk *g in res.freeImages) {
         RSC_BITBLK *bb = rsc_new_bitblk(r);
         fillBitblk(r, bb, g);
@@ -265,7 +311,8 @@ NSData *GRscWrite(GResource *res, NSString **err) {
             GObject *g = flat[i].obj;
             RSC_OBJECT *o = &objs[base + i];
             int t = g.type;
-            o->ob_type  = (uint16_t)(((g.extType & 0xFF) << 8) | (t & 0xFF));
+            uint8_t hi = g.extType ?: g.legacyExtType;   // ours if set, else theirs, unchanged
+            o->ob_type  = (uint16_t)((hi << 8) | (t & 0xFF));
             o->ob_flags = g.flags;
             o->ob_state = g.state;
             o->ob_x = g.x; o->ob_y = g.y; o->ob_w = g.w; o->ob_h = g.h;

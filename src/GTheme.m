@@ -16,15 +16,30 @@ typedef struct {
     int _nslices;
 }
 
+// Where to look for the theme, in order.  The bundled copy comes first and is
+// the only one that matters for a built .app — `make` copies it in and fails if
+// it cannot.  The rest are conveniences for running out of a source tree; set
+// ROCKS_GEM_DIR to point at an fpga-xt/gem checkout.  No absolute path is baked
+// in: one would only mask a broken bundle on the machine that built it.
 + (NSArray<NSString *> *)candidateDirs {
     NSMutableArray *c = [NSMutableArray array];
     NSString *bundled = [[NSBundle mainBundle] pathForResource:@"1x" ofType:nil
                                                    inDirectory:@"themes/Aristo2"];
     if (bundled) [c addObject:bundled];
-    [c addObject:@"/Users/simon/src/fpga-xt/gem/themes/Aristo2/1x"];
+    NSString *gem = NSProcessInfo.processInfo.environment[@"ROCKS_GEM_DIR"];
+    if (gem.length) [c addObject:[gem stringByAppendingPathComponent:@"themes/Aristo2/1x"]];
     [c addObject:@"../fpga-xt/gem/themes/Aristo2/1x"];
     [c addObject:@"../../fpga-xt/gem/themes/Aristo2/1x"];
+    [c addObject:@"../../../fpga-xt/gem/themes/Aristo2/1x"];
     return c;
+}
+
+// Which one we actually loaded (or nil) — see Rocks --resources.
++ (NSString *)loadedFrom {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *dir in [self candidateDirs])
+        if ([fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"theme.ini"]]) return dir;
+    return nil;
 }
 
 + (GTheme *)defaultTheme {

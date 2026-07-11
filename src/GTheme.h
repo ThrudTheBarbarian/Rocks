@@ -11,6 +11,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Locate & load the default theme (bundle Resources, then ../fpga-xt/gem/themes).
 + (nullable GTheme *)defaultTheme;
+// Where the theme was found, for diagnostics (Rocks --resources).
++ (nullable NSString *)loadedFrom;
 - (nullable instancetype)initWithDir:(NSString *)dir;
 
 - (BOOL)hasSlice:(NSString *)name;

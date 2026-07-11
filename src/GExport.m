@@ -268,6 +268,13 @@ static NSString *padTo(NSString *s, NSUInteger w) {
     return o;
 }
 
+// The ob_type high byte: ours if we have one, else the legacy byte handed back
+// untouched — exactly what GRscWrite does.  See RSC_VRSN_ROCKS in rsc.h.
+static uint16_t obTypeWord(GObject *o) {
+    uint8_t hi = o.extType ?: o.legacyExtType;
+    return (uint16_t)((hi << 8) | (o.type & 0xFF));
+}
+
 // The inline box word: (char << 24) | (thickness << 16) | colour.
 static uint32_t boxWord(GObject *o) {
     GBox *b = o.box ?: [GBox new];
@@ -543,8 +550,7 @@ NSString *GExportCSource(GResource *res, NSString *stem) {
 
             [s appendFormat:@"    { %4d, %4d, %4d, 0x%04X, 0x%04X, 0x%04X, %@ %4d, %4d, %4d, %4d },"
                              "  /* %@ */\n",
-                nx, hd, tl,
-                (uint16_t)(((o.extType & 0xFF) << 8) | (o.type & 0xFF)),
+                nx, hd, tl, obTypeWord(o),
                 (uint16_t)o.flags, (uint16_t)o.state,
                 padTo([spec stringByAppendingString:@","], 33),
                 o.x, o.y, o.w, o.h, xt.syms[i]];
@@ -740,8 +746,7 @@ NSString *GExportXtc(GResource *res, NSString *stem) {
             // A box word is a plain integer, so it folds here — no fixup needed.
             NSString *spec = specIsBox(o) ? [NSString stringWithFormat:@"$%08X", boxWord(o)] : @"0";
             [s appendFormat:@"    { %4d, %4d, %4d, $%04X, $%04X, $%04X, %@ %4d, %4d, %4d, %4d }%@  // %@\n",
-                nx, hd, tl,
-                (uint16_t)(((o.extType & 0xFF) << 8) | (o.type & 0xFF)),
+                nx, hd, tl, obTypeWord(o),
                 (uint16_t)o.flags, (uint16_t)o.state,
                 padTo([spec stringByAppendingString:@","], 10),
                 o.x, o.y, o.w, o.h,

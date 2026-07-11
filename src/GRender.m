@@ -12,22 +12,35 @@ static GTheme *gTheme(void) {
 }
 
 // The XTOS/GEM UI font (fonts/AovelSansRounded.ttf), loaded without registering.
+NSString *GRenderFontPath(void);      // which font file we actually loaded
+void GRenderFontProbe(void);          // force the font load (Rocks --resources)
+static NSString *gFontPath = nil;
+NSString *GRenderFontPath(void) { return gFontPath; }
+
+void GRenderFontProbe(void);
+static NSFont *gUIFont(CGFloat size);
+void GRenderFontProbe(void) { (void)gUIFont(12); }
+
 static NSFont *gUIFont(CGFloat size) {
     static CGFontRef cg; static BOOL tried;
     if (!tried) {
         tried = YES;
+        // Bundled first (see GTheme +candidateDirs — no absolute path is baked in).
         NSMutableArray *cands = [NSMutableArray array];
         NSString *b = [[NSBundle mainBundle] pathForResource:@"AovelSansRounded" ofType:@"ttf" inDirectory:@"fonts"];
         if (b) [cands addObject:b];
-        [cands addObjectsFromArray:@[@"/Users/simon/src/fpga-xt/gem/fonts/AovelSansRounded.ttf",
-                                     @"../fpga-xt/gem/fonts/AovelSansRounded.ttf"]];
+        NSString *gem = NSProcessInfo.processInfo.environment[@"ROCKS_GEM_DIR"];
+        if (gem.length) [cands addObject:[gem stringByAppendingPathComponent:@"fonts/AovelSansRounded.ttf"]];
+        [cands addObjectsFromArray:@[@"../fpga-xt/gem/fonts/AovelSansRounded.ttf",
+                                     @"../../fpga-xt/gem/fonts/AovelSansRounded.ttf",
+                                     @"../../../fpga-xt/gem/fonts/AovelSansRounded.ttf"]];
         for (NSString *p in cands) {
             NSData *dat = [NSData dataWithContentsOfFile:p];
             if (!dat) continue;
             CGDataProviderRef dp = CGDataProviderCreateWithCFData((__bridge CFDataRef)dat);
             cg = CGFontCreateWithDataProvider(dp);
             CGDataProviderRelease(dp);
-            if (cg) break;
+            if (cg) { gFontPath = p; break; }
         }
     }
     if (cg) return (__bridge_transfer NSFont *)CTFontCreateWithGraphicsFont(cg, size, NULL, NULL);

@@ -31,6 +31,7 @@ static NSDictionary *objToDict(GObject *o) {
     NSMutableDictionary *m = [NSMutableDictionary dictionary];
     m[@"type"] = @(o.type); m[@"flags"] = @(o.flags); m[@"state"] = @(o.state);
     if (o.extType) m[@"extType"] = @(o.extType);
+    if (o.legacyExtType) m[@"legacyExtType"] = @(o.legacyExtType);
     m[@"x"] = @(o.x); m[@"y"] = @(o.y); m[@"w"] = @(o.w); m[@"h"] = @(o.h);
     if (o.text) m[@"text"] = o.text;
     if (o.name.length) m[@"name"] = o.name;
@@ -79,6 +80,7 @@ static GObject *objFromDict(NSDictionary *d) {
     GObject *o = [GObject new];
     o.type = (GObType)[d[@"type"] intValue];
     o.extType = (uint8_t)[d[@"extType"] intValue];
+    o.legacyExtType = (uint8_t)[d[@"legacyExtType"] intValue];
     o.flags = (GFlags)[d[@"flags"] intValue];
     o.state = (GState)[d[@"state"] intValue];
     o.x = [d[@"x"] intValue]; o.y = [d[@"y"] intValue];

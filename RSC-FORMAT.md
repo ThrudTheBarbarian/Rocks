@@ -141,9 +141,35 @@ round-trip.
   `0x40` bottom-right, `0x80` bottom-left (`0xF0` = all). Cosmetic; a plain
   loader draws square corners.
 
-On **import**, Rocks preserves this byte for all types **except** editable
-fields, where a legacy `border_color` value there would otherwise be
-misinterpreted as "rounded" (borders are theme-drawn now).
+### Provenance: whose byte is it?
+
+The AES masks `ob_type & 0xFF` and ignores the high byte, so **other editors have
+long used it as a free "extended type" field**. A scan of 112 real resources finds
+it non-zero on `G_BOX`, `G_IBOX`, `G_BUTTON`, `G_BOXTEXT` and `G_STRING`, with
+values `0x02`–`0x13`. Read as Rocks flags, **75 of those objects become spuriously
+rounded boxes or "rounded" fields** — a legacy `G_BUTTON` carrying `0x12` has bit 4
+set, which is `BOX_ROUND_TL`.
+
+So the byte only carries the meanings above when the file says it does. Rocks
+recognises its own work by any of three independent witnesses:
+
+- **`rsh_vrsn` bit 3** (`RSC_VRSN_ROCKS = 0x0008`) — survives a rewrite of the
+  string table.
+- **a signature as the LAST free string**, `RoCkS;v=<editor>;f=<file format>` —
+  survives a rewrite of the header, and carries versions for future migrations.
+  Last, not first, because free strings are indexed (`rsrc_gaddr(R_STRING, i)`):
+  prepending one would shift every index an app already relies on. Rocks strips it
+  on read, so it never appears in the string table or the generated header.
+- **an extended widget type** (`G_CHECKBOX`…`G_PAMICON`, 40–44) anywhere in the
+  file — these cannot occur in anyone else's resource, which is what identifies
+  the fpga-xt resources written before the marker existed.
+
+With **none** of them the file is someone else's: the high byte is kept
+verbatim and written back unchanged, but is not allowed to mean anything here.
+
+*(An earlier version of this section claimed the byte was dropped only for
+editable fields. That was wrong twice over — the clash is not confined to fields,
+and the code did not do it.)*
 
 ---
 

@@ -21,4 +21,16 @@ NSData    * _Nullable GRscWrite(GResource *r, NSString * _Nullable * _Nullable e
 // never be silently lossy.
 NSString *_Nullable GRscLastImportWarning(void);
 
+// Rocks stamps a signature as the LAST free string:
+//
+//     RoCkS;v=<editor version>;f=<file format version>
+//
+// Last, not first, because free strings are indexed — rsrc_gaddr(R_STRING, i) —
+// so prepending one would shift every index an app already relies on.  It is
+// stripped on read, so it never shows up as a user string or in the export.
+// After a GRscRead this says what wrote the file, or nil.
+extern NSString *const GRscSignaturePrefix;
+NSString *_Nullable GRscLastSignature(void);      // e.g. "RoCkS;v=1.0;f=1"
+int GRscLastFileVersion(void);                    // the f= value, or 0
+
 NS_ASSUME_NONNULL_END

@@ -16,6 +16,7 @@ struct RSC {
     int cell_w, cell_h;
     /* extended format (rsh_vrsn & RSC_VRSN_EXTENDED) */
     int            extended;
+    int            rocks;      /* rsh_vrsn & RSC_VRSN_ROCKS: our own ob_type high byte */
     RSC_CICONBLK **cib;     int ncib;       /* indexed by a G_CICON's ob_spec */
     RSC_RGB       *palette;                 /* 256 entries, or NULL */
     /* free strings: rsrc_gaddr(R_STRING, i) */
@@ -248,6 +249,7 @@ static RSC *try_parse(const uint8_t *p, size_t len, int be) {
     uint32_t objBase = h[1], tedBase = h[2], ibBase = h[3], trindex = h[9];
     int nobs = h[10], ntree = h[11];
     uint16_t rssize = h[17];
+    int rocks = (h[0] & RSC_VRSN_ROCKS) != 0;
 
     /* A cursor/image bank (EmuTOS's mform.rsc, emucurs*.rsc) has NO object trees
      * at all — just a free-image table.  Accept that, as long as it carries
@@ -264,6 +266,7 @@ static RSC *try_parse(const uint8_t *p, size_t len, int be) {
 
     RSC *r = rsc_new();
     if (!r) return NULL;
+    r->rocks = rocks;
     if (nobs > 0) {                       /* calloc(0, n) may legitimately return NULL */
         r->obj = (RSC_OBJECT *)calloc(nobs, sizeof(RSC_OBJECT));
         if (!r->obj) { rsc_free(r); return NULL; }
@@ -503,7 +506,7 @@ int rsc_write(const RSC *r, uint8_t **out_p, size_t *out_len, const char **err) 
 
     /* header */
     uint16_t hdr[18] = {0};
-    hdr[0]=0; hdr[1]=(uint16_t)objBase; hdr[2]=(uint16_t)tedBase; hdr[3]=(uint16_t)ibBase;
+    hdr[0]=RSC_VRSN_ROCKS; hdr[1]=(uint16_t)objBase; hdr[2]=(uint16_t)tedBase; hdr[3]=(uint16_t)ibBase;
     hdr[4]=(uint16_t)bbBase; hdr[5]=(uint16_t)frstr; hdr[6]=(uint16_t)strBase; hdr[7]=(uint16_t)imBase;
     hdr[8]=(uint16_t)frimg; hdr[9]=(uint16_t)trindex; hdr[10]=(uint16_t)nobs; hdr[11]=(uint16_t)ntree;
     hdr[12]=(uint16_t)nted; hdr[13]=(uint16_t)nib; hdr[14]=(uint16_t)nbb;
@@ -647,6 +650,7 @@ RSC_PAMICON  *rsc_new_pamicon(RSC *r)  { return arena_alloc(r, sizeof(RSC_PAMICO
 RSC_CICONBLK *rsc_new_ciconblk(RSC *r) { return arena_alloc(r, sizeof(RSC_CICONBLK)); }
 
 int rsc_is_extended(const RSC *r) { return r ? r->extended : 0; }
+int rsc_is_rocks(const RSC *r)    { return r ? r->rocks : 0; }
 const RSC_RGB *rsc_palette(const RSC *r) { return r ? r->palette : NULL; }
 
 int rsc_nstrings(const RSC *r) { return r ? r->nstring : 0; }

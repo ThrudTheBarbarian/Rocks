@@ -85,6 +85,21 @@ enum { G_BOX = 20, G_TEXT = 21, G_BOXTEXT = 22, G_IMAGE = 23, G_USERDEF = 24,
  * tables — every RSHDR offset is a 16-bit word — it only lets the icon data,
  * which is reached through 32-bit offsets, live beyond it. */
 #define RSC_VRSN_EXTENDED 0x0004
+
+/* rsh_vrsn bit 3: WE wrote this file.
+ *
+ * Rocks reuses the ob_type HIGH byte for its own meaning (corner rounding, the
+ * "rounded field" / group-box flag, a G_POPUP's linked-tree index — see
+ * RSC-FORMAT.md §5).  But the classic AES masks ob_type & 0xFF and ignores the
+ * high byte, so other editors have long used it as a free "extended type" field:
+ * a scan of 112 real resources finds it non-zero on G_BOX, G_IBOX, G_BUTTON,
+ * G_BOXTEXT and G_STRING, with values 0x02..0x13.  Reading those as Rocks flags
+ * turns 75 of them into spuriously rounded boxes and fields.
+ *
+ * So the high byte only carries Rocks' meaning when this bit says so.  In a file
+ * without it the byte is preserved verbatim (and written back unchanged) but is
+ * not allowed to mean anything. */
+#define RSC_VRSN_ROCKS 0x0008
 /* Flag/state constants.  Define RSC_NO_STATE_FLAGS before including this header
  * if your project already provides the OF_, OS_ and BOX_ROUND_ constants (e.g.
  * from an AES header), to avoid a redefinition. */
@@ -212,6 +227,9 @@ const RSC_RGB *rsc_palette(const RSC *r);
 
 /* Was this file in the extended (CICONBLK-bearing) format? */
 int          rsc_is_extended(const RSC *r);
+/* Did WE write it?  If not, the ob_type high byte is a legacy extended-type value
+ * and must not be read as Rocks' rounding / popup-link flags. */
+int          rsc_is_rocks(const RSC *r);
 
 /* Free images: rsrc_gaddr(R_IMAGE, i) — a table of monochrome bitmaps that
  * belongs to the resource but hangs off no object. */
