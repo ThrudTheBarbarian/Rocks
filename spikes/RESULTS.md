@@ -58,3 +58,51 @@ void gem_shutdown(void);
 `aesdesk.c`, `desktop.c` and `gemtext.c` all copy-paste the same ~20-line bootstrap
 today, so this is worth doing on its own merits. But it is **not** the fix — with the
 syscalls exported, xtc can do the bootstrap itself. Do the XTOS one first.
+
+---
+
+## Phase 1 complete: a real GEM window, driven from xtc
+
+`xtg/test_window.xt`, run on the loader:
+
+```
+sizeof(theme) = 19502 bytes (via DWARF)
+GEM booted from xtc: 200x120, vdi handle 2
+userdraw invoked 2 time(s)   (the AES called our xtc code)
+G_USERDEF is at 17,43  (screen is 200x120)
+pixel inside the G_USERDEF = FF0000FF
+PASS: the AES called our xtc drawRect, and it painted pixels.
+      The G_BUTTON next to it was drawn by GEM, themed, for free.
+```
+
+The full chain, with nothing stubbed:
+
+```
+  sys_fb_info / sys_fb_wallpaper   (libxtos.so — the new export)
+    -> vdi_init -> v_opnvwk -> theme_load -> aes_init -> appl_init
+    -> wind_create -> wind_content -> wind_open
+    -> wind_redraw_win                       (the new per-window damage path)
+       -> the AES's content callback (an xtc free function)
+          -> objc_draw walks OUR tree
+             |- G_BUTTON   -> GEM themes it.  We wrote no drawing code.
+             '- G_USERDEF  -> objc_set_userdraw -> our xtc drawRect -> VDI -> pixels
+```
+
+**One fix needed: build `libxtos.so` with `-g`.**
+
+`PROGCFLAGS`/`ARMCFLAGS` carry no `-g`, so `libxtos.so` ships without DWARF, and:
+
+```
+xtc: warning: 'libxtos.so' carries no DWARF — imported names are untyped
+error: Call to undeclared function 'sys_fb_info'
+```
+
+"Untyped" means *unusable*: `#import <xtos>` finds the library but exposes nothing,
+so nothing can call it. Hand-declaring the prototypes does not help — that makes
+them plain externs bound to no library, so no `DT_NEEDED` is recorded and the loader
+cannot resolve them either. `libGEM.so` already builds with `-g`; `libxtos.so` needs
+the same. (Rebuilt locally with `-g` to unblock; the Makefile change is one word.)
+
+The DWARF import is also what saved this from a silent heap smash: `theme` is
+**19502 bytes** (256 slices). Guessing a `malloc(4096)` for it, as I first did, would
+have corrupted the heap. With the type imported, `theme gTheme;` is simply correct.
