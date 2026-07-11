@@ -1,0 +1,33 @@
+#import <Stdio.xt>
+
+typedef void act_t(Object@ sender);
+
+class Callee : Object
+{
+    i32 tag;
+    void init(i32 t) { tag = t; }
+    void ping(Object@ sender) { Stdio.printf("  ping from tag %d\n", (i16)tag); }
+    void dealloc(void) { Stdio.printf("  Callee(%d) DEALLOC\n", (i16)tag); }
+}
+
+// Does a ^ field retain its receiver?
+class Holder : Object
+{
+    act_t^ action;
+    void init(void) { }
+    void fire(void) { if (action) { action((Object@)0); } }
+}
+
+void main(void)
+{
+    Stdio.printf("A: bind, then drop the only other ref to the callee\n");
+    Holder@ h = new Holder();
+    {
+        Callee@ c = new Callee((i32)1);
+        h.action = &c.ping;
+    }                                 // c goes out of scope here
+    Stdio.printf("   scope exited. firing:\n");
+    h.fire();                         // safe iff ^ retained; dangling iff it did not
+
+    Stdio.printf("B: can a ^ field be declared weak?\n");
+}

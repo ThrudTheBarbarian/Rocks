@@ -1,0 +1,33 @@
+#import <Stdio.xt>
+typedef void act_t(Object@ sender);
+
+class Callee : Object
+{
+    i32 tag;
+    void init(i32 t) { tag = t; }
+    void ping(Object@ sender) { Stdio.printf("    ping tag=%d\n", (i16)tag); }
+    void dealloc(void) { Stdio.printf("    Callee(%d) dealloc\n", (i16)tag); }
+}
+
+class Holder : Object
+{
+    weak: act_t^ waction;
+    void init(void) { }
+    void fire(void) {
+        if (waction) { Stdio.printf("  waction tests TRUE  -> calling\n"); waction((Object@)0); }
+        else         { Stdio.printf("  waction tests FALSE -> target is gone, correctly skipped\n"); }
+    }
+}
+
+void main(void)
+{
+    Holder@ h = new Holder();
+    {
+        Callee@ c = new Callee((i32)7);
+        h.waction = &c.ping;
+        Stdio.printf("bound, target alive:\n");
+        h.fire();
+    }
+    Stdio.printf("target released:\n");
+    h.fire();
+}

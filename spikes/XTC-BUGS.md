@@ -143,6 +143,92 @@ The `^` bound-method work supersedes this entirely (`&controller.onClick`), whic
 exactly why it is the highest-value language ask. Until then, `&` on a member should
 at least be an **error**, not a note.
 
+> **LANDED** (`ef5837e`, Task #590). `^` works, and so does `@`→`^` widening. See the
+> next section — it delivers more than was asked for, and carries one sharp edge.
+
+---
+
+## `^` bound methods: landed, and better than the ask
+
+`spikes/bound_weak.xt`, `spikes/bound_unowned.xt` (arm64):
+
+| | |
+|---|---|
+| `act_t^ h = &t.onClick;` | **works** — receiver captured, virtual dispatch |
+| `act_t^ p = &plainFn;` | **works** — `@`→`^` widening, a plain fn fills a bound slot |
+| `if (h)` on a null bound ptr | **works** — tests false |
+| `sizeof(act_t^)` | 16 on arm64 — two words, `(recv, code)`, as designed |
+
+### The prize: `weak: act_t^`
+
+It parses **and it auto-zeroes**:
+
+```
+bound, target alive:
+  waction tests TRUE  -> calling
+    ping tag=7
+    Callee(7) dealloc          <- last strong ref released
+target released:
+  waction tests FALSE -> target is gone, correctly skipped
+```
+
+One feature, two contracts, and they turn out to be the same contract:
+
+- **AppKit target/action.** A control must not keep its target alive, or
+  `window → viewtree → button → action → window` is a retain cycle. AppKit needs a
+  separate weak `target` field to break it. Here it is one field.
+- **The optional delegate.** `if (h)` reads as *"not implemented"* **and** *"the
+  delegate has died"* with the same syntax and no extra machinery — exactly the
+  `windowShouldClose` question that started this.
+
+`XGControl` can drop its hand-rolled `(target, action)` pair for a single
+`weak: XGAction^`.
+
+### Gap F — a **non**-weak `^` is a silent use-after-free
+
+`spikes/bound_unowned.xt`:
+
+```c
+Holder@ h = new Holder();
+{
+    Callee@ c = new Callee((i32)1);
+    h.action = &c.ping;         // plain (non-weak) act_t^ field
+}                               // c's last strong ref dies here
+h.fire();                       // <- calls through a dangling receiver
+```
+
+```
+  Callee(1) DEALLOC
+   scope exited. firing:
+  ping from tag 0               <- read freed memory, printed garbage, did not crash
+```
+
+So a bare `^` field is **unowned and non-zeroing**: it neither retains its receiver
+nor notices when the receiver dies. It is not a dangling *pointer* in the usual sense
+either — `if (action)` still tests **true**, because the truth test is on `code`, and
+`code` is fine. Only `recv` is dead.
+
+That last detail is the sharp part. The one guard a programmer would reach for is the
+guard that does not work.
+
+**Suggested fix, in preference order:**
+
+1. **Make `^` retain its receiver** (strong by default, like every other `@` in xtc),
+   so `weak:` remains the opt-out and the default is safe. This is what ARC does
+   everywhere else in the language, and the surprise here is precisely that `^` does
+   *not* follow the rule the rest of the language taught.
+2. Failing that, **warn** on a non-weak `^` field whose receiver is an ARC object.
+3. At minimum, **document** it — because right now the safe form (`weak:`) is the
+   *less* obvious one, and the obvious form silently reads freed memory.
+
+Note the interaction with widening: a widened plain function carries its code pointer
+in `recv`, so "zero the recv" cannot be the weak-zeroing implementation — it must zero
+the **pair** (or at least `code`), or a zeroed weak bound-pointer would still test true
+and jump through null. The implementation evidently already gets this right; it is
+recorded here because it is the non-obvious constraint on any future change.
+
+---
+
 ### Cleared, for the record
 
 While chasing an Xtg DATA-ABORT I suspected three compiler causes and **disproved all
