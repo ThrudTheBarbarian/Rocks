@@ -324,13 +324,16 @@ static int imageshot(const char *rsc, const char *out) {
     [NSGraphicsContext saveGraphicsState]; [NSGraphicsContext setCurrentContext:gc];
     [[NSColor colorWithWhite:0.75 alpha:1] set]; NSRectFill(NSMakeRect(0,0,W,H));
 
+    [NSGraphicsContext currentContext].imageInterpolation = NSImageInterpolationNone;
     for (int i = 0; i < (int)bbs.count; i++) {
         NSImage *img = [bbs[i] image];
         if (!img) continue;
         int cx = (i % cols) * cell, cy = (i / cols) * cell;
         NSSize s = img.size;
-        CGFloat sc = MIN(1.0, MIN((cell-8) / s.width, (cell-8) / s.height));
-        [img drawInRect:NSMakeRect(cx + 4, H - cy - 4 - s.height*sc, s.width*sc, s.height*sc)
+        // scale up to fill the cell (a 16x16 cursor is unreadable at 1:1)
+        CGFloat sc = MIN((cell - 8) / s.width, (cell - 8) / s.height);
+        CGFloat dw = s.width * sc, dh = s.height * sc;
+        [img drawInRect:NSMakeRect(cx + (cell - dw)/2, H - cy - (cell + dh)/2, dw, dh)
                fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1];
     }
     [NSGraphicsContext restoreGraphicsState];

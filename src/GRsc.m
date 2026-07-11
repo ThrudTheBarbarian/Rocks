@@ -223,6 +223,20 @@ GResource *GRscRead(NSData *data, NSString **err) {
         if (t.root) [res.trees addObject:t];
     }
     rsc_free(r);
+
+    // A cursor / image bank (EmuTOS's mform.rsc, emucurs*.rsc) has no object trees
+    // at all — just a free-image table.  The editor needs somewhere to stand, and
+    // a .rsc needs at least one tree to be valid, so give it an empty dialog: the
+    // images are the point, and writing back out then produces a loadable file.
+    if (!res.trees.count && (res.freeImages.count || res.freeStrings.count)) {
+        GTree *t = [GTree new];
+        t.name = @"TREE0";
+        t.kind = GK_DIALOG;
+        GObject *root = [GObject objectOfType:GT_BOX frame:NSMakeRect(0, 0, 320, 200)];
+        root.flags = OF_LASTOB;
+        t.root = root;
+        [res.trees addObject:t];
+    }
     return res.trees.count ? res : nil;
 }
 

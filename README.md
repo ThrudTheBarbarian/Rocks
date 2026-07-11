@@ -139,6 +139,12 @@ G_CICON(44)`.
   pointed it at a PAM instead, and the two are told apart by the PAM's `P7` magic
   (a PAM-bearing `G_IMAGE` is retyped to `G_PAMICON` on read, so from then on
   `G_IMAGE` means exactly "classic bit form").
+- **Cursor banks.** A resource may legitimately have *no* object trees at all — EmuTOS's
+  `mform.rsc` and `emucurs*.rsc` are pure free-image banks. Each holds eight AES
+  `MFORM`s (`xhot, yhot, nplanes, bg, fg, mask[16], data[16]` = 37 words) parcelled
+  inside a 16×37-word BITBLK, so they render as the 16×16 cursors they are rather than
+  as raw bit strips. Rocks synthesises an empty top-level tree on import, so they open,
+  edit and write back out as valid files.
 - **Import is lossless.** Trees, free strings, free images, BITBLKs, mono icons and
   colour icons all survive a read → write round-trip; `--images` and `--cicons`
   render what came in so it can be checked by eye rather than assumed.

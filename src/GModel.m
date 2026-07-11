@@ -38,10 +38,15 @@ NSString *GObTypeName(GObType t) {
 @end
 
 @implementation GBitblk
+- (BOOL)isMform { return GBitblkIsMform(_data, _wb, _hl); }
+
 - (NSImage *)image {
     if (_cachedImage) return _cachedImage;
-    if (_data && _wb > 0 && _hl > 0)
-        _cachedImage = GImageFromBitblk(_data, _wb, _hl, _color);
+    if (!_data || _wb <= 0 || _hl <= 0) return nil;
+    // A cursor bank stores each MFORM inside a BITBLK; draw it as the 16x16
+    // cursor it is, not as a 16x37 strip of raw words.
+    _cachedImage = [self isMform] ? GImageFromMform(_data, NULL, NULL)
+                                  : GImageFromBitblk(_data, _wb, _hl, _color);
     return _cachedImage;
 }
 @end

@@ -33,4 +33,16 @@ NSData * _Nullable GPAMFromPlanar(NSData *data, NSData * _Nullable mask,
 // drawn in VDI pen `color`; a clear bit is transparent (a BITBLK has no mask).
 NSImage * _Nullable GImageFromBitblk(NSData *data, int wb, int hl, int color);
 
+// An AES mouse cursor.  A cursor bank (EmuTOS's mform.rsc / emucurs*.rsc) stores
+// each MFORM inside a BITBLK of exactly 16x37 *words*:
+//
+//     WORD  mf_xhot, mf_yhot, mf_nplanes, mf_bg, mf_fg
+//     UWORD mf_mask[16]
+//     UWORD mf_data[16]
+//
+// Rendered 16x16: a mask bit makes the pixel opaque, a data bit picks fg over bg.
+// GBitblkIsMform() spots the shape; hotX/hotY may be NULL.
+BOOL GBitblkIsMform(NSData * _Nullable data, int wb, int hl);
+NSImage * _Nullable GImageFromMform(NSData *data, int * _Nullable hotX, int * _Nullable hotY);
+
 NS_ASSUME_NONNULL_END

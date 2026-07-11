@@ -99,6 +99,7 @@ static inline GColorWord gcw_default(void) {
 @property int wb, hl, x, y, color;
 @property (nullable, strong) NSImage *cachedImage;
 - (nullable NSImage *)image;
+- (BOOL)isMform;   // an AES mouse cursor stored inside this bit form
 @end
 
 @interface GIcon : NSObject

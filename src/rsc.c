@@ -249,16 +249,25 @@ static RSC *try_parse(const uint8_t *p, size_t len, int be) {
     int nobs = h[10], ntree = h[11];
     uint16_t rssize = h[17];
 
-    if (nobs <= 0 || nobs > 8000 || ntree <= 0 || ntree > 2000) return NULL;
-    if (objBase < SZ_HDR || objBase >= len) return NULL;
-    if (objBase + (size_t)nobs * SZ_OBJ > len) return NULL;
-    if (trindex + (size_t)ntree * 4 > len) return NULL;
+    /* A cursor/image bank (EmuTOS's mform.rsc, emucurs*.rsc) has NO object trees
+     * at all — just a free-image table.  Accept that, as long as it carries
+     * something. */
+    int nstr_h = (int16_t)h[15], nimg_h = (int16_t)h[16];
+    if (nobs < 0 || nobs > 8000 || ntree < 0 || ntree > 2000) return NULL;
+    if (ntree == 0 && nstr_h <= 0 && nimg_h <= 0) return NULL;   /* nothing at all */
+    if (nobs > 0) {
+        if (objBase < SZ_HDR || objBase >= len) return NULL;
+        if (objBase + (size_t)nobs * SZ_OBJ > len) return NULL;
+    }
+    if (ntree > 0 && trindex + (size_t)ntree * 4 > len) return NULL;
     if (rssize != 0 && rssize != len && rssize < objBase) return NULL;
 
     RSC *r = rsc_new();
     if (!r) return NULL;
-    r->obj = (RSC_OBJECT *)calloc(nobs, sizeof(RSC_OBJECT));
-    if (!r->obj) { rsc_free(r); return NULL; }
+    if (nobs > 0) {                       /* calloc(0, n) may legitimately return NULL */
+        r->obj = (RSC_OBJECT *)calloc(nobs, sizeof(RSC_OBJECT));
+        if (!r->obj) { rsc_free(r); return NULL; }
+    }
     r->nobj = r->obj_cap = nobs;
     int cw = r->cell_w, ch = r->cell_h;
 
@@ -346,8 +355,6 @@ static RSC *try_parse(const uint8_t *p, size_t len, int be) {
         if (off < objBase || off >= objBase + (size_t)nobs * SZ_OBJ) continue;
         rsc_add_tree(r, (int)((off - objBase) / SZ_OBJ));
     }
-    if (r->ntree == 0) { rsc_free(r); return NULL; }
-
     /* Free images: a table of LONG offsets to BITBLKs (rsrc_gaddr(R_IMAGE, i)). */
     uint32_t frimg = h[8];
     int nimages = (int16_t)h[16];
@@ -382,6 +389,8 @@ static RSC *try_parse(const uint8_t *p, size_t len, int be) {
         for (int i = 0; i < r->nobj; i++)      /* a G_CICON with no extension: nothing to point at */
             if ((r->obj[i].ob_type & 0xFF) == G_CICON) r->obj[i].ob_spec = NULL;
     }
+    /* Reject only if we found nothing worth having. */
+    if (r->ntree == 0 && r->nstring == 0 && r->nfreeimg == 0) { rsc_free(r); return NULL; }
     return r;
 }
 

@@ -211,3 +211,49 @@ NSImage *GImageFromBitblk(NSData *data, int wb, int hl, int color) {
     [img addRepresentation:rep];
     return img;
 }
+
+// ---- AES mouse cursor (MFORM) ----------------------------------------------
+
+BOOL GBitblkIsMform(NSData *data, int wb, int hl) {
+    // 2 bytes per row, 37 rows = 5 header words + 16 mask + 16 data
+    return wb == 2 && hl == 37 && data.length >= 74;
+}
+
+NSImage *GImageFromMform(NSData *data, int *hotX, int *hotY) {
+    if (!GBitblkIsMform(data, 2, 37)) return nil;
+    const uint8_t *b = data.bytes;
+    #define W(i) ((uint16_t)((b[(i)*2] << 8) | b[(i)*2 + 1]))
+
+    if (hotX) *hotX = (int16_t)W(0);
+    if (hotY) *hotY = (int16_t)W(1);
+    int bg = (int16_t)W(3), fg = (int16_t)W(4);       // note: bg comes before fg
+    const uint8_t *bgc = (bg >= 0 && bg < 16) ? kVDIPalette[bg] : kVDIPalette[0];
+    const uint8_t *fgc = (fg >= 0 && fg < 16) ? kVDIPalette[fg] : kVDIPalette[1];
+
+    const int N = 16;
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+        pixelsWide:N pixelsHigh:N bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES
+        isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:N * 4 bitsPerPixel:32];
+    uint8_t *out = rep.bitmapData;
+
+    for (int y = 0; y < N; y++) {
+        uint16_t mrow = W(5 + y);          // mask
+        uint16_t drow = W(5 + 16 + y);     // data
+        for (int x = 0; x < N; x++) {
+            int bit = 15 - x;
+            BOOL opaque = (mrow >> bit) & 1;
+            BOOL ink    = (drow >> bit) & 1;
+            const uint8_t *c = ink ? fgc : bgc;
+            uint8_t *px = out + ((size_t)y * N + x) * 4;
+            // premultiplied; a clear mask bit is fully transparent
+            px[0] = opaque ? c[0] : 0;
+            px[1] = opaque ? c[1] : 0;
+            px[2] = opaque ? c[2] : 0;
+            px[3] = opaque ? 255 : 0;
+        }
+    }
+    #undef W
+    NSImage *img = [[NSImage alloc] initWithSize:NSMakeSize(N, N)];
+    [img addRepresentation:rep];
+    return img;
+}
