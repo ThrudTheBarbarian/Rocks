@@ -2,3 +2,4 @@ build/
 scratch/
 *.o
 .DS_Store
+xtg/*.so

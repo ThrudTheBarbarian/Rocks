@@ -1,31 +1,46 @@
-// XGControl.xt — target/action, with no closures and no selectors.
+// XGControl.xt — target/action, in one field.
 //
-// xtc has neither blocks nor method pointers (yet — `^` bound methods are coming),
-// so an action is a typed (target, function) pair and the function recovers `self`
-// by downcasting.  That is the pre-blocks NeXTSTEP design, which is the right era.
-// The target is WEAK: a control never owns its controller.
+// This used to be a hand-rolled (target, action) pair, because xtc had no method
+// pointers and a bare function pointer cannot carry `self`.  It now has `^` bound
+// methods, so the pair collapses:
+//
+//     weak: XGAction^ action;      // (recv, code) — and the recv is auto-zeroing
+//
+// `weak:` is doing two jobs at once, and they turn out to be the same job:
+//
+//   1. A control must NOT own its controller, or
+//          window -> viewtree -> button -> action -> window
+//      is a retain cycle.  AppKit needs a separate weak `target` field to break it.
+//      Here, weak on the bound pointer IS the break.
+//
+//   2. `if (action)` reads as "no action set" AND "the target has been deallocated",
+//      with the same syntax and no extra machinery.  A dead controller is simply an
+//      action that no longer fires.
+//
+// NOTE (spikes/XTC-BUGS.md, Gap F): `weak:` here is load-bearing, not decorative.
+// A plain `XGAction^` neither retains its receiver nor notices it dying, and worse,
+// still tests TRUE afterwards — the truth test is on `code`, and only `recv` is dead.
 #import "XGView.xt"
 
-typedef void XGAction(Object@ target, XGControl@ sender);
+typedef void XGAction(XGControl@ sender);
 
 class XGControl : XGView
 {
-    weak:Object@ target;
-    XGAction@    action;
-    u8@          title;
+    weak: XGAction^ action;
+    u8@             title;
 
     void init(void) {
         super.init();
-        target = (Object@)0;
-        action = (XGAction@)0;
+        action = (XGAction^)0;
         title  = "";
     }
 
-    void setTarget(Object@ t, XGAction@ a) { target = t; action = a; }
+    // &controller.onOK — a method, bound to its receiver.  No downcast, no selector.
+    void setAction(XGAction^ a) { action = a; }
     void setTitle(u8@ s) { title = s; }
 
     void fire(void) {
-        if (action != (XGAction@)0) { action(target, self); }
+        if (action) { action(self); }        // false if unset OR if the target died
     }
 
     // A control consumes its click — it does not pass it up the chain.

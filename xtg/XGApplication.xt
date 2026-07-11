@@ -13,6 +13,21 @@ protocol XGApplicationDelegate {
 
 theme gTheme_storage;                 // 19502 bytes — DWARF told us, we did not guess
 
+// The back-buffer surface MUST outlive boot().  vdi_init() STORES this pointer
+// (gem/vdi/core.c: `ws_tab[0].target = default_target`) rather than copying the
+// struct, so a stack local here would leave the VDI holding dead stack the moment
+// boot() returned — and every later vdi_screen_target() would read garbage.
+//
+// That bug cost an afternoon.  It presented as "the AES never calls our content
+// callback", because wind_redraw_area() starts with
+//     gfx_surface *d = vdi_screen_target(); if(!d) return;
+// so the redraw bailed out before it ever reached draw_one() -> W->draw.  Every
+// argument to wind_content() was perfectly correct; the surface underneath was not.
+//
+// test_window.xt gets away with a stack local only because its surface lives in
+// main(), which never returns.
+gfx_surface gBackBuffer;
+
 class XGApplication : XGResponder
 {
     XGApplicationDelegate@ delegate;
@@ -53,15 +68,15 @@ class XGApplication : XGResponder
         if (sys_fb_info((pointer)&fb) != (i32)0)      { return false; }
         if (sys_fb_wallpaper((pointer)&wp) != (i32)0) { return false; }
 
-        gfx_surface bb;
-        bb.w = (i32)wp.w; bb.h = (i32)wp.h; bb.stride = (i32)wp.stride;
-        bb.px = (u32@)wp.addr;
+        gBackBuffer.w = (i32)wp.w; gBackBuffer.h = (i32)wp.h;
+        gBackBuffer.stride = (i32)wp.stride;
+        gBackBuffer.px = (u32@)wp.addr;
 
         pointer face = font_face_open("/System/fonts/AovelSansRounded.ttf");
         if (face == (pointer)0) { return false; }
 
-        vdi_init((pointer)&bb);
-        vh = v_opnvwk((pointer)&bb);
+        vdi_init((pointer)&gBackBuffer);          // the VDI keeps this pointer — see above
+        vh = v_opnvwk((pointer)&gBackBuffer);
         vdi_set_face(face);
 
         if (theme_load((pointer)&gTheme_storage, "/System/themes/Aristo2/1x") != (i32)0) {

@@ -49,7 +49,7 @@ class Controller : Object <XGApplicationDelegate>
             if (ty != (u16)G_BUTTON) { continue; }
             XGButton@ b = (XGButton@ ?)vt.viewAt(i);
             if (b == (XGButton@)0) { continue; }
-            b.setTarget(self, &onButton);
+            b.setAction(&self.onButton);        // bound method
             Stdio.printf("  wired a button at object %d\n", (i16)i);
         }
 
@@ -78,14 +78,11 @@ class Controller : Object <XGApplicationDelegate>
         a.stop();
         return (i32)0;
     }
-}
 
-void onButton(Object@ t, XGControl@ sender)
-{
-    Controller@ me = (Controller@ ?)t;
-    if (me == (Controller@)0) { return; }
-    me.fired = me.fired + (u16)1;
-    Stdio.printf("  action fired from a button the RESOURCE created\n");
+    void onButton(XGControl@ sender) {
+        fired = fired + (u16)1;
+        Stdio.printf("  action fired from a button the RESOURCE created\n");
+    }
 }
 
 void main(void)

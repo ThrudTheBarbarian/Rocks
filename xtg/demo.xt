@@ -1,6 +1,7 @@
 // demo.xt — an Xtg application.  This is what writing for the XT looks like.
 #import <Stdio.xt>
 #import "XGApplication.xt"
+
 #import "XGControl.xt"
 
 // A custom view: we override drawRect and the AES calls it.
@@ -52,7 +53,7 @@ class Controller : Object <XGApplicationDelegate>
 
         XGButton@ b = new XGButton();
         b.setTitle("Cycle");
-        b.setTarget(self, &onClick);
+        b.setAction(&self.onClick);          // a bound method.  No downcast, no selector.
         content.addSubview(b, XGGeom.make((i16)8, (i16)50, (i16)56, (i16)18));
 
         win.tree.finalise();
@@ -86,20 +87,16 @@ class Controller : Object <XGApplicationDelegate>
         a.stop();
         return (i32)0;
     }
-}
 
-// The action.  It must be a FREE function: xtc cannot currently take the address
-// of a static class method (`&Controller.onClick` is only a *note* and silently
-// yields a bad pointer).  The `^` bound-method work collapses this to
-// `&controller.onClick`, which is the whole point of it.
-void onClick(Object@ t, XGControl@ sender)
-{
-    Controller@ me = (Controller@ ?)t;       // recover self from the weak target
-    if (me == (Controller@)0) { return; }
-    me.clicks = me.clicks + (u16)1;
-    me.swatch.cycle();                       // -> setNeedsDisplay, coalesced
-    Stdio.printf("  button fired: click %d, swatch pen now %d\n",
-                 (i16)me.clicks, (i16)me.swatch.pen);
+    // The action is now an ordinary method on the controller.  It used to be a free
+    // function taking `Object@ t` and downcasting to recover self, because xtc could
+    // not take the address of a method — `^` removes that entirely.
+    void onClick(XGControl@ sender) {
+        clicks = clicks + (u16)1;
+        swatch.cycle();                      // -> setNeedsDisplay, coalesced
+        Stdio.printf("  button fired: click %d, swatch pen now %d\n",
+                     (i16)clicks, (i16)swatch.pen);
+    }
 }
 
 void main(void)
