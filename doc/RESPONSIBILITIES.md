@@ -299,7 +299,7 @@ The interesting half of any contract.
 | | what happens | whose job |
 |---|---|---|
 | **an app crashes** | `gemd` reaps its windows on `waitpid`. No ghost windows, no leaked shm. | `gemd` |
-| **an app wedges** (never returns to `evnt_multi`) | its **windows still composite** — the backing store means `gemd` needs nothing from it. Its **menu bar goes blank** on the next switch, because the strip is cleared before the new owner draws. | desktop |
+| **an app wedges** (never returns to `evnt_multi`) | its **windows still composite** — the backing store means `gemd` needs nothing from it. It gets a **busy cursor**. Its **menu bar goes blank** on the next switch, because the strip is cleared before the new owner draws. | `gemd` |
 | **an app wedges while holding a grab** | **the grab times out.** Busy cursor at +2s, revoked at +7s. `gemd` discards its overlay, recomposites from the backing stores, and injects a *cancel* so the app runs its own dismissal path when it wakes. It may not re-grab until the user tops it again. | `gemd` (`AES-SERVER.md` §5) |
 | **an app posts damage for a rect outside its window** | clamped. A client's damage rect is a *request*, not an instruction. | `gemd` |
 | **an app never draws** | its window composites as whatever its buffer contains — i.e. blank. Correct. | — |
@@ -345,13 +345,53 @@ This is the *only* place a client touches the framebuffer, and it is precisely t
 classic-GEM failure mode ("any app can scribble on the desktop") that the whole
 backing-store design exists to prevent. It is contained by three rules:
 
-1. The desktop hands out a strip workstation **only to the active app**.
+1. `gemd` hands out a strip workstation **only to the active app**.
 2. It **revokes** it on switch.
 3. The **clip rect is the enforcement** — not the app's good manners.
 
-If we ever want the hole closed: **one** desktop-owned strip surface, *loaned* to
+If we ever want the hole closed: **one** `gemd`-owned strip surface, *loaned* to
 whoever is active (not one per app). ~190 KB total, no protocol change, and the
 compositor then treats the strip like any other surface. It can wait.
+
+---
+
+## 9a. Buffer lifetime: refcount, do not handshake
+
+A surface is **reference-counted**. `gemd` holds one ref; each client that has it
+mapped holds one. It is freed when the count reaches zero, and **not before** — no
+matter how dead, stale, or superseded it has been declared.
+
+This makes resize a non-event:
+
+```
+    resize:   gemd allocates a NEW buffer (new id), tells the client, and drops its
+              own ref on the old one.
+
+    client:   may still be mid-draw into the old buffer.  That is fine.  It finishes,
+              harmlessly, into memory nobody will composite.  Then it maps the new id
+              and drops its ref on the old.        refcount -> 0 -> freed.
+```
+
+**Nobody blocks and nobody waits.** The in-flight draw is merely *wasted*, not
+*unsafe* — and wasting one frame during a resize is not a cost worth a round-trip to
+avoid. `gemd` still carries a generation number on each surface, but only so it can
+**discard** damage posted against a stale one; it never has to *synchronise* on it.
+
+And it is not a resize mechanism. It is the buffer lifetime rule, and the same
+refcount covers:
+
+| | |
+|---|---|
+| **resize** | the old buffer outlives the client's in-flight draw |
+| **window closed while `gemd` is mid-composite** | `gemd`'s own ref keeps it alive until the composite ends |
+| **app died with `gemd` still holding its pixels** | the dead client's ref is dropped; `gemd`'s keeps it valid |
+
+Three bugs, one counter.
+
+**What it does not fix, and is not pretending to: tearing.** A client can be painting
+frame N+1 into a buffer `gemd` is compositing frame N from. Refcounting is *lifetime*,
+not *exclusion*. The options are a per-window double-buffer, or accepting it; that is
+a separate decision and it is in §10.
 
 ---
 
@@ -364,10 +404,16 @@ Honest list. These are the places where someone will have to make a call.
    them tunable and we should feel them on real hardware).
 2. ~~Who owns the menu bar when the desktop is active~~ — **closed by §3.** The
    desktop is an app; when it is active, its menu is the menu.
-3. **Resize.** The desktop reallocates the shm and tells the client the new id —
-   but the client may be mid-draw into the old one. Needs a generation number, or a
-   handshake.
-4. **Whether `form_alert` is really system-modal or app-modal.** GEM says system.
+3. ~~Resize~~ — **closed: refcount the buffers** (§9a). No handshake, no round-trip.
+4. **Tearing.** Refcounting gives a buffer's *lifetime*, not *exclusive access*. A
+   client may paint frame N+1 while `gemd` composites frame N. Per-window
+   double-buffer, or accept it? Costs another surface per window if we care.
+5. **Whether `form_alert` is really system-modal or app-modal.** GEM says system.
    With multiple apps, system-modal means one app can hold the machine hostage with a
    dialog. Probably app-modal, which is a *semantic* change to a GEM call — the first
    one we would be making, so it deserves an argument.
+
+Note that **none of these can freeze the machine any more.** That property was won by
+§8's liveness clock and §3's separation of `gemd` from the desktop, and it should be
+defended: any future addition that lets one client stall another is a regression, not
+a feature.
