@@ -300,11 +300,28 @@ The interesting half of any contract.
 |---|---|---|
 | **an app crashes** | `gemd` reaps its windows on `waitpid`. No ghost windows, no leaked shm. | `gemd` |
 | **an app wedges** (never returns to `evnt_multi`) | its **windows still composite** — the backing store means `gemd` needs nothing from it. Its **menu bar goes blank** on the next switch, because the strip is cleared before the new owner draws. | desktop |
-| **an app wedges while holding a grab** | this is the one that actually hurts: input is routed to a process that will never read it, and **nothing can be topped**. `gemd` must be able to break a grab. | **`gemd` — and this is not yet designed.** |
+| **an app wedges while holding a grab** | **the grab times out.** Busy cursor at +2s, revoked at +7s. `gemd` discards its overlay, recomposites from the backing stores, and injects a *cancel* so the app runs its own dismissal path when it wakes. It may not re-grab until the user tops it again. | `gemd` (`AES-SERVER.md` §5) |
 | **an app posts damage for a rect outside its window** | clamped. A client's damage rect is a *request*, not an instruction. | `gemd` |
 | **an app never draws** | its window composites as whatever its buffer contains — i.e. blank. Correct. | — |
 | **the desktop crashes** | nothing else stops. The background falls back to `gemd`'s colour; apps keep running and stay clickable. Restart it. | `gemd` |
 | **`gemd` crashes** | everything is gone. Which is why it is small, boring, and does no file I/O. | — |
+
+### Wedged is a state `gemd` can see, without asking
+
+The liveness signal is **"is this client draining its event pipe?"** — which `gemd` can
+observe without the client doing anything, and that is the essential property, because
+a wedged client cooperates with nothing.
+
+The clock runs only when there is input **queued for that client and still unread**.
+It is *not* a wall-clock idle timer: a modal dialog sitting quietly while the user
+thinks is perfectly healthy, and a naive idle timer cannot tell the two apart.
+
+    input queued for a client, unread:   +2s -> busy cursor
+                                         +7s -> its grab (if any) is revoked
+    client drains its pipe:              clock resets
+
+One clock detects **every** wedged app. Losing a grab is just the extra consequence
+when the wedged app happened to be holding one.
 
 A wedged app looking wedged is **right**. The design should make an app's failure
 visible in proportion to how badly it has failed, and no more: a wedged app should not
@@ -342,10 +359,9 @@ compositor then treats the strip like any other surface. It can wait.
 
 Honest list. These are the places where someone will have to make a call.
 
-1. **Breaking a grab.** A wedged app holding `BEG_MCTRL` freezes input for everyone.
-   A timeout? A hard escape key `gemd` always keeps for itself? Nothing yet. This is
-   the **only** case where one bad app can take the machine down, and §3 exists partly
-   to make sure that app is never `gemd` itself.
+1. ~~Breaking a grab~~ — **closed.** It times out, on the liveness clock (§8). The
+   only remaining choice is the two constants (2s / 7s are a guess; `gemd` should make
+   them tunable and we should feel them on real hardware).
 2. ~~Who owns the menu bar when the desktop is active~~ — **closed by §3.** The
    desktop is an app; when it is active, its menu is the menu.
 3. **Resize.** The desktop reallocates the shm and tells the client the new id —

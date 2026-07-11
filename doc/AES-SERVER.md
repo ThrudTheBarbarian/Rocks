@@ -221,6 +221,54 @@ flight to another app while the menu is still down:
 This is not a menu special case: `form_do` and any modal dialog need exactly the same
 thing.
 
+### A grab times out. It has to.
+
+A grab is the one thing a client holds that can hurt everyone else: a wedged app
+holding `BEG_MCTRL` routes all input to a process that will never read it, and nothing
+can be topped. So `gemd` must be able to take it back — **without the app's
+cooperation, because a wedged app cooperates with nothing.**
+
+**The clock measures the right thing.** Not "no user input for N seconds" — a modal
+dialog sitting quietly while the user thinks is perfectly healthy, and looks identical
+to a wedged one. The clock runs only when `gemd` **has input for the grab holder that
+the holder has not taken**:
+
+```
+    gemd has queued input for the holder, still unread:
+        + 2s    busy cursor.   gemd draws it (the cursor is gemd's — which is exactly
+                               why this still works when the app is completely dead).
+        + 7s    grab revoked.
+
+    holder drains its pipe:    clock resets.  An idle modal never ticks at all.
+```
+
+The liveness signal is *"is this client draining its event pipe"*, which `gemd` can
+observe without the client doing anything.
+
+**Revoking injects a cancel; it does not just drop the flag.** Otherwise the app
+un-wedges into a world where its menu is still logically down but input goes
+elsewhere. Instead:
+
+1. `gemd` discards the holder's overlay surface and **recomposites that rect from the
+   window backing stores** — so the dropdown simply vanishes and the screen is clean.
+   (This is §2 paying for itself again.)
+2. `gemd` pushes a synthetic **cancel** into the app's queue — an `ESC`, or a
+   dedicated `WM_GRABLOST`.
+3. When the app comes back, it reads the cancel and runs **its own existing dismissal
+   path**. No new code in the app, no new state to reason about.
+
+**One guard against ping-pong:** an app that *lost* a grab may not take another until
+the user has topped it again. Human intent is the gate.
+
+### It is not really a grab feature — it is the liveness rule
+
+"Events pending and unread for N seconds" detects **any** wedged app, grab or no grab.
+So `gemd` shows the busy cursor over any wedged app's windows, and *losing the grab* is
+simply the extra consequence when the wedged app happened to be holding one.
+
+One clock, one signal, and the only case where a bad client could take the machine
+down stops existing.
+
 So the dropdown is a **scratch overlay**, not a window: it never enters the z-order,
 never persists, and never interacts with topping, because its entire lifetime sits
 inside a grab. It does not even need save-under — on dismiss `gemd` recomposites
