@@ -1,0 +1,50 @@
+// XGControl.xt — target/action, with no closures and no selectors.
+//
+// xtc has neither blocks nor method pointers (yet — `^` bound methods are coming),
+// so an action is a typed (target, function) pair and the function recovers `self`
+// by downcasting.  That is the pre-blocks NeXTSTEP design, which is the right era.
+// The target is WEAK: a control never owns its controller.
+#import "XGView.xt"
+
+typedef void XGAction(Object@ target, XGControl@ sender);
+
+class XGControl : XGView
+{
+    weak:Object@ target;
+    XGAction@    action;
+    u8@          title;
+
+    void init(void) {
+        super.init();
+        target = (Object@)0;
+        action = (XGAction@)0;
+        title  = "";
+    }
+
+    void setTarget(Object@ t, XGAction@ a) { target = t; action = a; }
+    void setTitle(u8@ s) { title = s; }
+
+    void fire(void) {
+        if (action != (XGAction@)0) { action(target, self); }
+    }
+
+    // A control consumes its click — it does not pass it up the chain.
+    void mouseDown(XGEvent@ e) {
+        if (!self.isEnabled()) { return; }
+        self.fire();
+    }
+}
+
+// A real G_BUTTON.  We write NO drawing code: the AES themes it, exactly as it
+// themes a button in any other GEM app.
+class XGButton : XGControl
+{
+    u16 gemType(void) { return (u16)G_BUTTON; }
+
+    void attachTo(XGViewTree@ t, XGRect frame) {
+        super.attachTo(t, frame);
+        OBJECT@ o = &t.objects()[index];
+        o.ob_spec  = (pointer)title;             // G_BUTTON's ob_spec IS its label
+        o.ob_flags = o.ob_flags | (u16)OF_SELECTABLE;
+    }
+}

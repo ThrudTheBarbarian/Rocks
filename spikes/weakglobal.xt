@@ -1,0 +1,43 @@
+// Does reading a `weak:` GLOBAL from a callback entered from C work?
+// (Xtg hit a DATA-ABORT doing exactly this from GEM's objc_set_userdraw hook.)
+#import <Stdio.xt>
+
+class Thing { u16 v; void init(void) { v = (u16)7; } }
+
+weak:Thing@ gWeak;        // weak global
+Thing@      gStrong;      // strong global, for comparison
+u16         gSeenWeak;
+u16         gSeenStrong;
+
+void qsort(pointer base, u32 n, u32 size, pointer cmp);
+
+// Entered from C (qsort), exactly like GEM's userdraw hook.
+i32 cmp(pointer a, pointer b)
+{
+    if (gStrong != (Thing@)0) { gSeenStrong = gStrong.v; }   // strong: expect 7
+    if (gWeak   != (Thing@)0) { gSeenWeak   = gWeak.v;   }   // weak:   expect 7
+    return (i32)0;
+}
+
+u16 arr[2];
+
+void main(void)
+{
+    Thing@ t = new Thing();
+    gStrong = t;
+    gWeak   = t;
+    gSeenWeak = (u16)0; gSeenStrong = (u16)0;
+
+    Stdio.printf("direct: strong=%d weak=%d  (both expect 7)\n", (i16)gStrong.v, (i16)gWeak.v);
+
+    arr[0] = (u16)2; arr[1] = (u16)1;
+    qsort((pointer)&arr[0], (u32)2, (u32)2, (pointer)&cmp);   // C calls cmp
+
+    Stdio.printf("from a C-invoked callback: strong=%d weak=%d\n",
+                 (i16)gSeenStrong, (i16)gSeenWeak);
+    if (gSeenStrong == (u16)7 && gSeenWeak == (u16)7) {
+        Stdio.printf("PASS: both readable from a C callback\n");
+    } else {
+        Stdio.printf("FAIL: weak global not readable from a C callback\n");
+    }
+}

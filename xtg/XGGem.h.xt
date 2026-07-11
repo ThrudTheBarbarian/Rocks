@@ -1,0 +1,73 @@
+// XGGem.h.xt — every libGEM / libxtos entry point Xtg calls, in one place.
+//
+// These are hand-declared only where the DWARF import needs a name to bind to;
+// the TYPES (OBJECT, theme, gfx_surface, os_fbinfo) all come through #import
+// verbatim, which is what makes this safe — see spikes/RESULTS.md, where a
+// hand-guessed sizeof(theme) would have smashed the heap (it is 19502 bytes).
+
+#import <GEM>
+#import <xtos>
+
+// ---- boot -------------------------------------------------------------------
+i32     v_opnvwk(pointer surface);
+void    vdi_init(pointer surface);
+void    vdi_set_face(pointer face);
+pointer font_face_open(u8@ path);
+i32     theme_load(pointer th, u8@ dir);
+void    aes_init(i32 vh, pointer th);
+i32     appl_init(void);
+i32     aes_handle(void);
+
+// ---- windows ----------------------------------------------------------------
+void    wind_set_desktop(u32 rgba);
+i32     wind_create(i32 kind, i32 x, i32 y, i32 w, i32 h);
+void    wind_open(i32 h, i32 x, i32 y, i32 w, i32 h2);
+void    wind_close(i32 h);
+void    wind_set_name(i32 h, u8@ name);
+void    wind_content(i32 h, pointer fn, pointer ud);
+void    wind_redraw_win(i32 h);
+i32     wind_find(i32 x, i32 y);
+void    wind_get(i32 h, i32 what, pointer a, pointer b, pointer c, pointer d);
+
+// ---- objects ----------------------------------------------------------------
+void    objc_draw(pointer tree, i32 start, i32 depth, i32 clx, i32 cly, i32 clw, i32 clh);
+void    objc_set_userdraw(pointer fn, pointer ud);
+void    objc_change(pointer tree, i32 obj, i32 state, i32 redraw);
+
+// ---- events -----------------------------------------------------------------
+i32     evnt_multi(i32 flags, i32 bclk, i32 bmask, i32 bstate,
+                   i32 m1f, i32 m1x, i32 m1y, i32 m1w, i32 m1h,
+                   i32 m2f, i32 m2x, i32 m2y, i32 m2w, i32 m2h,
+                   pointer mepbuf, i32 tlc, i32 thc,
+                   pointer mx, pointer my, pointer mbut, pointer kstate,
+                   pointer key, pointer nclk);
+
+// ---- drawing ----------------------------------------------------------------
+void    theme_draw(i32 handle, pointer th, u8@ name, i32 dx, i32 dy, i32 dw, i32 dh);
+void    vsf_color(i32 h, i32 pen);
+void    vsf_interior(i32 h, i32 style);
+void    vsf_perimeter(i32 h, i32 on);
+void    vr_recfl(i32 h, pointer pxy);
+void    vst_color(i32 h, i32 pen);
+void    vst_height(i32 h, i32 pts, pointer a, pointer b, pointer c, pointer d);
+void    v_gtext(i32 h, i32 x, i32 y, u8@ s);
+
+// ---- event classes / messages ------------------------------------------------
+#define MU_KEYBD    $01
+#define MU_BUTTON   $02
+#define MU_MESAG    $10
+#define MU_TIMER    $20
+#define MU_QUIT     $40
+
+#define WM_REDRAW   20
+#define WM_TOPPED   21
+#define WM_CLOSED   22
+#define WM_SIZED    27
+#define WM_MOVED    28
+#define MN_SELECTED 10
+
+#define W_NAME      $0001
+#define W_CLOSER    $0002
+#define W_MOVER     $0008
+
+#define WF_WORKXYWH 4

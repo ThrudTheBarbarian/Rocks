@@ -17,6 +17,9 @@
 #import "XGViewTree.xt"
 #import "XGGraphics.xt"
 
+// Raised by setNeedsDisplay, lowered by the run loop after it repaints.
+bool gNeedsDisplay;
+
 class XGView : XGResponder
 {
     weak:XGViewTree@ owner;      // the tree we live in (it holds us, so weak)
@@ -67,8 +70,10 @@ class XGView : XGResponder
 
     // ---- hierarchy ----------------------------------------------------------
 
-    void addSubview(XGView@ v) {
-        v.attachTo(owner, v.frame());
+    // The frame is passed in: a view has no tree — and so no frame — until it is
+    // attached to one.
+    void addSubview(XGView@ v, XGRect f) {
+        v.attachTo(owner, f);
         owner.addChild(index, v.index);
         v.superview = self;
         v.setNextResponder(self);           // the responder chain follows the views
@@ -111,11 +116,11 @@ class XGView : XGResponder
     // inside the AES's clip — see objc_set_userdraw.  Coordinates are absolute.
     void drawRect(XGGraphics@ g, XGRect dirty) { }
 
-    // Mark dirty.  Draws nothing: the window unions this into its damage region
-    // and the run loop asks the AES to repaint once, coalesced.
-    void setNeedsDisplay(void) {
-        // (the window walks up through `superview` — wired in XGWindow)
-    }
+    // Mark dirty.  Draws NOTHING: it raises a flag, and the run loop repaints once
+    // per iteration.  Coalescing here is the whole reason a hundred setNeedsDisplay
+    // calls in one event cost one repaint — and it keeps XGView free of any
+    // knowledge of windows, so there is no import cycle.
+    void setNeedsDisplay(void) { gNeedsDisplay = true; }
 
     // ---- hit-testing ---------------------------------------------------------
     // Deliberately NOT implemented here: objc_find already does it, correctly,

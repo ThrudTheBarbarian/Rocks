@@ -1,16 +1,45 @@
-// XGGraphics.xt — a drawing context: the VDI handle plus the current clip.
-// Every drawRect gets one.  The theme calls are what make an XGView look native.
-#import <GEM>
+// XGGraphics.xt — the drawing context handed to every drawRect.
+//
+// Thin by design: it is the AES's own VDI workstation plus the theme.  An XGView
+// that draws itself uses exactly the same calls objc_draw uses for a G_BUTTON, so
+// custom views and stock widgets are pixel-consistent by construction.
+#import "XGGem.h.xt"
 #import "XGGeometry.xt"
 
 class XGGraphics {
-    i32    vh;        // VDI workstation handle
-    XGRect clip;
+    i32     vh;         // the AES's workstation — aes_handle()
+    pointer th;         // the loaded theme
+    XGRect  origin;     // absolute position of the view being drawn
 
-    void init(void) { vh = (i32)0; clip = XGGeom.zero(); }
-    void setHandle(i32 h) { vh = h; }
-    i32  handle(void) { return vh; }
+    void init(void) { vh = (i32)0; th = (pointer)0; origin = XGGeom.zero(); }
 
-    // (fillRect / drawText / drawTheme land with the syscalls — they need a live
-    //  VDI workstation, which needs the framebuffer, which needs sys_fb_info.)
+    void bind(i32 handle, pointer theme, XGRect abs) {
+        vh = handle; th = theme; origin = abs;
+    }
+
+    // Everything below takes BOUNDS coordinates (0,0 = the view's top-left) and
+    // converts, so a drawRect never has to know where it sits on screen.
+    void fillRect(XGRect r, i32 pen) {
+        i16 pxy[4];
+        pxy[0] = (i16)(origin.x + r.x);
+        pxy[1] = (i16)(origin.y + r.y);
+        pxy[2] = (i16)(origin.x + r.x + r.w - (i16)1);
+        pxy[3] = (i16)(origin.y + r.y + r.h - (i16)1);
+        vsf_color(vh, pen);
+        vsf_interior(vh, (i32)1);
+        vsf_perimeter(vh, (i32)0);
+        vr_recfl(vh, (pointer)&pxy[0]);
+    }
+
+    // A 9-slice from the theme — the same call the AES makes for stock widgets.
+    void drawTheme(u8@ slice, XGRect r) {
+        theme_draw(vh, th, slice,
+                   (i32)(origin.x + r.x), (i32)(origin.y + r.y), (i32)r.w, (i32)r.h);
+    }
+
+    void drawText(u8@ s, i16 x, i16 y, i32 pen, i32 size) {
+        vst_color(vh, pen);
+        vst_height(vh, size, (pointer)0, (pointer)0, (pointer)0, (pointer)0);
+        v_gtext(vh, (i32)(origin.x + x), (i32)(origin.y + y), s);
+    }
 }

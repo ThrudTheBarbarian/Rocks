@@ -121,3 +121,39 @@ future binding, in any language:
 - (b) GEM: name its enums (`enum ObType { ... }`).
 
 Not a blocker — just a papercut that will bite whoever forgets to re-sync.
+
+---
+
+## Gap E — `&Class.staticMethod` is not supported (and is only a *note*)
+
+```c
+b.setTarget(self, &Controller.onClick);
+// note: ABANDON|lowering: & on member-access requires a struct-typed base
+```
+
+A **note**, and the build succeeds with a bad pointer. Same silent-wrong-code family
+as Gap C. Target/action must therefore use a free function today:
+
+```c
+void onClick(Object@ t, XGControl@ sender) { ... }   // free fn: works
+b.setTarget(self, &onClick);
+```
+
+The `^` bound-method work supersedes this entirely (`&controller.onClick`), which is
+exactly why it is the highest-value language ask. Until then, `&` on a member should
+at least be an **error**, not a note.
+
+### Cleared, for the record
+
+While chasing an Xtg DATA-ABORT I suspected three compiler causes and **disproved all
+three** on the loader (`spikes/weakglobal.xt`, `spikes/addrfn.xt`):
+
+- reading a `weak:` global from a callback entered from C — **works**
+- writing a `weak:` global from a callback entered from C — **works**
+- `&freeFunction` taken inside a class method — **works**
+
+The fault was almost certainly mine: `objc_set_userdraw` is a single global hook, so
+it fires for *any* `objc_draw` — including AES-internal trees — and a hook keyed off
+"the window currently drawing" can be handed an object index that is not its own.
+Passing the window through the hook's own `ud`, re-registered per draw, is exact and
+removes the class of bug entirely.

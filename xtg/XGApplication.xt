@@ -1,0 +1,162 @@
+// XGApplication.xt — boot, the run loop, and the top of the responder chain.
+//
+// A program's main() is small: make an XGApplication, give it a delegate, run().
+// The loop is evnt_multi — and note the AES has ALREADY consumed menu-bar and
+// window-frame clicks before we see anything, so Xtg never tries to own chrome.
+#import "XGGem.h.xt"
+#import "XGWindow.xt"
+#import "XGEvent.xt"
+
+protocol XGApplicationDelegate {
+    i32 applicationDidStart(XGApplication@ app);
+}
+
+theme gTheme_storage;                 // 19502 bytes — DWARF told us, we did not guess
+
+class XGApplication : XGResponder
+{
+    XGApplicationDelegate@ delegate;
+    Array@                 windows;
+    bool                   running;
+    i32                    vh;
+    i32                    screenW;
+    i32                    screenH;
+
+    void init(void) {
+        super.init();
+        delegate = (XGApplicationDelegate@)0;
+        windows  = new Array();
+        running  = false;
+        vh = (i32)0; screenW = (i32)0; screenH = (i32)0;
+    }
+
+    void setDelegate(XGApplicationDelegate@ d) { delegate = d; }
+    i32  screenWidth(void)  { return screenW; }
+    i32  screenHeight(void) { return screenH; }
+
+    // Boot GEM.  This is the ~20 lines every C GEM app copy-pastes; now it lives
+    // in one place, and the app never sees it.
+    bool boot(void) {
+        os_fbinfo fb;
+        os_fbinfo wp;
+        if (sys_fb_info((pointer)&fb) != (i32)0)      { return false; }
+        if (sys_fb_wallpaper((pointer)&wp) != (i32)0) { return false; }
+
+        gfx_surface bb;
+        bb.w = (i32)wp.w; bb.h = (i32)wp.h; bb.stride = (i32)wp.stride;
+        bb.px = (u32@)wp.addr;
+
+        pointer face = font_face_open("/System/fonts/AovelSansRounded.ttf");
+        if (face == (pointer)0) { return false; }
+
+        vdi_init((pointer)&bb);
+        vh = v_opnvwk((pointer)&bb);
+        vdi_set_face(face);
+
+        if (theme_load((pointer)&gTheme_storage, "/System/themes/Aristo2/1x") != (i32)0) {
+            return false;
+        }
+        aes_init(vh, (pointer)&gTheme_storage);
+        appl_init();
+        wind_set_desktop($20304080);
+
+        gTheme    = (pointer)&gTheme_storage;    // the globals XGWindow's seam uses
+        gGraphics = new XGGraphics();
+
+        // (the seam is registered per-draw in xtg_window_draw, so the hook's ud is
+        //  the window being drawn — see XGWindow.xt)
+
+        screenW = (i32)fb.w;
+        screenH = (i32)fb.h;
+        return true;
+    }
+
+    void addWindow(XGWindow@ w) {
+        windows.add(w);
+        w.setNextResponder(self);                // window -> application
+    }
+
+    void stop(void) { running = false; }
+
+    // The run loop.  One evnt_multi; translate; dispatch; repeat.
+    i32 run(void) {
+        if (!self.boot()) { return (i32)1; }
+        if (delegate == (XGApplicationDelegate@)0) { return (i32)2; }
+
+        // running BEFORE the delegate runs, so a delegate that calls stop() during
+        // start-up (a test, a one-shot tool) is honoured rather than ignored.
+        running = true;
+        i32 rc = delegate.applicationDidStart(self);
+        if (rc != (i32)0) { return rc; }
+
+        // One event object, reused: allocating inside the loop churns the heap
+        // (and xtc warns it leaks).
+        XGEvent@ ev = new XGEvent();
+
+        i16 msg[8];
+        i32 mx = (i32)0; i32 my = (i32)0; i32 mb = (i32)0;
+        i32 ks = (i32)0; i32 key = (i32)0; i32 nc = (i32)0;
+
+        while (running) {
+            i32 what = evnt_multi(MU_KEYBD|MU_BUTTON|MU_MESAG, (i32)1, (i32)1, (i32)1,
+                                  (i32)0,(i32)0,(i32)0,(i32)0,(i32)0,
+                                  (i32)0,(i32)0,(i32)0,(i32)0,(i32)0,
+                                  (pointer)&msg[0], (i32)0, (i32)0,
+                                  (pointer)&mx, (pointer)&my, (pointer)&mb,
+                                  (pointer)&ks, (pointer)&key, (pointer)&nc);
+
+            if ((what & MU_MESAG) != (i32)0) { self.handleMessage(&msg[0]); }
+
+            if ((what & MU_BUTTON) != (i32)0) {
+                ev.kind = (u8)XGEventMouseDown;
+                ev.x = (i16)mx; ev.y = (i16)my; ev.buttons = (u16)mb;
+                XGWindow@ w = self.windowAt(mx, my);
+                if (w != (XGWindow@)0) { w.dispatchMouse(ev); }
+            }
+
+            if (gNeedsDisplay) { self.displayIfNeeded(); }
+
+            if ((what & MU_KEYBD) != (i32)0) {
+                ev.kind = (u8)XGEventKeyDown;
+                ev.key = (u16)key; ev.modifiers = (u16)ks;
+                XGWindow@ w = (XGWindow@ ?)windows.first();
+                if (w != (XGWindow@)0 && w.firstResponder != (XGResponder@)0) {
+                    w.firstResponder.keyDown(ev);
+                }
+            }
+        }
+        return (i32)0;
+    }
+
+    // One repaint per loop iteration, however many views asked for it.
+    void displayIfNeeded(void) {
+        if (!gNeedsDisplay) { return; }
+        gNeedsDisplay = false;
+        for (Object@ o in windows) {
+            XGWindow@ w = (XGWindow@ ?)o;
+            if (w != (XGWindow@)0) { w.display(); }
+        }
+    }
+
+    void handleMessage(i16@ msg) {
+        i16 kind = msg[0];
+        if (kind == (i16)WM_CLOSED) {
+            self.stop();
+        } else if (kind == (i16)WM_REDRAW || kind == (i16)WM_SIZED || kind == (i16)WM_MOVED) {
+            XGWindow@ w = self.windowWithHandle((i32)msg[3]);
+            if (w != (XGWindow@)0) { w.display(); }
+        }
+    }
+
+    XGWindow@ windowAt(i32 x, i32 y) {
+        return self.windowWithHandle(wind_find(x, y));
+    }
+
+    XGWindow@ windowWithHandle(i32 h) {
+        for (Object@ o in windows) {
+            XGWindow@ w = (XGWindow@ ?)o;
+            if (w != (XGWindow@)0 && w.handle == h) { return w; }
+        }
+        return (XGWindow@)0;
+    }
+}

@@ -1,0 +1,105 @@
+// XGWindow.xt — one AES window handle, one view tree.
+//
+// GEM draws the frame (title, closer, mover — all themed, none of it our problem).
+// We supply the content, and the content is an OBJECT tree, so objc_draw walks it
+// and every stock widget in it draws itself.
+//
+// The AES calls back through a bare C function pointer with a void* — xtc has no
+// closures, so the XGWindow rides in that void*.  Proven in spikes/trampoline.xt.
+
+#import "XGGem.h.xt"
+#import "XGGeometry.xt"
+#import "XGResponder.xt"
+#import "XGView.xt"
+#import "XGViewTree.xt"
+#import "XGGraphics.xt"
+
+// objc_set_userdraw carries its own void* ud, so the window rides in THAT rather
+// than in a global — re-registered per draw, which is exact and needs no registry.
+XGGraphics@ gGraphics;
+pointer     gTheme;
+
+// ---- THE SEAM ---------------------------------------------------------------
+// The AES invokes this for every G_USERDEF inside objc_draw.  It is drawRect.
+i32 xtg_userdraw(pointer tree, i32 obj, pointer ud)
+{
+    XGWindow@ w = (XGWindow@)ud;             // the window, straight from the AES
+    if (w == (XGWindow@)0) { return (i32)0; }
+
+    XGViewTree@ vt = w.tree;
+    XGView@ v = (XGView@ ?)vt.viewAt((u16)obj);
+    if (v == (XGView@)0) { return (i32)0; }
+
+    XGRect abs = vt.absoluteFrame((u16)obj);
+    gGraphics.bind(aes_handle(), gTheme, abs);
+
+    // Virtual dispatch into app code, from inside the AES's own traversal.
+    v.drawRect(gGraphics, XGGeom.make((i16)0, (i16)0, abs.w, abs.h));
+    return (i32)0;
+}
+
+// The window's content callback: hand our tree to the AES.
+void xtg_window_draw(i32 handle, i32 wx, i32 wy, i32 ww, i32 wh, pointer ud)
+{
+    XGWindow@ w = (XGWindow@)ud;
+    if (w == (XGWindow@)0) { return; }
+    w.layoutFor(wx, wy, ww, wh);
+
+    // Point the seam at THIS window for the duration of the walk.
+    objc_set_userdraw((pointer)&xtg_userdraw, (pointer)w);
+    objc_draw((pointer)w.tree.objects(), (i32)0, (i32)8, wx, wy, ww, wh);
+}
+
+class XGWindow : XGResponder
+{
+    i32          handle;
+    XGViewTree@  tree;
+    XGView@      contentView;
+    weak:XGResponder@ firstResponder;
+
+    void init(void) {
+        super.init();
+        handle = (i32)0;
+        tree = new XGViewTree();
+        contentView = (XGView@)0;
+        firstResponder = (XGResponder@)0;
+    }
+
+    // The content view is the tree's ROOT object — a G_BOX, so GEM paints the
+    // window's background for us.
+    void open(u8@ title, XGRect f, XGView@ content) {
+        contentView = content;
+        content.attachTo(tree, XGGeom.make((i16)0, (i16)0, f.w, f.h));
+        content.setNextResponder(self);          // the chain ends at the window
+
+        handle = wind_create(W_NAME|W_CLOSER|W_MOVER, (i32)f.x, (i32)f.y, (i32)f.w, (i32)f.h);
+        wind_set_name(handle, title);
+        wind_content(handle, (pointer)&xtg_window_draw, (pointer)self);
+        wind_open(handle, (i32)f.x, (i32)f.y, (i32)f.w, (i32)f.h);
+        tree.finalise();
+        self.display();
+    }
+
+    // The AES gives us the work area on every draw; the root tracks it, so the
+    // whole tree moves with the window for free (children are parent-relative).
+    void layoutFor(i32 wx, i32 wy, i32 ww, i32 wh) {
+        OBJECT@ t = tree.objects();
+        t[0].ob_x = (i16)wx; t[0].ob_y = (i16)wy;
+        t[0].ob_w = (i16)ww; t[0].ob_h = (i16)wh;
+    }
+
+    // Repaint.  One call, coalesced by the caller — and now genuinely per-window
+    // rather than a full-screen composite.
+    void display(void) { wind_redraw_win(handle); }
+
+    // A click landed in this window: let the AES find what was hit, then send it
+    // into the responder chain.
+    void dispatchMouse(XGEvent@ e) {
+        i32 hit = tree.hitTest(e.x, e.y);
+        if (hit < (i32)0) { return; }
+        Object@ o = tree.viewAt((u16)hit);
+        XGView@ v = (XGView@ ?)o;
+        if (v == (XGView@)0) { return; }
+        v.mouseDown(e);                         // climbs the chain if unhandled
+    }
+}
