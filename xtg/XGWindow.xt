@@ -56,6 +56,9 @@ class XGWindow : XGResponder
     XGViewTree@  tree;
     XGView@      contentView;
     weak:XGResponder@ firstResponder;
+    // A hand-built content view fills the window.  A tree loaded from a .rsc has
+    // its OWN size — the designer chose it — so we position it but never resize it.
+    bool         resizesContent;
 
     void init(void) {
         super.init();
@@ -63,6 +66,7 @@ class XGWindow : XGResponder
         tree = new XGViewTree();
         contentView = (XGView@)0;
         firstResponder = (XGResponder@)0;
+        resizesContent = true;
     }
 
     // The content view is the tree's ROOT object — a G_BOX, so GEM paints the
@@ -80,12 +84,33 @@ class XGWindow : XGResponder
         self.display();
     }
 
+    // Open a window whose content came out of a .rsc.  The resource's OBJECT tree
+    // IS the view tree — nothing is converted.
+    void openWithTree(u8@ title, XGRect f, XGViewTree@ vt) {
+        tree = vt;
+        resizesContent = false;               // the resource decided its own size
+        contentView = (XGView@ ?)vt.viewAt((u16)0);       // the resource's root
+        if (contentView != (XGView@)0) { contentView.setNextResponder(self); }
+
+        handle = wind_create(W_NAME|W_CLOSER|W_MOVER, (i32)f.x, (i32)f.y, (i32)f.w, (i32)f.h);
+        wind_set_name(handle, title);
+        wind_content(handle, (pointer)&xtg_window_draw, (pointer)self);
+        wind_open(handle, (i32)f.x, (i32)f.y, (i32)f.w, (i32)f.h);
+        self.display();
+    }
+
+    // Find a view by its object index — how an app reaches a control the nib made.
+    // Rocks' symbolic export means this reads as views[MAIN_OK], not views[3].
+    XGView@ viewAt(u16 i) { return (XGView@ ?)tree.viewAt(i); }
+
     // The AES gives us the work area on every draw; the root tracks it, so the
     // whole tree moves with the window for free (children are parent-relative).
     void layoutFor(i32 wx, i32 wy, i32 ww, i32 wh) {
         OBJECT@ t = tree.objects();
-        t[0].ob_x = (i16)wx; t[0].ob_y = (i16)wy;
-        t[0].ob_w = (i16)ww; t[0].ob_h = (i16)wh;
+        t[0].ob_x = (i16)wx; t[0].ob_y = (i16)wy;      // always: follow the window
+        if (resizesContent) {
+            t[0].ob_w = (i16)ww; t[0].ob_h = (i16)wh;  // only a content view stretches
+        }
     }
 
     // Repaint.  One call, coalesced by the caller — and now genuinely per-window

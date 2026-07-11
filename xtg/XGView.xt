@@ -41,10 +41,19 @@ class XGView : XGResponder
     // A subclass that draws nothing of its own should return G_IBOX.
     u16 gemType(void) { return (u16)G_USERDEF; }
 
-    // Attach to a tree.  Called by the tree/window, not by app code.
+    // Attach to a tree, creating the OBJECT.  Called by the tree/window, not by
+    // app code.
     void attachTo(XGViewTree@ t, XGRect frame) {
         owner = t;
         index = t.append(self.gemType(), frame, self);
+    }
+
+    // Attach to an OBJECT that ALREADY exists — the .rsc path.  The resource
+    // supplied the type, the frame, the flags and the state; we supply behaviour.
+    void adoptObject(XGViewTree@ t, u16 i) {
+        owner = t;
+        index = i;
+        t.bind(i, self);
     }
 
     // ---- geometry: the OBJECT is the truth ---------------------------------

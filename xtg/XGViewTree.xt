@@ -30,8 +30,10 @@ class XGViewTree
     Array@  views;       // views[i] is the XGView backing tree[i]
     u16     count;
     u16     capacity;
+    bool    owns;        // did we malloc `tree`, or does a rscdoc own it?
 
     void init(void) {
+        owns = true;
         capacity = (u16)16;
         tree  = (OBJECT@)malloc((u32)capacity * (u32)sizeof(OBJECT));
         views = new Array();
@@ -39,8 +41,23 @@ class XGViewTree
     }
 
     void dealloc(void) {
-        if (tree != (OBJECT@)0) { free((pointer)tree); }
+        // Only free what we allocated: an adopted tree belongs to the rscdoc.
+        if (owns && tree != (OBJECT@)0) { free((pointer)tree); }
     }
+
+    // Adopt an OBJECT[] somebody else owns — a tree straight out of a .rsc.
+    // Nothing is copied and nothing is rebuilt: the resource IS the view tree.
+    void adopt(OBJECT@ t, u16 n) {
+        if (owns && tree != (OBJECT@)0) { free((pointer)tree); }
+        tree  = t;
+        owns  = false;
+        count = n;
+        capacity = n;
+        views = new Array();
+    }
+
+    // Bind a view to an object that already exists (the adopt path).
+    void bind(u16 i, Object@ view) { views.add(view); }
 
     OBJECT@ objects(void) { return tree; }
     u16     length(void)  { return count; }
