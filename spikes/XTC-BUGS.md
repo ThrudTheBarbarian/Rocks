@@ -96,3 +96,28 @@ gemobj.xt:16:62: note: ABANDON|lowering: struct '$anon_266581' has no field 'ob_
 
 For DWARF-imported C structs this is dangerous: a field-name change in the C header
 turns into silently-lost writes rather than a build failure. Should be an error.
+
+---
+
+## Gap D — DWARF import does not surface anonymous enum constants
+
+`#import <GEM>` brings in structs (verbatim — proven) and functions, but **not the
+enumerators of an unnamed enum**. `aes.h` declares *every* constant that way:
+
+```c
+enum { G_BOX=20, G_TEXT=21, ..., G_USERDEF=24, ... };
+enum { OF_NONE=0x00, OF_SELECTABLE=0x01, ..., OF_HIDETREE=0x80 };
+enum { OS_NORMAL=0x00, ..., OS_DISABLED=0x08 };
+```
+
+So `G_USERDEF`, `OF_HIDETREE`, `OS_DISABLED`, `W_NAME` … are all invisible to xtc,
+and every binding has to hand-mirror them (`xtg/XGGem.xt` does this today) —
+duplication that silently drifts when the C header changes.
+
+Two possible fixes; the first is better because it costs GEM nothing and helps every
+future binding, in any language:
+
+- **(a) xtc: import the enumerators of anonymous enums** as constants.
+- (b) GEM: name its enums (`enum ObType { ... }`).
+
+Not a blocker — just a papercut that will bite whoever forgets to re-sync.

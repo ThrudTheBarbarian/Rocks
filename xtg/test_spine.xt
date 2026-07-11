@@ -1,0 +1,94 @@
+// Headless Phase-1 test.  No framebuffer needed: objc_find and objc_offset are
+// pure geometry, so the AES can walk and hit-test our tree with no display.
+#import <Stdio.xt>
+#import "XGView.xt"
+
+u16 gFails;
+u16 gChecks;
+void ck(bool ok, u8@ what) {
+    gChecks = gChecks + (u16)1;
+    if (!ok) { gFails = gFails + (u16)1; Stdio.printf("  FAIL %s\n", what); }
+}
+
+// A view that records whether the responder chain reached it.
+class ProbeView : XGView {
+    u16 hits;
+    bool consume;
+
+    void init(void) { super.init(); hits = (u16)0; consume = false; }
+
+    void mouseDown(XGEvent@ e) {
+        hits = hits + (u16)1;
+        if (!consume) { super.mouseDown(e); }   // not mine — pass it up
+    }
+}
+
+void main(void)
+{
+    gFails = (u16)0; gChecks = (u16)0;
+
+    XGViewTree@ t = new XGViewTree();
+
+    // root 0,0 320x200
+    ProbeView@ root = new ProbeView();
+    root.attachTo(t, XGGeom.make((i16)0, (i16)0, (i16)320, (i16)200));
+
+    // a child box at 100,50 and a button inside IT at 10,10 (so abs 110,60)
+    ProbeView@ box = new ProbeView();
+    box.attachTo(t, XGGeom.make((i16)100, (i16)50, (i16)150, (i16)100));
+    t.addChild(root.index, box.index);
+    box.superview = root;
+    box.setNextResponder(root);
+
+    ProbeView@ btn = new ProbeView();
+    btn.attachTo(t, XGGeom.make((i16)10, (i16)10, (i16)60, (i16)20));
+    t.addChild(box.index, btn.index);
+    btn.superview = box;
+    btn.setNextResponder(box);
+
+    t.finalise();
+
+    // ---- the tree the AES sees ------------------------------------------------
+    ck(t.length() == (u16)3, "three objects in the tree");
+    ck(t.objects()[root.index].ob_head == (i16)box.index, "root's first child is the box");
+    ck(t.objects()[box.index].ob_head  == (i16)btn.index, "box's first child is the button");
+    ck(t.objects()[btn.index].ob_next  == (i16)box.index, "last child points back at its parent");
+
+    // ---- objc_offset: the AES computes absolute position ----------------------
+    XGRect abs = btn.absoluteFrame();
+    ck(abs.x == (i16)110 && abs.y == (i16)60, "objc_offset: button is at 110,60");
+
+    // ---- objc_find: the AES hit-tests OUR tree --------------------------------
+    ck(t.hitTest((i16)120, (i16)65) == (i32)btn.index, "hit inside the button finds it");
+    ck(t.hitTest((i16)200, (i16)140) == (i32)box.index, "hit in the box, not the button");
+    ck(t.hitTest((i16)5,   (i16)5)   == (i32)root.index, "hit in the root only");
+
+    // OF_HIDETREE: the AES must skip a hidden subtree
+    box.setHidden(true);
+    ck(t.hitTest((i16)120, (i16)65) == (i32)root.index, "hidden subtree is not hit");
+    box.setHidden(false);
+    ck(t.hitTest((i16)120, (i16)65) == (i32)btn.index, "unhidden again");
+
+    // ---- the responder chain ---------------------------------------------------
+    XGEvent@ e = new XGEvent();
+
+    // nobody consumes: the event must climb button -> box -> root
+    btn.mouseDown(e);
+    ck(btn.hits == (u16)1 && box.hits == (u16)1 && root.hits == (u16)1,
+       "unconsumed event climbs the whole chain");
+
+    // the box consumes: root must NOT see it
+    btn.hits = (u16)0; box.hits = (u16)0; root.hits = (u16)0;
+    box.consume = true;
+    btn.mouseDown(e);
+    ck(btn.hits == (u16)1 && box.hits == (u16)1 && root.hits == (u16)0,
+       "a consumer stops the chain");
+
+    // ---- structure change ------------------------------------------------------
+    t.removeChild(box.index, btn.index);
+    ck(t.objects()[box.index].ob_head == (i16)-1, "removeChild unlinks the only child");
+    ck(t.hitTest((i16)120, (i16)65) == (i32)box.index, "the AES no longer finds it");
+
+    Stdio.printf("spine: %d checks, %d failure(s) — %s\n",
+                 (i16)gChecks, (i16)gFails, gFails == (u16)0 ? "PASS" : "FAIL");
+}

@@ -1,0 +1,20 @@
+// XGEvent.xt — one UI event.  Filled out from evnt_multi when the run loop lands.
+enum XGEventKind = [
+    XGEventNone = 0, XGEventMouseDown = 1, XGEventMouseUp = 2,
+    XGEventMouseDragged = 3, XGEventKeyDown = 4, XGEventRedraw = 5, XGEventQuit = 6
+];
+
+class XGEvent {
+    u8  kind;
+    i16 x;
+    i16 y;
+    u16 buttons;
+    u16 key;
+    u16 modifiers;
+
+    void init(void) {
+        kind = (u8)XGEventNone;
+        x = (i16)0; y = (i16)0;
+        buttons = (u16)0; key = (u16)0; modifiers = (u16)0;
+    }
+}

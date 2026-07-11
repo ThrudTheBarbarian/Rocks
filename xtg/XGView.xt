@@ -1,0 +1,123 @@
+// XGView.xt — a view IS a GEM object.
+//
+// The view does not own a rectangle and a list of children; it owns an INDEX into
+// an XGViewTree, and the OBJECT at that index is the truth.  Geometry, hierarchy,
+// visibility and state all live in the OBJECT, because that is what the AES reads.
+//
+// A plain container is a G_IBOX (invisible).  A view that draws is a G_USERDEF,
+// and the AES calls back into drawRect through objc_set_userdraw.  Standard
+// controls are their real GEM types (G_BUTTON, G_FIELD, ...) and GEM draws them —
+// they cost us nothing.
+
+#import <GEM>
+#import "Array.xt"
+#import "XGGem.xt"
+#import "XGGeometry.xt"
+#import "XGResponder.xt"
+#import "XGViewTree.xt"
+#import "XGGraphics.xt"
+
+class XGView : XGResponder
+{
+    weak:XGViewTree@ owner;      // the tree we live in (it holds us, so weak)
+    u16              index;      // our slot in that tree
+    weak:XGView@     superview;
+    Array@           subviews;   // strong: a view owns its children
+
+    void init(void) {
+        super.init();
+        owner     = (XGViewTree@)0;
+        index     = (u16)0;
+        superview = (XGView@)0;
+        subviews  = new Array();
+    }
+
+    // The GEM object type this view is backed by.  Override in a subclass:
+    //   XGButton  -> G_BUTTON   (GEM draws it, themed, free)
+    //   XGView    -> G_USERDEF  (we draw it, via drawRect)
+    // A subclass that draws nothing of its own should return G_IBOX.
+    u16 gemType(void) { return (u16)G_USERDEF; }
+
+    // Attach to a tree.  Called by the tree/window, not by app code.
+    void attachTo(XGViewTree@ t, XGRect frame) {
+        owner = t;
+        index = t.append(self.gemType(), frame, self);
+    }
+
+    // ---- geometry: the OBJECT is the truth ---------------------------------
+
+    XGRect frame(void) {
+        OBJECT@ o = &owner.objects()[index];
+        return XGGeom.make(o.ob_x, o.ob_y, o.ob_w, o.ob_h);
+    }
+
+    void setFrame(XGRect f) {
+        OBJECT@ o = &owner.objects()[index];
+        o.ob_x = f.x; o.ob_y = f.y; o.ob_w = f.w; o.ob_h = f.h;
+        self.setNeedsDisplay();
+    }
+
+    // Bounds are the frame at the origin — drawRect works in bounds coordinates.
+    XGRect bounds(void) {
+        XGRect f = self.frame();
+        return XGGeom.make((i16)0, (i16)0, f.w, f.h);
+    }
+
+    XGRect absoluteFrame(void) { return owner.absoluteFrame(index); }
+
+    // ---- hierarchy ----------------------------------------------------------
+
+    void addSubview(XGView@ v) {
+        v.attachTo(owner, v.frame());
+        owner.addChild(index, v.index);
+        v.superview = self;
+        v.setNextResponder(self);           // the responder chain follows the views
+        subviews.add(v);
+        self.setNeedsDisplay();
+    }
+
+    void removeFromSuperview(void) {
+        if (superview == (XGView@)0) { return; }
+        superview.owner.removeChild(superview.index, index);
+        superview.setNeedsDisplay();
+        superview = (XGView@)0;
+    }
+
+    // ---- visibility / state, straight through to the OBJECT ------------------
+
+    bool isHidden(void) {
+        return (owner.objects()[index].ob_flags & (u16)OF_HIDETREE) != (u16)0;
+    }
+    void setHidden(bool h) {
+        OBJECT@ o = &owner.objects()[index];
+        if (h) { o.ob_flags = o.ob_flags | (u16)OF_HIDETREE; }
+        else   { o.ob_flags = o.ob_flags & (u16)$FF7F; }
+        self.setNeedsDisplay();
+    }
+
+    bool isEnabled(void) {
+        return (owner.objects()[index].ob_state & (u16)OS_DISABLED) == (u16)0;
+    }
+    void setEnabled(bool e) {
+        OBJECT@ o = &owner.objects()[index];
+        if (e) { o.ob_state = o.ob_state & (u16)$FFF7; }
+        else   { o.ob_state = o.ob_state | (u16)OS_DISABLED; }
+        self.setNeedsDisplay();
+    }
+
+    // ---- drawing -------------------------------------------------------------
+
+    // Override this.  It is called BY THE AES, during objc_draw's own traversal,
+    // inside the AES's clip — see objc_set_userdraw.  Coordinates are absolute.
+    void drawRect(XGGraphics@ g, XGRect dirty) { }
+
+    // Mark dirty.  Draws nothing: the window unions this into its damage region
+    // and the run loop asks the AES to repaint once, coalesced.
+    void setNeedsDisplay(void) {
+        // (the window walks up through `superview` — wired in XGWindow)
+    }
+
+    // ---- hit-testing ---------------------------------------------------------
+    // Deliberately NOT implemented here: objc_find already does it, correctly,
+    // depth-first, honouring OF_HIDETREE.  See XGViewTree.hitTest.
+}
