@@ -21,7 +21,7 @@ shaped for it and currently unused.
 | Window chrome (title, closer, mover, sliders) | **draws** | never touches |
 | Compositing + `fb_present` | **owns** | never touches |
 | Input (`sys_input`) | **owns**, routes | receives events |
-| Menu bar (global strip) | **owns the strip** | supplies the content (see §5) |
+| Menu bar (global strip) | **owns and clears the strip** | **paints it** while active (see §5) |
 | Desktop background / wallpaper | **owns** | — |
 | VDI (`v_bar`, `v_gtext`, `vr_transfer_bits`…) | for chrome | **for its own content** |
 | `objc_draw` / `theme_draw` / `form_do` / `form_alert` | — | **client-side, unchanged** |
@@ -96,41 +96,59 @@ not change at all**.
 
 ---
 
-## 5. The menu bar: it is just another window
+## 5. The menu bar: no backing store, just a clear and a message
 
 `menu_bar(tree)` hands the AES an `OBJECT` tree **in the client's address space**,
-which the server cannot reach. But once the strip is shm, that stops being a
-problem — the app draws its own menu, exactly as it draws its own windows.
+which the server cannot reach. So the app must draw its own menu. The question is
+only *where*, and *when*.
 
-**Give each app its own strip-sized surface.**
+### It needs no surface of its own
+
+A window needs a backing store (§2) because of **occlusion** — the server must be
+able to repaint a window it cannot see all of, without the owner's help.
+
+**The strip is never occluded.** `g_top_reserve` keeps windows out of it, and menu
+dropdowns hang *below* it. So there is no repaint the server ever has to perform on
+the app's behalf. The only thing that ever dirties the strip is an **ownership
+change** — and an ownership change is already a message to the new owner. A backing
+store would buy nothing.
 
 ```
-    menu_bar(tree):                         (client, ONCE)
-        surface = my strip buffer           (1920 x ~25, from the server)
-        objc_draw(tree, ...)                (the same call as any other content)
-        wind_damage(strip, ...)
+    menu_bar(tree):                     (client)  remember the tree; if I am active, draw it
 
-    WM_TOPPED to another app:               (server)
-        composite THAT app's strip buffer.  No wipe.  No message.  No round-trip.
+    WM_TOPPED, new window's owner != $currentApp:      (server)
+        clear the strip                 (clean space — the AES owns the strip, it can)
+        send the new owner "draw your menu bar, here is the rect"
+                                        (client)
+        objc_draw(myMenuTree, ...)      clipped to the strip.  The same call as ever.
 ```
 
-So the menu bar is literally a window — pinned to the top strip, owned by the app,
-shown only while that app is active. It needs **no new mechanism**: the server
-already reserves the strip (`g_top_reserve`), and an app redraws it only when its
-menu actually changes (an item is checked, disabled, retitled) — the same rule as
-any other window.
+So the menu bar is not a window and not a surface: it is a **region the server clears
+and the active app paints**. Ownership follows the top window, which is exactly TOS's
+rule.
 
-**Why not "wipe the strip and ask the new app to draw it" on switch.** That is the
-obvious design, and it costs an IPC round-trip plus a repaint on *every* app switch:
-wipe → message → the app maps and draws → damage → composite. If the app is busy or
-blocked, the user watches a **blank menu bar** for the duration. Window switching is
-the most latency-visible thing a WM does. With a per-app buffer the switch is one
-blit of something already drawn.
+### What it costs: one exception, and it must be written down
 
-Memory is the only cost — 1920 × 25 × 4 ≈ **190 KB per app**, so five apps is under a
-megabyte. If that ever bites, the server can evict an inactive strip and fall back to
-ask-on-switch: the round-trip design is the graceful-degradation mode, not the wrong
-one.
+The client now draws into **server-owned pixels**. It needs a second VDI workstation
+— on the framebuffer, clipped to the strip. That is the *single* place a client
+touches the framebuffer, and it is precisely the classic-GEM failure mode that §2
+option (c) was rejected to avoid (an app scribbling on the desktop).
+
+It is containable: **the server hands out a strip workstation only to the active app
+and revokes it on switch, and the clip rect is the enforcement.**
+
+If we ever want the exception closed, there is a cheap upgrade that needs no protocol
+change: **one** server-owned strip surface, *loaned* to whoever is active — not one
+per app. ~190 KB total, and the compositor then treats the strip like any other
+surface. Worth knowing about; not worth paying for now.
+
+### The residual: a wedged app shows a blank menu bar
+
+Because the strip is cleared before the new owner has drawn, an app that is wedged or
+blocked shows an empty menu bar. **That is correct.** With backing stores a wedged
+app's *windows* still composite fine, so the menu is the one place its wedged-ness
+shows — and it should show. If it ever grates, defer the clear until the new owner's
+paint lands.
 
 ### The dropdown needs one new primitive
 
@@ -181,7 +199,7 @@ the server still calls `aes_init`.
 3. **Input routing** (§3). `aes_set_events` is already the seam.
 4. **The transient top window** (§5) — one primitive, and it buys the menu dropdown,
    `menu_popup` and `form_alert` together.
-5. **The menu bar** (§5), which by then is just a window.
+5. **The menu bar** (§5) — a clear, a message, and a clipped workstation. No surface.
 6. Then, and only then, multiple concurrent apps.
 
 Steps 2 and 3 are the whole architecture; 4-6 are consequences of it.
