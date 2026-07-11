@@ -96,26 +96,60 @@ not change at all**.
 
 ---
 
-## 5. The one genuine wrinkle: the menu bar
+## 5. The menu bar: it is just another window
 
-`menu_bar(tree)` hands the AES an `OBJECT` tree **in the client's address space**.
-The server owns the global menu strip but cannot reach that tree. Options:
+`menu_bar(tree)` hands the AES an `OBJECT` tree **in the client's address space**,
+which the server cannot reach. But once the strip is shm, that stops being a
+problem — the app draws its own menu, exactly as it draws its own windows.
 
-- **(a) The menu bar is a window the active app owns.** The server allocates the
-  strip's shm surface, the client draws its menu tree into it with the same
-  `objc_draw` it uses for everything else, and the server composites it. Consistent
-  with §2, no new mechanism, and `menu_bar()` becomes "here is my bar, show it".
-- (b) Serialise the menu tree to the server on `menu_bar()`. The server then owns
-  drawing and hit-testing. Fewer round-trips on every click, but it needs a whole
-  serialisation format for OBJECT trees + strings, and drops `G_USERDEF` menus.
+**Give each app its own strip-sized surface.**
 
-**Recommend (a)** — it reuses the window path entirely, and the menu bar genuinely
-*is* a window that happens to be pinned to the top strip and owned by whoever is
-active. `MN_SELECTED` then flows back like any other event.
+```
+    menu_bar(tree):                         (client, ONCE)
+        surface = my strip buffer           (1920 x ~25, from the server)
+        objc_draw(tree, ...)                (the same call as any other content)
+        wind_damage(strip, ...)
 
-Same argument covers `menu_popup` and `form_alert`: both are client-side windows.
+    WM_TOPPED to another app:               (server)
+        composite THAT app's strip buffer.  No wipe.  No message.  No round-trip.
+```
 
----
+So the menu bar is literally a window — pinned to the top strip, owned by the app,
+shown only while that app is active. It needs **no new mechanism**: the server
+already reserves the strip (`g_top_reserve`), and an app redraws it only when its
+menu actually changes (an item is checked, disabled, retitled) — the same rule as
+any other window.
+
+**Why not "wipe the strip and ask the new app to draw it" on switch.** That is the
+obvious design, and it costs an IPC round-trip plus a repaint on *every* app switch:
+wipe → message → the app maps and draws → damage → composite. If the app is busy or
+blocked, the user watches a **blank menu bar** for the duration. Window switching is
+the most latency-visible thing a WM does. With a per-app buffer the switch is one
+blit of something already drawn.
+
+Memory is the only cost — 1920 × 25 × 4 ≈ **190 KB per app**, so five apps is under a
+megabyte. If that ever bites, the server can evict an inactive strip and fall back to
+ask-on-switch: the round-trip design is the graceful-degradation mode, not the wrong
+one.
+
+### The dropdown needs one new primitive
+
+A click in the strip routes to the active app, which `objc_find`s its own menu tree.
+But **the dropdown is bigger than the strip** — it falls over other windows. So it
+cannot live in the strip buffer.
+
+It needs a **client-owned, server-composited, always-on-top transient window**. Which
+is precisely what `menu_popup` needs, and what `form_alert` needs. One primitive,
+three cases:
+
+| | is a transient top window |
+|---|---|
+| a menu dropdown | ✔ |
+| `menu_popup` | ✔ |
+| `form_alert` / modal dialog | ✔ |
+
+Get that right and all three fall out of it. It is the only thing besides the
+per-window backing store (§2) that the compositor genuinely has to understand.
 
 ## 6. What Xtg has to change
 
@@ -142,8 +176,12 @@ the server still calls `aes_init`.
 
 1. **Keep libGEM's API; split the implementation.** `aes/window.c` grows a
    client/server switch, chosen at `aes_init` (server) vs `appl_init` (client).
-2. Backing-store drawing (§2) first, with a **single** client — provable before any
-   multi-app work: run `aesdesk` as the server and one Xtg app as a client.
-3. Input routing (§3).
-4. The menu bar (§5).
-5. Then, and only then, multiple concurrent apps.
+2. **Backing-store drawing** (§2) first, with a **single** client — provable before
+   any multi-app work: run `aesdesk` as the server and one Xtg app as a client.
+3. **Input routing** (§3). `aes_set_events` is already the seam.
+4. **The transient top window** (§5) — one primitive, and it buys the menu dropdown,
+   `menu_popup` and `form_alert` together.
+5. **The menu bar** (§5), which by then is just a window.
+6. Then, and only then, multiple concurrent apps.
+
+Steps 2 and 3 are the whole architecture; 4-6 are consequences of it.
