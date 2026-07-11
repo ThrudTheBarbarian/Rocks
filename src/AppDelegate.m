@@ -71,6 +71,9 @@ static NSMenuItem *mi(NSMenu *m, NSString *title, SEL action, NSString *key) {
     // Object
     NSMenuItem *objItem = [[NSMenuItem alloc] init]; [main addItem:objItem];
     NSMenu *obj = [[NSMenu alloc] initWithTitle:@"Object"];
+    mi(obj, @"New Alert…", @selector(newAlert:), @"");
+    mi(obj, @"Edit Alerts…", @selector(editAlerts:), @"");
+    [obj addItem:[NSMenuItem separatorItem]];
     NSMenuItem *at = mi(obj, @"Add Menu Title", @selector(addMenuTitle:), @"t");
     at.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
     NSMenuItem *ai = mi(obj, @"Add Menu Item", @selector(addMenuItem:), @"i");

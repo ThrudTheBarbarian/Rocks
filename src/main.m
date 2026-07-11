@@ -9,6 +9,7 @@
 #import "GImage.h"
 #import "GRender.h"
 #import "GForm.h"
+#import "GAlert.h"
 
 // Headless checks: Rocks --selftest [file.rsc]
 static int selftest(int argc, const char *argv[]) {
@@ -73,6 +74,8 @@ static void ck(BOOL cond, const char *what) {
     gChecks++;
     if (!cond) { gFails++; printf("  FAIL %s\n", what); }
 }
+
+static void alerttests(void);
 
 static int formtest(void) {
     // a dialog: two radios, a check box, a validated field, OK (default) + Cancel
@@ -167,8 +170,41 @@ static int formtest(void) {
     NSArray *fields = [GForm editableObjectsIn:t];
     ck(fields.count == 1 && fields[0] == fld, "only the editable field is in the tab order");
 
+    alerttests();
+
     printf("formtest: %d checks, %d failure(s) — %s\n", gChecks, gFails, gFails ? "FAIL" : "OK");
     return gFails ? 1 : 0;
+}
+
+// Alerts: the form_alert string round-trips through GAlert.
+static void alerttests(void) {
+    GAlert *a = [GAlert alertFromString:@"[1][Delete this file?|It cannot be undone][Cancel|OK]"];
+    ck(a != nil, "a well-formed alert parses");
+    ck(a.icon == GAlertNote, "icon 1 = NOTE");
+    ck(a.lines.count == 2 && [a.lines[1] isEqualToString:@"It cannot be undone"], "lines split on |");
+    ck(a.buttons.count == 2 && [a.buttons[1] isEqualToString:@"OK"], "buttons split on |");
+    ck([[a stringValue] isEqualToString:@"[1][Delete this file?|It cannot be undone][Cancel|OK]"],
+       "the string round-trips exactly");
+
+    GAlert *b = [GAlert alertFromString:@"[3][Disk is full][OK]"];
+    ck(b.icon == GAlertStop && b.buttons.count == 1, "stop icon, single button");
+    GAlert *c = [GAlert alertFromString:@"[0][No icon here][OK]"];
+    ck(c.icon == GAlertNone, "icon 0 = none");
+    GAlert *d = [GAlert alertFromString:@"[2][Please wait][]"];
+    ck(d.icon == GAlertWait && d.buttons.count == 1 && [d.buttons[0] isEqualToString:@"OK"],
+       "an empty button section defaults to OK");
+
+    ck([GAlert alertFromString:@"not an alert at all"] == nil, "plain text is not an alert");
+    ck(![GAlert looksLikeAlert:@"Just a string"], "looksLikeAlert says no to plain text");
+    ck([GAlert looksLikeAlert:@"[1][Hi][OK]"], "looksLikeAlert says yes to an alert");
+
+    // the icons the theme actually provides
+    for (int i = 1; i <= 3; i++) {
+        GAlert *e = [GAlert new];
+        e.icon = (GAlertIcon)i;
+        ck([e preferredSize].width > 0 && [e preferredSize].height > 0,
+           "each icon yields a drawable size");
+    }
 }
 
 // Rocks --clicktest <file.rsc> — drive a REAL resource through the same sequence
@@ -344,6 +380,56 @@ static int imageshot(const char *rsc, const char *out) {
     return 0;
 }
 
+// Rocks --alerts <out.png> — draw one alert per theme icon, as the AES lays them out.
+
+// GTheme slices assume a flipped view.  Flipping the CONTEXT by hand would mirror
+// the text, so render through a genuinely flipped view — the same way the canvas
+// and the wizard's preview do.
+@interface GAlertSheet : NSView
+@property (strong) NSArray<GAlert *> *alerts;
+@end
+@implementation GAlertSheet
+- (BOOL)isFlipped { return YES; }
+- (void)drawRect:(NSRect)dirty {
+    [[NSColor colorWithWhite:0.28 alpha:1] set]; NSRectFill(self.bounds);
+    CGFloat y = 10;
+    for (GAlert *a in _alerts) {
+        NSSize sz = [a preferredSize];
+        [a drawInRect:NSMakeRect(20, y, sz.width, sz.height)];
+        y += sz.height + 20;
+    }
+}
+@end
+
+static int alertshot(const char *out) {
+    NSArray<NSString *> *specs = @[
+        @"[1][Rocks has finished importing|the resource.][OK]",
+        @"[2][Rebuilding the icon cache…|This may take a moment.][Cancel]",
+        @"[3][Delete this file?|It cannot be undone.][Cancel|Delete]",
+        @"[0][No icon on this one.][OK|Maybe|No]",
+    ];
+    NSMutableArray<GAlert *> *alerts = [NSMutableArray array];
+    CGFloat H = 20, W = 0;
+    for (NSString *sp in specs) {
+        GAlert *a = [GAlert alertFromString:sp];
+        if (!a) continue;
+        a.defaultButton = (int)a.buttons.count;      // GEM outlines the last by convention
+        [alerts addObject:a];
+        NSSize sz = [a preferredSize];
+        H += sz.height + 20;
+        W = MAX(W, sz.width + 40);
+    }
+
+    GAlertSheet *v = [[GAlertSheet alloc] initWithFrame:NSMakeRect(0, 0, W, H)];
+    v.alerts = alerts;
+    NSBitmapImageRep *rep = [v bitmapImageRepForCachingDisplayInRect:v.bounds];
+    [v cacheDisplayInRect:v.bounds toBitmapImageRep:rep];
+    [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+        writeToFile:[NSString stringWithUTF8String:out] atomically:YES];
+    printf("%d alert(s) -> %s\n", (int)alerts.count, out);
+    return 0;
+}
+
 // Rocks --slice <name> renders that theme slice at several sizes to scratch.
 static int sliceTest(const char *name) {
     GTheme *th = [GTheme defaultTheme];
@@ -386,6 +472,9 @@ int main(int argc, const char *argv[]) {
     }
     if (argc > 2 && strcmp(argv[1], "--clicktest") == 0) {
         @autoreleasepool { return clicktest(argv[2]); }
+    }
+    if (argc > 2 && strcmp(argv[1], "--alerts") == 0) {
+        @autoreleasepool { return alertshot(argv[2]); }
     }
     if (argc > 3 && strcmp(argv[1], "--images") == 0) {
         @autoreleasepool { return imageshot(argv[2], argv[3]); }

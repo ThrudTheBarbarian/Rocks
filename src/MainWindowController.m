@@ -9,6 +9,8 @@
 #import "GProject.h"
 #import "GRsc.h"
 #import "GExport.h"
+#import "GAlert.h"
+#import "AlertWizard.h"
 #import "GHelp.h"
 #import "GImage.h"
 
@@ -30,6 +32,7 @@
     NSTextView *_helpText;
     NSSplitView *_cvSplit;
     NSData *_testSnapshot;      // resource state before test-drive; restored on exit
+    AlertWizard *_alertWizard;  // held so it is not deallocated while open
 }
 
 static const CGFloat kPaletteW = 158;
@@ -474,6 +477,43 @@ static const CGFloat kRightW = 320;
     NSData *d = GRscWrite(_doc.resource, &err);
     if (!d) { [self alert:err ?: @"Export failed."]; return; }
     [d writeToURL:p.URL atomically:YES];
+}
+
+// MARK: alerts
+//
+// A GEM alert is a form_alert string, not an OBJECT tree, so it lives in the
+// free-string table and exports as a #define like any other free string.
+
+- (void)newAlert:(id)sender {
+    _alertWizard = [[AlertWizard alloc] initWithDocument:_doc editingIndex:-1];
+    [_alertWizard showWindow:nil];
+}
+
+- (void)editAlerts:(id)sender {
+    // offer the free strings that actually look like alerts
+    NSMutableArray<NSNumber *> *idxs = [NSMutableArray array];
+    NSMenu *menu = [[NSMenu alloc] init];
+    NSArray<NSString *> *fs = _doc.resource.freeStrings;
+    for (int i = 0; i < (int)fs.count; i++) {
+        if (![GAlert looksLikeAlert:fs[i]]) continue;
+        [idxs addObject:@(i)];
+        GAlert *a = [GAlert alertFromString:fs[i]];
+        NSString *title = a.lines.firstObject.length ? a.lines.firstObject : fs[i];
+        NSMenuItem *it = [menu addItemWithTitle:[NSString stringWithFormat:@"%d — %@", i, title]
+                                         action:@selector(editAlertPicked:) keyEquivalent:@""];
+        it.target = self;
+        it.tag = i;
+    }
+    if (!menu.numberOfItems) {
+        [self alert:@"This resource has no alert strings yet. Use Object ▸ New Alert… to make one."];
+        return;
+    }
+    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(60, 60) inView:_canvas];
+}
+
+- (void)editAlertPicked:(NSMenuItem *)item {
+    _alertWizard = [[AlertWizard alloc] initWithDocument:_doc editingIndex:(int)item.tag];
+    [_alertWizard showWindow:nil];
 }
 
 // MARK: source export

@@ -60,6 +60,26 @@ real resource through the same hit-test → click path the canvas uses:
 ./build/Rocks.app/Contents/MacOS/Rocks --clicktest resource.rsc
 ```
 
+## Alerts
+
+**Object ▸ New Alert…** composes a GEM alert and shows it as the AES would draw it,
+using the theme's own `alert.note` / `alert.wait` / `alert.stop` icons. Pick the icon,
+type up to five message lines and up to three buttons, choose the default, and watch
+the preview follow along; the literal `form_alert` string is shown and can be typed
+directly if you prefer.
+
+An alert is not an OBJECT tree — it is a **string**, which an app fetches with
+`rsrc_gaddr(R_STRING, i)` and hands to `form_alert()`:
+
+```
+[icon][line|line|line][button|button]
+```
+
+So alerts are stored in the free-string table and export as `#define STR_…` like any
+other free string. **Object ▸ Edit Alerts…** lists the ones a resource already has.
+The wizard warns when GEM would clip the text (over 30 characters a line, over 10 a
+button, more than 5 lines or 3 buttons).
+
 ## Source export
 
 A resource is only useful if code can name the things in it. Rocks emits symbolic
