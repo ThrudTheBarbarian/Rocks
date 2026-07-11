@@ -32,6 +32,11 @@ typedef NS_ENUM(int, GHandle) {
     int      _caret;            // caret position within _focus's value
     GObject *_pressing;         // object currently held down
     GObject *_lastExit;         // what the form last exited through
+    // in-place text editing (double-click)
+    NSTextField *_editor;       // the field overlaying the object being edited
+    GObject *_editing;          // which object it belongs to
+    NSData  *_editSnapshot;     // resource before the edit, for one undo step
+    NSCursor *_ibeam;
     GObject *_openPopup;        // the G_POPUP whose list is showing
     GTree   *_popupTree;        // its linked tree (ob_type high byte = tree index)
     NSPoint  _popupOffset;      // model-space offset that tree is drawn at
@@ -70,7 +75,9 @@ typedef NS_ENUM(int, GHandle) {
 
 - (void)setTestMode:(BOOL)on {
     if (_testMode == on) return;
+    [self endEditingCommit:YES];
     _testMode = on;
+    [self.window invalidateCursorRectsForView:self];
     [self resetTestDrive];
     if (on) {
         [self.doc clearSelection];
@@ -146,6 +153,129 @@ typedef NS_ENUM(int, GHandle) {
     self.needsDisplay = YES;
 }
 
+// MARK: in-place text editing
+//
+// Double-click an object that shows text and edit it right there, rather than
+// going out to the inspector.  The text lives in different places depending on
+// the type — a string spec, a TEDINFO's text or its template, an icon label — so
+// the accessors below are the single place that knows which.
+
+static BOOL objectHasCanvasText(GObject *o) {
+    return [o hasStringSpec] || [o hasTedinfo] || o.type == GT_ICON ||
+           o.type == GT_CICON || o.type == GT_CICONBLK || o.type == GT_BOXCHAR;
+}
+
+static NSString *objectCanvasText(GObject *o) {
+    if ([o hasStringSpec]) return o.text ?: @"";
+    if ([o hasTedinfo]) {
+        // A static label keeps its text in the template; a field keeps a value.
+        BOOL isField = (o.flags & OF_EDITABLE) != 0;
+        return (isField ? o.ted.text : o.ted.tmplt) ?: @"";
+    }
+    if (o.icon) return o.icon.label ?: @"";
+    if (o.type == GT_BOXCHAR) return o.box.character ? [NSString stringWithFormat:@"%c", o.box.character] : @"";
+    return @"";
+}
+
+static void setObjectCanvasText(GObject *o, NSString *t) {
+    if ([o hasStringSpec]) { o.text = t; return; }
+    if ([o hasTedinfo]) {
+        if (o.flags & OF_EDITABLE) o.ted.text = t; else o.ted.tmplt = t;
+        return;
+    }
+    if (o.icon) { o.icon.label = t; return; }
+    if (o.type == GT_BOXCHAR) o.box.character = t.length ? (uint8_t)[t characterAtIndex:0] : 0;
+}
+
+- (void)beginEditing:(GObject *)o {
+    if (!o || !objectHasCanvasText(o)) { NSBeep(); return; }
+    [self endEditingCommit:YES];
+
+    NSPoint ao = [self.tree absoluteOriginOf:o];
+    if (isnan(ao.x)) return;
+    NSRect vr = [self viewRectFromModel:NSMakeRect(ao.x, ao.y, o.w, o.h)];
+    vr = NSInsetRect(vr, 0, MAX(0, (vr.size.height - 22) / 2));   // keep it legible at any zoom
+    vr.size.height = MAX(22, MIN(vr.size.height, 28));
+
+    _editSnapshot = [self.doc snapshot];
+    _editing = o;
+    _editor = [[NSTextField alloc] initWithFrame:vr];
+    _editor.stringValue = objectCanvasText(o);
+    _editor.font = [NSFont systemFontOfSize:MAX(11, MIN(18, 11 * _scale / 2))];
+    _editor.alignment = NSTextAlignmentCenter;
+    _editor.drawsBackground = YES;
+    _editor.backgroundColor = [NSColor whiteColor];
+    _editor.bezeled = YES;
+    _editor.delegate = (id<NSTextFieldDelegate>)self;
+    _editor.target = self;
+    _editor.action = @selector(editorCommitted:);
+    [self addSubview:_editor];
+    [self.window makeFirstResponder:_editor];
+    [_editor selectText:nil];
+}
+
+- (void)editorCommitted:(id)sender { [self endEditingCommit:YES]; }
+
+- (void)endEditingCommit:(BOOL)commit {
+    if (!_editor) return;
+    NSTextField *ed = _editor;
+    GObject *o = _editing;
+    NSData *before = _editSnapshot;
+    _editor = nil; _editing = nil; _editSnapshot = nil;
+
+    NSString *newText = ed.stringValue;
+    [ed removeFromSuperview];
+    [self.window makeFirstResponder:self];
+
+    if (commit && o && ![objectCanvasText(o) isEqualToString:newText]) {
+        setObjectCanvasText(o, newText);
+        if (before) [self.doc commit:@"Edit Text" from:before];
+        else [self.doc notifyModel];
+    }
+    self.needsDisplay = YES;
+}
+
+// Esc abandons the edit; Tab commits and moves on to the next text object.
+- (BOOL)control:(NSControl *)ctl textView:(NSTextView *)tv doCommandBySelector:(SEL)cmd {
+    if (ctl != _editor) return NO;
+    if (cmd == @selector(cancelOperation:)) { [self endEditingCommit:NO]; return YES; }
+    if (cmd == @selector(insertTab:) || cmd == @selector(insertBacktab:)) {
+        BOOL back = (cmd == @selector(insertBacktab:));
+        GObject *from = _editing;
+        [self endEditingCommit:YES];
+        NSMutableArray<GObject *> *texts = [NSMutableArray array];
+        [self.tree.root preorder:^(GObject *x) {
+            if (x != self.tree.root && objectHasCanvasText(x)) [texts addObject:x];
+        }];
+        if (!texts.count) return YES;
+        NSUInteger i = from ? [texts indexOfObject:from] : NSNotFound;
+        NSInteger n = (i == NSNotFound) ? 0 : (NSInteger)i + (back ? -1 : 1);
+        n = (n % (NSInteger)texts.count + (NSInteger)texts.count) % (NSInteger)texts.count;
+        [self.doc select:texts[n] extend:NO];
+        [self beginEditing:texts[n]];
+        return YES;
+    }
+    return NO;
+}
+
+// MARK: cursor
+//
+// An I-beam over anything whose text can be edited, so it is discoverable that a
+// double-click will do something.
+- (void)resetCursorRects {
+    [super resetCursorRects];
+    if (_testMode) return;
+    if (!_ibeam) _ibeam = [NSCursor IBeamCursor];
+    GTree *tree = self.tree;
+    [tree.root preorder:^(GObject *o) {
+        if (o == tree.root || !objectHasCanvasText(o)) return;
+        NSPoint ao = [tree absoluteOriginOf:o];
+        if (isnan(ao.x)) return;
+        [self addCursorRect:[self viewRectFromModel:NSMakeRect(ao.x, ao.y, o.w, o.h)]
+                     cursor:self->_ibeam];
+    }];
+}
+
 // MARK: coordinate mapping
 
 - (NSPoint)viewFromModel:(NSPoint)m { return NSMakePoint(kMargin + m.x * _scale, kMargin + m.y * _scale); }
@@ -165,7 +295,10 @@ typedef NS_ENUM(int, GHandle) {
 - (void)refresh {
     int nt = (int)self.tree.menuTitles.count;
     if (_activeMenu >= nt) _activeMenu = 0;
-    [self sizeToFitModel]; self.needsDisplay = YES;
+    [self endEditingCommit:YES];
+    [self sizeToFitModel];
+    [self.window invalidateCursorRectsForView:self];   // the I-beam zones moved
+    self.needsDisplay = YES;
 }
 
 // MARK: drawing
@@ -311,9 +444,20 @@ typedef NS_ENUM(int, GHandle) {
 // MARK: mouse
 
 - (void)mouseDown:(NSEvent *)e {
-    [self.window makeFirstResponder:self];
     NSPoint v = [self convertPoint:e.locationInWindow fromView:nil];
     NSPoint m = [self modelFromView:v];
+
+    // a double-click on text edits it in place
+    if (!_testMode && e.clickCount == 2) {
+        GObject *hit = [self hitTestMenuAware:m];
+        if (hit && hit != self.tree.root && objectHasCanvasText(hit)) {
+            [self.doc select:hit extend:NO];
+            [self beginEditing:hit];
+            return;
+        }
+    }
+    [self endEditingCommit:YES];        // a click elsewhere commits an open edit
+    [self.window makeFirstResponder:self];
 
     if (_testMode) {
         if ([self handlePopupClickAt:m]) return;   // an open list swallows the click

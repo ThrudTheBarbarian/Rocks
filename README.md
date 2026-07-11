@@ -28,7 +28,11 @@ a sibling `fpga-xt/gem` checkout; override its location with `GEM_DIR=<path>`.
 - **Canvas (centre):** WYSIWYG. Marquee/⇧-click multi-select, drag to move,
   8-handle resize, arrow-key nudge (⇧ = grid step). Live **alignment guides**
   snap to sibling edges/centres, the dialog centre, and the grid. Drop a widget
-  inside a Box/IBox to re-parent it.
+  inside a Box/IBox to re-parent it. **Double-click any text to edit it in place** —
+  the cursor turns into an I-beam over anything editable. Return commits, Esc
+  abandons, Tab commits and moves to the next text object. Whichever field the text
+  actually lives in (a string spec, a TEDINFO's value or its template, an icon
+  label, a BOXCHAR's character) is worked out for you.
 - **Outline (top-right):** the object hierarchy, synced to selection.
 - **Inspector (bottom-right):** every `OBJECT` field (type, flags, state,
   x/y/w/h) plus type-specific payloads — string text, TEDINFO
