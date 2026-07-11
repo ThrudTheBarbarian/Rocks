@@ -11,18 +11,66 @@ z-order, duelling menu bars.
 actual model, and `appl_init → ap_id` / `appl_write` / `evnt_mesag` are already
 shaped for it and currently unused.
 
+Call that process **`gemd`**. It is **not** the desktop.
+
+---
+
+## 0. `gemd` is not the desktop
+
+The obvious move is to make the desktop *be* the server — it is already the process
+that calls `aes_init`, and TOS did exactly that. It is the wrong move.
+
+**The arbiter must be boring.** If the desktop is the server, then every desktop
+feature — file I/O, icon rendering, drag-and-drop, a file picker, a search field —
+is code running inside the process that owns input routing and **the grab**. Every
+desktop bug becomes a system freeze. Keep them apart and the process that arbitrates
+between apps is small, does nothing risky, and has no reason to ever block.
+
+So:
+
+```
+    gemd          the window server.  Windows, z-order, chrome, compositing,
+                  input routing, grabs, lifecycle.  Small.  Boring.  Never blocks.
+
+    desktop.so    an ORDINARY GEM CLIENT.  Wallpaper, icons, drag-and-drop, the
+                  root menu bar.  Replaceable — swap in `desktop+` if you like.
+
+    Rocks.so      an ordinary GEM client.  Indistinguishable, to gemd, from the
+                  desktop.
+```
+
+Which means the **wallpaper is not `gemd`'s**. Wallpaper and icons are *content*, and
+only an app knows its content (rule 2 — see `RESPONSIBILITIES.md`). The desktop is a
+client owning a **bottom-most, screen-sized window**, drawing into a backing store
+with `objc_draw` like everyone else. `gemd` keeps a fallback background **colour**,
+for when no desktop is running or one is restarting, and nothing more.
+
+And it needs **no new mechanism**. The desktop is simply the *first app launched*: it
+calls `wind_create` with none of the chrome bits (no `W_NAME`, no `W_CLOSER`, no
+`W_MOVER`) at screen size minus the strip. Being created first puts it at the bottom
+of the z-order — nobody has to declare it the bottom, it just *is*.
+
+**One bit is genuinely new: it must not be toppable** (`W_BOTTOM`), because a
+screen-sized window that came to the front when clicked would swallow every other app.
+That bit lives beside `W_CLOSER` and `W_MOVER` in a mask that already exists.
+
+One flag, and the desktop is an ordinary app. The dropdown needs nothing either — it
+lives inside a grab and never enters the z-order at all (§5).
+
 ---
 
 ## 1. The split
 
-| | Server (the desktop process) | Client (`libGEM.so`, linked by each app) |
+| | `gemd` (the server) | Client (`libGEM.so`, linked by each app — **including the desktop**) |
 |---|---|---|
 | Window list, z-order, geometry | **owns** | asks |
 | Window chrome (title, closer, mover, sliders) | **draws** | never touches |
 | Compositing + `fb_present` | **owns** | never touches |
 | Input (`sys_input`) | **owns**, routes | receives events |
-| Menu bar (global strip) | **owns and clears the strip** | **paints it** while active (see §5) |
-| Desktop background / wallpaper | **owns** | — |
+| The grab (`BEG_MCTRL`) | **honours it** | requests it |
+| Menu bar (global strip) | **reserves and clears the strip** | **paints it** while active (see §5) |
+| Background **colour** (fallback) | **owns** | — |
+| **Wallpaper, icons, drag-and-drop** | — | **the desktop client**, in a root-level window |
 | VDI (`v_bar`, `v_gtext`, `vr_transfer_bits`…) | for chrome | **for its own content** |
 | `objc_draw` / `theme_draw` / `form_do` / `form_alert` | — | **client-side, unchanged** |
 | Theme atlas | loads it (chrome) | loads it (content) — read-only art, no conflict |
@@ -61,13 +109,13 @@ Everything Xtg and every GEM app already does — `objc_draw`, `theme_draw`,
 `objc_set_userdraw`, `form_do` — runs **client-side and untouched**. The client never
 learns it is not drawing to the screen.
 
-Resize = the server reallocates the shm and tells the client the new id.
+Resize = `gemd` reallocates the shm and tells the client the new id.
 
 ---
 
 ## 3. Input
 
-The server owns `sys_input`. It already has the geometry and the z-order, so it does
+`gemd` owns `sys_input`. It already has the geometry and the z-order, so it does
 the top-level hit-test (which window? chrome or work area?), handles chrome itself,
 and posts everything else to the owning client.
 
@@ -78,7 +126,7 @@ The seam already exists:
     void aes_set_events(aes_event_fn fn);   // the AES's input source is pluggable
 ```
 
-In a client, that source reads the server pipe instead of `sys_input`. So
+In a client, that source reads the `gemd` pipe instead of `sys_input`. So
 `evnt_multi` keeps working exactly as it does now — which means **Xtg's run loop does
 not change at all**.
 
@@ -89,7 +137,7 @@ not change at all**.
 - **Control**: one pipe (or unix socket) per client — the message format is already
   defined (`msg[0] = type`, `msg[1] = sender ap_id`).
 - **Pixels**: shm, never the pipe.
-- **Lifecycle**: the server reaps a client's windows on `SIGCHLD` / `waitpid`. A
+- **Lifecycle**: `gemd` reaps a client's windows on `SIGCHLD` / `waitpid`. A
   crashed app must not leave a ghost window.
 
 `appl_init` becomes "connect and get my `ap_id`"; `appl_exit` disconnects.
@@ -99,16 +147,16 @@ not change at all**.
 ## 5. The menu bar: no backing store, just a clear and a message
 
 `menu_bar(tree)` hands the AES an `OBJECT` tree **in the client's address space**,
-which the server cannot reach. So the app must draw its own menu. The question is
+which `gemd` cannot reach. So the app must draw its own menu. The question is
 only *where*, and *when*.
 
 ### It needs no surface of its own
 
-A window needs a backing store (§2) because of **occlusion** — the server must be
+A window needs a backing store (§2) because of **occlusion** — `gemd` must be
 able to repaint a window it cannot see all of, without the owner's help.
 
 **The strip is never occluded.** `g_top_reserve` keeps windows out of it, and menu
-dropdowns hang *below* it. So there is no repaint the server ever has to perform on
+dropdowns hang *below* it. So there is no repaint `gemd` ever has to perform on
 the app's behalf. The only thing that ever dirties the strip is an **ownership
 change** — and an ownership change is already a message to the new owner. A backing
 store would buy nothing.
@@ -123,7 +171,7 @@ store would buy nothing.
         objc_draw(myMenuTree, ...)      clipped to the strip.  The same call as ever.
 ```
 
-So the menu bar is not a window and not a surface: it is a **region the server clears
+So the menu bar is not a window and not a surface: it is a **region `gemd` clears
 and the active app paints**. Ownership follows the top window, which is exactly TOS's
 rule.
 
@@ -134,7 +182,7 @@ The client now draws into **server-owned pixels**. It needs a second VDI worksta
 touches the framebuffer, and it is precisely the classic-GEM failure mode that §2
 option (c) was rejected to avoid (an app scribbling on the desktop).
 
-It is containable: **the server hands out a strip workstation only to the active app
+It is containable: **`gemd` hands out a strip workstation only to the active app
 and revokes it on switch, and the clip rect is the enforcement.**
 
 If we ever want the exception closed, there is a cheap upgrade that needs no protocol
@@ -166,7 +214,7 @@ is the whole fix, and it is also the fix for the only race here — an input eve
 flight to another app while the menu is still down:
 
 ```
-    while a grab is held:   the server routes ALL input to the holder, and tops nothing.
+    while a grab is held:   gemd routes ALL input to the holder, and tops nothing.
     menu dismissed:         END_MCTRL.  Normal routing resumes.
 ```
 
@@ -175,7 +223,7 @@ thing.
 
 So the dropdown is a **scratch overlay**, not a window: it never enters the z-order,
 never persists, and never interacts with topping, because its entire lifetime sits
-inside a grab. It does not even need save-under — on dismiss the server recomposites
+inside a grab. It does not even need save-under — on dismiss `gemd` recomposites
 that rect from the **window backing stores**, which is precisely what §2 bought.
 
 `menu_popup` and `form_alert` are the same shape: grab, overlay, dismiss,
@@ -187,7 +235,7 @@ recomposite.
 
 ```c
     XGApplication.boot()      // vdi_init, v_opnvwk, theme_load, aes_init, appl_init
-    ->  XGApplication.attach()  // connect to the server, get ap_id, get my surface
+    ->  XGApplication.attach()  // connect to gemd, get ap_id, get my surface
 ```
 
 Nothing else. Views, the responder chain, the draw seam (`objc_set_userdraw`),
@@ -197,8 +245,9 @@ sits **on** the AES API rather than underneath it. The split is invisible to it.
 That is worth saying plainly: the fact that this architectural change costs the
 toolkit one method is evidence the layering is in the right place.
 
-The boot path does not disappear — it becomes the *desktop's* privilege. Whoever is
-the server still calls `aes_init`.
+The boot path does not disappear — it becomes **`gemd`'s** privilege (not the
+desktop's: the desktop is a client like any other, and calls `attach()` too). Whoever is
+Whoever is the server calls `aes_init`; `gemd` is.
 
 ---
 
@@ -207,9 +256,9 @@ the server still calls `aes_init`.
 1. **Keep libGEM's API; split the implementation.** `aes/window.c` grows a
    client/server switch, chosen at `aes_init` (server) vs `appl_init` (client).
 2. **Backing-store drawing** (§2) first, with a **single** client — provable before
-   any multi-app work: run `aesdesk` as the server and one Xtg app as a client.
+   any multi-app work: run `gemd` as the server and one Xtg app as a client.
 3. **Input routing** (§3). `aes_set_events` is already the seam.
-4. **The input grab** (§5) — `wind_update(BEG_MCTRL)`, honoured by the server. It is
+4. **The input grab** (§5) — `wind_update(BEG_MCTRL)`, honoured by `gemd`. It is
    what makes menus, `menu_popup` and `form_alert` all safe, and it is the race fix.
 5. **The menu bar** (§5) — a clear, a message, and a clipped workstation. No surface,
    and the dropdown is a scratch overlay recomposited from the backing stores.

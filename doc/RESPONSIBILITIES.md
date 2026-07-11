@@ -12,21 +12,21 @@ whose job something is.
 ## 0. The stack
 
 ```
+    Rocks.so          desktop.so         (any other app)     <- ORDINARY CLIENTS.
+    the app           the app that        the app             gemd cannot tell
+                      draws wallpaper                         them apart.
+                      and icons
+      |                  |                   |
+      +--------- libXtg.so (the framework) --+     views, responders, actions,
+      |                  |                   |     the run loop, nibs
+      +--------- libGEM.so (client half) ----+     objc_*, theme_*, form_*, v_*
+                         |
+        messages (control)  |  shm (pixels)
+                         v
     +-----------------------------------------------------------+
-    |  Rocks.so            the application                       |   what it looks like
-    |                      content, behaviour, documents         |   and what it does
-    +-----------------------------------------------------------+
-    |  libXtg.so           the framework                         |   how an app is
-    |                      views, responders, actions, run loop  |   put together
-    +-----------------------------------------------------------+
-    |  libGEM.so           the client half of the AES + all VDI  |   how pixels and
-    |                      objc_*, theme_*, form_*, v_*          |   events are named
-    +-----------------------------------------------------------+
-            |  messages (control)          |  shm (pixels)
-            v                              v
-    +-----------------------------------------------------------+
-    |  the desktop         the AES server. ONE process.          |   who arbitrates
+    |  gemd                THE WINDOW SERVER. ONE process.       |   who arbitrates
     |                      windows, z-order, chrome, compositing |   between apps
+    |                      input routing, grabs, lifecycle       |
     +-----------------------------------------------------------+
     |  libxtos.so / XTOS   processes, shm, input, framebuffer    |   the machine
     +-----------------------------------------------------------+
@@ -34,10 +34,17 @@ whose job something is.
 
 Two rules generate almost everything below:
 
-> **1. Only the desktop touches the screen.**
+> **1. Only `gemd` touches the screen.**
 > **2. Only the app knows what its content looks like.**
 
-Every responsibility falls out of holding both at once.
+Every responsibility falls out of holding both at once. Rule 1 alone gives you X11
+(stream every primitive to the server). Rule 2 alone gives you classic GEM (everyone
+scribbles on the framebuffer). Holding both *forces* the per-window backing store,
+*forces* the menu bar to be painted by its owner, and *forces* the grab — none of
+those were free choices.
+
+**And note what is not in that list: the desktop.** It is a client, `desktop.so`,
+sitting beside `Rocks.so`. See §3.
 
 ---
 
@@ -53,7 +60,7 @@ memory. The input device. The syscall ABI, exported as real symbols from
 - A dead process's shm mappings are reclaimed.
 
 **Must never.** Care about windows. XTOS has no concept of a window, and should not
-grow one.
+grow one — that is `gemd`'s entire job, and `gemd` is an ordinary process.
 
 **Currently owed.** `libxtos.so` is built without `-g`, so it carries no DWARF and
 xtc cannot type it (see `spikes/RESULTS.md`). Adding `-g` — as `libGEM` already does
@@ -61,10 +68,16 @@ xtc cannot type it (see `spikes/RESULTS.md`). Adding `-g` — as `libGEM` alread
 
 ---
 
-## 2. The desktop — *the AES server*
+## 2. `gemd` — *the window server*
 
-**One process.** It is the only process that calls `aes_init`. It is the only process
+**One process.** It is the only process that calls `aes_init`, and the only process
 that presents to the framebuffer.
+
+**It is not the desktop.** That distinction is the subject of §3, and it is load-
+bearing enough to be worth stating before the table: `gemd` is deliberately *small*.
+It routes input, arbitrates z-order, composites, and does nothing else — because it
+is the process that holds **the grab**, and a process that holds the grab must never
+be able to block.
 
 ### It owns
 
@@ -73,7 +86,7 @@ that presents to the framebuffer.
 | the window list, z-order, geometry | `awin g_w[MAXW]` lives here and nowhere else |
 | window **chrome** | title bar, closer, mover, sizer, sliders — all themed |
 | **compositing** and `fb_present` | it alone decides what pixel is on screen |
-| the **desktop background** | wallpaper, icons, the root drop target |
+| a fallback background **colour** | *only* a colour — the wallpaper belongs to the desktop **client** (§3) |
 | **input** (`sys_input`) | it does the top-level hit-test and routes |
 | the **menu strip** | it reserves it (`g_top_reserve`) and clears it |
 | the **grab** | it decides who is receiving input, and honours `BEG_MCTRL` |
@@ -103,10 +116,73 @@ that presents to the framebuffer.
   This is not a style rule, it is a hardware fact, and it is why the menu bar works
   the way it does (§5 of `AES-SERVER.md`).
 - **Assume a client is alive, responsive, or well-behaved.** See §7.
+- **Know what a file is.** No filesystem, no icons, no drag-and-drop semantics, no
+  file picker. All of that is the desktop's, and the desktop is an app.
+- **Block. Ever.** It holds the grab. See §3.
 
 ---
 
-## 3. libGEM, in a client
+## 3. The desktop is an app
+
+`desktop.so` is an **ordinary GEM client**. `gemd` cannot tell it apart from
+`Rocks.so` except by a single flag on its window.
+
+### Why this matters more than replaceability
+
+You do get replaceability — swap in `desktop+` and nothing else changes. But that is
+the smaller prize.
+
+**The arbiter must be boring.** A desktop does file I/O, renders icons, runs
+drag-and-drop, opens a file picker, maybe indexes a search field. If the desktop *is*
+the server, all of that runs inside the process that owns input routing and the grab —
+and **every desktop bug becomes a system freeze**. Keeping them apart means the
+process that arbitrates between apps is small, does nothing risky, and has no reason
+to ever block.
+
+TOS made the other choice. TOS also froze a lot.
+
+### The wallpaper is content
+
+Rule 2 says only an app knows what its content looks like — and a wallpaper is
+content. So the desktop draws its wallpaper and icons into its own backing store with
+`objc_draw`, exactly like every other client. `gemd` keeps a fallback background
+*colour* for when no desktop is running (or one is restarting), and nothing more.
+
+### It needs no new mechanism — it is just the first app launched
+
+There is no "root window", no window level, no special case in the compositor. The
+desktop is started first and calls:
+
+```c
+    wind_create(0 /* no W_NAME, no W_CLOSER, no W_MOVER */,
+                0, strip_h, screen_w, screen_h - strip_h);
+```
+
+- **No chrome**, because it passed none of the chrome bits. `wind_create`'s kind mask
+  already says this.
+- **Bottom of the z-order**, because it was created first, and new windows go on top.
+  Nobody has to declare it the bottom; it just *is*.
+
+**One bit is genuinely new: it must not be toppable.** A screen-sized window that
+comes to the front when clicked would swallow every other app. That bit sits beside
+`W_CLOSER` and `W_MOVER` in a mask that already exists — call it `W_BOTTOM`.
+
+That is the entire cost. One flag, and the desktop is an ordinary app.
+
+(The dropdown needs no level either: it lives inside a grab and never enters the
+z-order at all — see `AES-SERVER.md` §5.)
+
+### It follows that
+
+- **The desktop's menu bar is not special.** It is the active app's menu bar, and the
+  desktop is sometimes the active app. (This closes what was an open question.)
+- **The desktop can crash and be restarted** without taking the window system with it.
+  Apps keep running; the background goes to `gemd`'s fallback colour until it returns.
+- **`gemd` starts first**, and launches the desktop. Not the other way round.
+
+---
+
+## 4. libGEM, in a client
 
 The same library the desktop links, running on the other side of the wire. `appl_init`
 puts it in client mode; `aes_init` puts it in server mode.
@@ -141,7 +217,7 @@ puts it in client mode; `aes_init` puts it in server mode.
 
 ---
 
-## 4. Xtg — the framework
+## 5. Xtg — the framework
 
 Xtg sits **on** the AES API, not underneath it. That is why the server split costs it
 one method (`XGApplication.boot()` → `.attach()`) and nothing else.
@@ -178,12 +254,12 @@ one method (`XGApplication.boot()` → `.attach()`) and nothing else.
 
 ---
 
-## 5. The application
+## 6. The application
 
 **Owns.** What its content looks like, what its controls mean, its documents, its
 menus.
 
-**May assume.** Everything in §4's promises. Additionally: that its window's backing
+**May assume.** Everything in §5's promises. Additionally: that its window's backing
 store persists, so it is **not** asked to redraw merely because it was occluded,
 moved, or topped.
 
@@ -197,7 +273,7 @@ showing.
 
 ---
 
-## 6. The seams
+## 7. The seams
 
 Where two layers meet, exactly what crosses:
 
@@ -216,25 +292,28 @@ C boundary — xtc has no closures, so that `void*` is load-bearing.
 
 ---
 
-## 7. When things go wrong
+## 8. When things go wrong
 
 The interesting half of any contract.
 
 | | what happens | whose job |
 |---|---|---|
-| **an app crashes** | the desktop reaps its windows on `waitpid`. No ghost windows, no leaked shm. | desktop |
-| **an app wedges** (never returns to `evnt_multi`) | its **windows still composite** — the backing store means the desktop needs nothing from it. Its **menu bar goes blank** on the next switch, because the strip is cleared before the new owner draws. | desktop |
-| **an app wedges while holding a grab** | this is the one that actually hurts: input is routed to a process that will never read it, and **nothing can be topped**. The desktop must be able to break a grab. | **desktop — and this is not yet designed.** |
-| **an app posts damage for a rect outside its window** | clamped. A client's damage rect is a *request*, not an instruction. | desktop |
+| **an app crashes** | `gemd` reaps its windows on `waitpid`. No ghost windows, no leaked shm. | `gemd` |
+| **an app wedges** (never returns to `evnt_multi`) | its **windows still composite** — the backing store means `gemd` needs nothing from it. Its **menu bar goes blank** on the next switch, because the strip is cleared before the new owner draws. | desktop |
+| **an app wedges while holding a grab** | this is the one that actually hurts: input is routed to a process that will never read it, and **nothing can be topped**. `gemd` must be able to break a grab. | **`gemd` — and this is not yet designed.** |
+| **an app posts damage for a rect outside its window** | clamped. A client's damage rect is a *request*, not an instruction. | `gemd` |
 | **an app never draws** | its window composites as whatever its buffer contains — i.e. blank. Correct. | — |
+| **the desktop crashes** | nothing else stops. The background falls back to `gemd`'s colour; apps keep running and stay clickable. Restart it. | `gemd` |
+| **`gemd` crashes** | everything is gone. Which is why it is small, boring, and does no file I/O. | — |
 
 A wedged app looking wedged is **right**. The design should make an app's failure
 visible in proportion to how badly it has failed, and no more: a wedged app should not
-be able to freeze the *desktop*.
+be able to freeze **`gemd`**. The desktop is just another app, and *it* may freeze
+without taking anything else down — which is precisely the point of §3.
 
 ---
 
-## 8. The deliberate exceptions
+## 9. The deliberate exceptions
 
 Every rule above has been kept clean except one, and it is written here so it is not
 discovered by accident.
@@ -259,14 +338,16 @@ compositor then treats the strip like any other surface. It can wait.
 
 ---
 
-## 9. Not yet decided
+## 10. Not yet decided
 
 Honest list. These are the places where someone will have to make a call.
 
 1. **Breaking a grab.** A wedged app holding `BEG_MCTRL` freezes input for everyone.
-   A timeout? A hard escape key the desktop always keeps? Nothing yet.
-2. **Who owns the menu bar when no window is topped** (the desktop itself is active).
-   Presumably the desktop's own menu. Unstated.
+   A timeout? A hard escape key `gemd` always keeps for itself? Nothing yet. This is
+   the **only** case where one bad app can take the machine down, and §3 exists partly
+   to make sure that app is never `gemd` itself.
+2. ~~Who owns the menu bar when the desktop is active~~ — **closed by §3.** The
+   desktop is an app; when it is active, its menu is the menu.
 3. **Resize.** The desktop reallocates the shm and tells the client the new id —
    but the client may be mid-draw into the old one. Needs a generation number, or a
    handshake.
