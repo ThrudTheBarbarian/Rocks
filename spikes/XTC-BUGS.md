@@ -211,15 +211,45 @@ either — `if (action)` still tests **true**, because the truth test is on `cod
 That last detail is the sharp part. The one guard a programmer would reach for is the
 guard that does not work.
 
-**Suggested fix, in preference order:**
+**The fix is NOT "make `^` retain by default".** That was my first suggestion and it
+is wrong. Almost every `^` in UI code is a **back-reference** — a control calling into
+its controller, a window calling into its delegate — and those are precisely the edges
+that close a cycle:
 
-1. **Make `^` retain its receiver** (strong by default, like every other `@` in xtc),
-   so `weak:` remains the opt-out and the default is safe. This is what ARC does
-   everywhere else in the language, and the surprise here is precisely that `^` does
-   *not* follow the rule the rest of the language taught.
-2. Failing that, **warn** on a non-weak `^` field whose receiver is an ARC object.
-3. At minimum, **document** it — because right now the safe form (`weak:`) is the
-   *less* obvious one, and the obvious form silently reads freed memory.
+```
+    window -> viewtree -> button -> action^ -> controller -> window
+    window -> delegate^ -> controller -> window
+```
+
+Retain-by-default would mean *every* realistic use needs `weak:`, so the default would
+be wrong for the dominant case. Leak-by-default is not obviously better than
+UAF-by-default; it is just a different wrong.
+
+**The defensible complaint is narrower and sharper: the truth test lies.**
+
+```c
+XGAction^ a = &c.onClick;    // non-weak
+// ... c is deallocated ...
+if (a) { a(sender); }        // tests TRUE.  Calls through a dead receiver.
+```
+
+`if (a)` is *the one guard a programmer writes*, and it passes — because the test is on
+`code`, and `code` is fine; only `recv` is dead. The failure is invisible at exactly
+the point where someone was being careful. And it **cannot** be fixed for an unowned
+pointer, because an unowned pointer has no way to learn its receiver died.
+
+So the ask is not about ownership defaults. It is that **`^` should never be silently
+unowned**:
+
+1. **Require the ownership to be spelled on a `^` field** — `weak:` or `unowned:` —
+   so nobody acquires a dangling receiver by omission. A local `^` can keep the
+   current behaviour; it is fields that outlive their targets.
+2. Failing that, **warn** when a non-`weak` `^` field is assigned a bound method whose
+   receiver is an ARC object.
+
+`weak:` is the right default *for a UI toolkit* regardless, and `XGControl` uses it.
+The problem is only that today the safe form is the one you have to know to ask for,
+and the unsafe form fails silently past its own guard.
 
 Note the interaction with widening: a widened plain function carries its code pointer
 in `recv`, so "zero the recv" cannot be the weak-zeroing implementation — it must zero
