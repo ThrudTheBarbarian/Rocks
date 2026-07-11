@@ -259,7 +259,29 @@ recorded here because it is the non-obvious constraint on any future change.
 
 ---
 
-### Cleared, for the record
+---
+
+## Gap G — `-L` is not in `xtc --help`
+
+`#import <GEM>` is a **library metadata import**: xtc resolves `libGEM.so` on a
+*library* path, reads its `.dynsym` ∩ DWARF, and gives you the real C types. It is the
+single most valuable thing xtc does for this project — it is what supplies `theme` at
+its true 19502 bytes and `OBJECT` laid out exactly as libGEM sees it.
+
+The path it searches is set by **`-L`**, and `-L` **does not appear in `xtc --help`**.
+
+The failure mode is also misleading: reaching for `-I` (the obvious guess) produces
+
+```
+error: Cannot find include file 'GEM' (searched: '.', ..., '/opt/xtc/support/arm9/lib')
+```
+
+— which says *include file*, names only the include paths, and gives no hint that a
+different flag and a different search path exist. I lost an hour to it, and I had
+already used the feature successfully once.
+
+One line in `--help` fixes it. Ideally the error would add: *"`<GEM>` is a library
+import; set the library path with `-L`."*
 
 While chasing an Xtg DATA-ABORT I suspected three compiler causes and **disproved all
 three** on the loader (`spikes/weakglobal.xt`, `spikes/addrfn.xt`):
