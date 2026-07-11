@@ -15,6 +15,9 @@ typedef NS_ENUM(uint16_t, GObType) {
     GT_BOX = 20, GT_TEXT = 21, GT_BOXTEXT = 22, GT_IMAGE = 23, GT_USERDEF = 24,
     GT_IBOX = 25, GT_BUTTON = 26, GT_BOXCHAR = 27, GT_STRING = 28, GT_FTEXT = 29,
     GT_FBOXTEXT = 30, GT_ICON = 31, GT_TITLE = 32,
+    // The standard Atari colour icon (a CICONBLK). Distinct from GT_CICON below,
+    // which is Rocks' own RGBA PAM icon — see rsc.h.
+    GT_CICONBLK = 33,
     // fpga-xt/gem themed extensions (aes/aes.h)
     GT_CHECKBOX = 40, GT_RADIO = 41, GT_POPUP = 42, GT_FIELD = 43, GT_CICON = 44
 };
@@ -92,6 +95,10 @@ static inline GColorWord gcw_default(void) {
 @property (copy) NSString *label;
 // colour / PAM
 @property (nullable, copy) NSData *pam;             // embedded P7 PAM bytes
+// The original CICONBLK, verbatim, when this icon came from a real Atari file.
+// Kept so re-export is byte-faithful even though we render the derived PAM.
+@property (nullable, copy) NSData *ciconRaw;
+@property (nullable, copy) NSData *selPam;         // the SELECTED form, if the file had one
 @property (nullable, copy) NSString *externalPath;  // reference instead of embedding
 // classic mono ICONBLK (preserved from imported standard .rsc)
 @property (nullable, copy) NSData *monoData;        // ib_pdata
@@ -164,6 +171,9 @@ typedef struct { __unsafe_unretained GObject *obj; int next, head, tail; } GFlat
 
 @interface GResource : NSObject
 @property (strong) NSMutableArray<GTree *> *trees;
+// Free strings: rsrc_gaddr(R_STRING, i).  They hang off no object, so nothing in
+// the tree references them — but real resources are full of them.
+@property (strong) NSMutableArray<NSString *> *freeStrings;
 @property BOOL bigEndian;      // classic 68000 GEM fidelity
 @property BOOL packedCoords;   // char/pixel packing on write
 @property BOOL embedIcons;     // embed PAM vs external path

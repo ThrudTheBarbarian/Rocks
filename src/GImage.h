@@ -14,4 +14,19 @@ NSData * _Nullable GPAMFromImage(NSImage *image);
 // 16-bit boundary) to an NSImage: set data bit -> black, mask governs alpha.
 NSImage * _Nullable GImageFromMono(NSData *data, NSData * _Nullable mask, int w, int h);
 
+// Expand one version of an Atari colour icon (CICONBLK) to an RGBA P7 PAM.
+//
+// `data` is PLANAR: `planes` consecutive bitplanes per row, each row padded to a
+// 16-bit boundary; a pixel's colour index is assembled from its bit in each
+// plane, plane 0 the least significant.  `mask` is 1 bpp and drives alpha.
+// `palette` is 256 RGB triples (0..255) mapping colour index -> colour; pass NULL
+// to use the standard VDI palette for that depth.
+//
+// A CICONBLK cannot carry alpha or true colour, so this is a widening: the result
+// is exactly representable, and the original bytes are kept elsewhere for
+// re-export.
+NSData * _Nullable GPAMFromPlanar(NSData *data, NSData * _Nullable mask,
+                                  int w, int h, int planes,
+                                  const uint8_t * _Nullable palette /* 256*3 */);
+
 NS_ASSUME_NONNULL_END

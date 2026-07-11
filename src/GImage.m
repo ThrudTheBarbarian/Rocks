@@ -118,3 +118,63 @@ NSImage *GImageFromMono(NSData *data, NSData *mask, int w, int h) {
     free(rgba);
     return img;
 }
+
+// ---- Atari colour icon (CICONBLK) -> RGBA PAM ------------------------------
+
+// The standard VDI palette, used when a file carries no palette of its own.
+// Index order is the VDI's, so a 4-plane icon lands on the colours GEM intended.
+static const uint8_t kVDIPalette[16][3] = {
+    {255,255,255},{  0,  0,  0},{255,  0,  0},{  0,255,  0},
+    {  0,  0,255},{  0,255,255},{255,255,  0},{255,  0,255},
+    {192,192,192},{128,128,128},{128,  0,  0},{  0,128,  0},
+    {  0,  0,128},{  0,128,128},{128,128,  0},{128,  0,128}
+};
+
+NSData *GPAMFromPlanar(NSData *data, NSData *mask, int w, int h, int planes,
+                       const uint8_t *palette) {
+    if (w <= 0 || h <= 0 || planes <= 0 || planes > 8) return nil;
+
+    const int wordsPerRow = (w + 15) / 16;         // rows are padded to 16 bits
+    const size_t planeBytes = (size_t)wordsPerRow * 2 * (size_t)h;
+    if (data.length < planeBytes * (size_t)planes) return nil;
+    if (mask && mask.length < planeBytes) mask = nil;
+
+    const uint8_t *src = data.bytes;
+    const uint8_t *msk = mask.bytes;
+
+    NSMutableData *rgba = [NSMutableData dataWithLength:(NSUInteger)w * h * 4];
+    uint8_t *out = rgba.mutableBytes;
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            // Assemble the colour index from one bit per plane, plane 0 lowest.
+            // The file holds VDI *standard* format (MFDB fd_stand = 1), which is
+            // plane-SEQUENTIAL: the whole of plane 0, then the whole of plane 1.
+            // (Device format — word-interleaved — is what the screen uses, not the file.)
+            int word = x >> 4, bit = 15 - (x & 15);
+            int index = 0;
+            for (int p = 0; p < planes; p++) {
+                size_t off = (size_t)p * planeBytes + ((size_t)y * wordsPerRow + word) * 2;
+                if (off + 1 >= data.length) continue;
+                uint16_t wv = (uint16_t)((src[off] << 8) | src[off + 1]);
+                if (wv & (1u << bit)) index |= (1 << p);
+            }
+            uint8_t a = 255;
+            if (msk) {
+                size_t off = ((size_t)y * wordsPerRow + word) * 2;
+                uint16_t mv = (uint16_t)((msk[off] << 8) | msk[off + 1]);
+                a = (mv & (1u << bit)) ? 255 : 0;    // mask bit set = opaque
+            }
+            const uint8_t *rgb = palette ? palette + 3 * index
+                                         : kVDIPalette[index & 15];
+            uint8_t *px = out + ((size_t)y * w + x) * 4;
+            px[0] = rgb[0]; px[1] = rgb[1]; px[2] = rgb[2]; px[3] = a;
+        }
+    }
+
+    NSString *hdr = [NSString stringWithFormat:
+        @"P7\nWIDTH %d\nHEIGHT %d\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n", w, h];
+    NSMutableData *pam = [[hdr dataUsingEncoding:NSASCIIStringEncoding] mutableCopy];
+    [pam appendData:rgba];
+    return pam;
+}

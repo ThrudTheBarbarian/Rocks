@@ -16,4 +16,9 @@ NS_ASSUME_NONNULL_BEGIN
 GResource * _Nullable GRscRead(NSData *data, NSString * _Nullable * _Nullable err);
 NSData    * _Nullable GRscWrite(GResource *r, NSString * _Nullable * _Nullable err);
 
+// After a GRscRead, whatever the file carried that Rocks does not yet preserve
+// (BITBLKs, free images).  nil when the import was lossless.  An import must
+// never be silently lossy.
+NSString *_Nullable GRscLastImportWarning(void);
+
 NS_ASSUME_NONNULL_END

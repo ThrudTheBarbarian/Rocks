@@ -75,6 +75,8 @@ static NSString *uniqueSym(NSMutableSet *used, NSString *want, int idx) {
 
 @interface GXPlan : NSObject
 @property (strong) NSArray<GXTree *> *trees;
+@property (strong) NSArray<NSString *> *freeStrings;   // rsrc_gaddr(R_STRING, i)
+@property (strong) NSArray<NSString *> *freeSyms;      // parallel: STR_SAVE_AS, ...
 @property (strong) NSMutableArray<NSString *> *strings;
 @property (strong) NSMutableDictionary<NSString *, NSNumber *> *strIndex;
 @property (strong) NSMutableArray<GObject *> *teds;    // objects with a TEDINFO
@@ -110,7 +112,9 @@ static BOOL specIsBox(GObject *o)    { return [o hasBox]; }
 static BOOL specIsString(GObject *o) { return [o hasStringSpec]; }
 static BOOL specIsTed(GObject *o)    { return [o hasTedinfo]; }
 static BOOL specIsIcon(GObject *o)   { return o.type == GT_ICON; }
-static BOOL specIsCicon(GObject *o)  { return o.type == GT_CICON || o.type == GT_IMAGE; }
+// A CICONBLK imported from a real Atari file already carries a derived RGBA PAM,
+// so it exports through the same path as Rocks' own colour icons.
+static BOOL specIsCicon(GObject *o)  { return o.type == GT_CICON || o.type == GT_CICONBLK || o.type == GT_IMAGE; }
 
 // The PAM bytes a colour icon will export (embedded, external file, or rendered).
 static NSData *cicoPAM(GObject *o) {
@@ -173,6 +177,18 @@ static GXPlan *buildPlan(GResource *res) {
         xt.syms = syms;
         [out addObject:xt];
     }
+    // Free strings belong to no object, but code still needs to name them.
+    NSMutableArray *fs = [NSMutableArray array], *fsym = [NSMutableArray array];
+    for (int i = 0; i < (int)res.freeStrings.count; i++) {
+        NSString *txt = res.freeStrings[i];
+        [fs addObject:txt];
+        NSString *leaf = sanitizeSym(txt) ?: [NSString stringWithFormat:@"%d", i];
+        [fsym addObject:uniqueSym(used, [@"STR_" stringByAppendingString:leaf], i)];
+        internStr(p, txt);
+    }
+    p.freeStrings = fs;
+    p.freeSyms = fsym;
+
     p.trees = out;
     return p;
 }
@@ -281,6 +297,7 @@ NSDictionary<NSString *, NSNumber *> *GExportSymbols(GResource *res) {
         m[xt.sym] = @(ti);
         for (int i = 0; i < (int)xt.syms.count; i++) m[xt.syms[i]] = @(i);
     }
+    for (int i = 0; i < (int)p.freeSyms.count; i++) m[p.freeSyms[i]] = @(i);
     return m;
 }
 
@@ -354,10 +371,21 @@ NSString *GExportHeader(GResource *res, NSString *stem) {
         [s appendString:@"\n"];
     }
 
+    if (p.freeStrings.count) {
+        [s appendString:@"/* ---- free strings — rsrc_gaddr(R_STRING, i) --------------------------- */\n"];
+        for (int i = 0; i < (int)p.freeSyms.count; i++)
+            [s appendFormat:@"#define %-28s %-4d /* %@ */\n",
+                            p.freeSyms[i].UTF8String, i, cQuote(p.freeStrings[i])];
+        [s appendFormat:@"#define %-28s %d\n\n", "NUM_FREE_STRINGS", (int)p.freeStrings.count];
+    }
+
     [s appendString:@"/* ---- data (defined in the generated .c) -------------------------------- */\n"];
     for (GXTree *xt in p.trees)
         [s appendFormat:@"extern OBJECT %@[%d];\n", xt.var, (int)xt.objects.count];
-    [s appendFormat:@"extern OBJECT *rs_trees[%d];\n\n", (int)p.trees.count];
+    [s appendFormat:@"extern OBJECT *rs_trees[%d];\n", (int)p.trees.count];
+    if (p.freeStrings.count)
+        [s appendFormat:@"extern char *rs_free_strings[%d];\n", (int)p.freeStrings.count];
+    [s appendString:@"\n"];
     [s appendFormat:@"#endif /* %@ */\n", guard];
     return s;
 }
@@ -480,6 +508,14 @@ NSString *GExportCSource(GResource *res, NSString *stem) {
     [s appendFormat:@"OBJECT *rs_trees[%d] = {\n", (int)p.trees.count];
     for (GXTree *xt in p.trees) [s appendFormat:@"    %@,\n", xt.var];
     [s appendString:@"};\n"];
+
+    if (p.freeStrings.count) {
+        [s appendFormat:@"\nchar *rs_free_strings[%d] = {\n", (int)p.freeStrings.count];
+        for (int i = 0; i < (int)p.freeStrings.count; i++)
+            [s appendFormat:@"    rs_str%d,%@/* %@ */\n", internStr(p, p.freeStrings[i]),
+                            @"   ", p.freeSyms[i]];
+        [s appendString:@"};\n"];
+    }
     return s;
 }
 
@@ -522,6 +558,14 @@ NSString *GExportXtc(GResource *res, NSString *stem) {
             [s appendFormat:@"#define %-28s %-4d // %@\n",
                             xt.syms[i].UTF8String, i, GObTypeName(xt.objects[i].type)];
         [s appendString:@"\n"];
+    }
+
+    if (p.freeStrings.count) {
+        [s appendString:@"// ---- free strings — rsrc_gaddr(R_STRING, i) ---------------------------\n"];
+        for (int i = 0; i < (int)p.freeSyms.count; i++)
+            [s appendFormat:@"#define %-28s %-4d // %@\n",
+                            p.freeSyms[i].UTF8String, i, cQuote(p.freeStrings[i])];
+        [s appendFormat:@"#define %-28s %d\n\n", "NUM_FREE_STRINGS", (int)p.freeStrings.count];
     }
 
     [s appendString:
@@ -634,7 +678,11 @@ NSString *GExportXtc(GResource *res, NSString *stem) {
         [s appendString:@"};\n\n"];
     }
 
-    [s appendFormat:@"OBJECT@ rs_trees[%d];\n\n", (int)p.trees.count];
+    [s appendFormat:@"OBJECT@ rs_trees[%d];\n", (int)p.trees.count];
+    if (p.freeStrings.count)
+        [s appendFormat:@"u32 rs_free_strings[%d];    // filled in by the fixup\n",
+                        (int)p.freeStrings.count];
+    [s appendString:@"\n"];
 
     [s appendString:@"// ---- fixup: resolve every address once, at start-up ------------------\n"];
     [s appendFormat:@"void %@_fixup(void)\n{\n", ident];
@@ -680,6 +728,11 @@ NSString *GExportXtc(GResource *res, NSString *stem) {
         }
     }
     [s appendString:@"\n"];
+    for (int i = 0; i < (int)p.freeStrings.count; i++)
+        [s appendFormat:@"    rs_free_strings[%s] = (u32)rs_str%d;\n",
+                        p.freeSyms[i].UTF8String, internStr(p, p.freeStrings[i])];
+    if (p.freeStrings.count) [s appendString:@"\n"];
+
     for (int ti = 0; ti < (int)p.trees.count; ti++)
         [s appendFormat:@"    rs_trees[%@] = &%@[0];\n", p.trees[ti].sym, p.trees[ti].var];
     [s appendString:@"}\n"];

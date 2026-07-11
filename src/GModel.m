@@ -13,6 +13,7 @@ NSString *GObTypeName(GObType t) {
         case GT_STRING: return @"String";     case GT_FTEXT: return @"FText";
         case GT_FBOXTEXT: return @"FBoxText"; case GT_ICON: return @"Icon";
         case GT_TITLE: return @"Title";       case GT_CHECKBOX: return @"Checkbox";
+        case GT_CICONBLK: return @"Colour Icon (CICONBLK)";
         case GT_RADIO: return @"Radio";       case GT_POPUP: return @"Popup";
         case GT_FIELD: return @"Field";       case GT_CICON: return @"Color Icon";
     }
@@ -94,7 +95,7 @@ NSString *GObTypeName(GObType t) {
         default: return NO;
     }
 }
-- (BOOL)hasIcon { return _type == GT_ICON || _type == GT_CICON || _type == GT_IMAGE; }
+- (BOOL)hasIcon { return _type == GT_ICON || _type == GT_CICON || _type == GT_CICONBLK || _type == GT_IMAGE; }
 - (BOOL)canHaveChildren {
     switch (_type) {
         case GT_BOX: case GT_IBOX: case GT_BOXTEXT: case GT_IMAGE: return YES;
@@ -121,7 +122,7 @@ NSString *GObTypeName(GObType t) {
         }
     }
     if ([self hasBox] && !_box) _box = [GBox new];
-    if ([self hasIcon] && !_icon) { _icon = [GIcon new]; _icon.isColor = (_type == GT_CICON || _type == GT_IMAGE); }
+    if ([self hasIcon] && !_icon) { _icon = [GIcon new]; _icon.isColor = (_type == GT_CICON || _type == GT_CICONBLK || _type == GT_IMAGE); }
 }
 
 - (GObject *)deepCopy {
@@ -140,6 +141,7 @@ NSString *GObTypeName(GObType t) {
     if (_icon) { GIcon *ic = [GIcon new];
         ic.isColor = _icon.isColor; ic.label = _icon.label;
         ic.pam = _icon.pam; ic.externalPath = _icon.externalPath;
+        ic.ciconRaw = _icon.ciconRaw; ic.selPam = _icon.selPam;
         ic.monoData = _icon.monoData; ic.monoMask = _icon.monoMask;
         ic.iconChar = _icon.iconChar; ic.charX = _icon.charX; ic.charY = _icon.charY;
         ic.textX = _icon.textX; ic.textY = _icon.textY; ic.textW = _icon.textW; ic.textH = _icon.textH;
@@ -244,6 +246,7 @@ NSString *GObTypeName(GObType t) {
 + (instancetype)emptyDialog {
     GResource *r = [GResource new];
     r.trees = [NSMutableArray array];
+    r.freeStrings = [NSMutableArray array];
     r.bigEndian = YES; r.packedCoords = YES; r.embedIcons = YES;
     r.charWidth = 8; r.charHeight = 16;
     GObject *root = [GObject objectOfType:GT_BOX frame:NSMakeRect(0, 0, 320, 200)];
@@ -257,6 +260,7 @@ NSString *GObTypeName(GObType t) {
 - (instancetype)init {
     if ((self = [super init])) {
         _trees = [NSMutableArray array];
+        _freeStrings = [NSMutableArray array];
         _bigEndian = YES; _packedCoords = YES; _embedIcons = YES; _charWidth = 8; _charHeight = 16;
     }
     return self;

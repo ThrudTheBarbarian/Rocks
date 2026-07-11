@@ -458,7 +458,9 @@ static const CGFloat kRightW = 320;
     NSString *err = nil;
     GResource *r = d ? GRscRead(d, &err) : nil;
     if (!r) { [self alert:err ?: @"Could not read .rsc file."]; return; }
+    NSString *warn = GRscLastImportWarning();
     _doc.resource = r; _doc.url = nil; [_doc setSelectionObjects:@[]];
+    if (warn) [self alert:warn];
     self.window.title = [@"Rocks — " stringByAppendingString:p.URLs.firstObject.lastPathComponent];
     [_undo removeAllActions]; [self refreshAll];
 }

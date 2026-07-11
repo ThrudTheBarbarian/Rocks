@@ -235,6 +235,70 @@ static int clicktest(const char *path) {
     return gFails ? 1 : 0;
 }
 
+// Rocks --cicons <file.rsc> <out.png> — render every colour icon a file carries,
+// so the CICONBLK -> RGBA expansion can actually be looked at.
+static int ciconshot(const char *rsc, const char *out) {
+    NSData *d = [NSData dataWithContentsOfFile:[NSString stringWithUTF8String:rsc]];
+    NSString *err = nil;
+    GResource *res = d ? GRscRead(d, &err) : nil;
+    if (!res) { printf("cannot read %s: %s\n", rsc, err.UTF8String ?: "?"); return 1; }
+
+    NSMutableArray<GObject *> *icons = [NSMutableArray array];
+    for (GTree *t in res.trees)
+        for (GObject *o in [t allObjects])
+            if (o.type == GT_CICONBLK && o.icon.pam) [icons addObject:o];
+    if (!icons.count) { printf("%s: no colour icons\n", rsc); return 1; }
+
+    int cols = 8, cell = 40;
+    int rows = ((int)icons.count + cols - 1) / cols;
+    int W = cols * cell, H = rows * cell * 2;      // normal row, then SELECTED row
+    // premultiplied: Core Graphics cannot composite into a non-premultiplied context
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+        pixelsWide:W pixelsHigh:H bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES
+        isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:W*4 bitsPerPixel:32];
+    NSGraphicsContext *gc = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
+    [NSGraphicsContext saveGraphicsState]; [NSGraphicsContext setCurrentContext:gc];
+    [[NSColor colorWithWhite:0.85 alpha:1] set]; NSRectFill(NSMakeRect(0,0,W,H));
+
+    // diagnostics on the first icon: is it decoding, and is anything opaque?
+    {
+        GIcon *ic0 = icons[0].icon;
+        NSImage *im0 = GImageFromPAM(ic0.pam);
+        const uint8_t *pb = ic0.pam.bytes;
+        NSUInteger hdr = 0; while (hdr + 6 < ic0.pam.length && memcmp(pb + hdr, "ENDHDR", 6)) hdr++;
+        hdr += 7;
+        int opaque = 0, coloured = 0;
+        for (NSUInteger k = hdr; k + 3 < ic0.pam.length; k += 4) {
+            if (pb[k+3]) opaque++;
+            if (pb[k] || pb[k+1] || pb[k+2]) coloured++;
+        }
+        printf("  icon0: %dx%d pam=%lu bytes decode=%s  opaque px=%d  non-black px=%d\n",
+               ic0.iconW, ic0.iconH, (unsigned long)ic0.pam.length, im0 ? "ok" : "NIL",
+               opaque, coloured);
+    }
+
+    int nsel = 0;
+    for (int i = 0; i < (int)icons.count; i++) {
+        GIcon *ic = icons[i].icon;
+        int cx = (i % cols) * cell, cy = (i / cols) * cell * 2;
+        NSImage *img = GImageFromPAM(ic.pam);
+        if (img) [img drawInRect:NSMakeRect(cx+4, H - cy - cell + 4, 32, 32)
+                        fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1];
+        if (ic.selPam) {
+            nsel++;
+            NSImage *sel = GImageFromPAM(ic.selPam);
+            if (sel) [sel drawInRect:NSMakeRect(cx+4, H - cy - cell*2 + 4, 32, 32)
+                            fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1];
+        }
+    }
+    [NSGraphicsContext restoreGraphicsState];
+    [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+        writeToFile:[NSString stringWithUTF8String:out] atomically:YES];
+    printf("%s: %d colour icon(s), %d with a SELECTED form -> %s\n",
+           rsc, (int)icons.count, nsel, out);
+    return 0;
+}
+
 // Rocks --slice <name> renders that theme slice at several sizes to scratch.
 static int sliceTest(const char *name) {
     GTheme *th = [GTheme defaultTheme];
@@ -277,6 +341,9 @@ int main(int argc, const char *argv[]) {
     }
     if (argc > 2 && strcmp(argv[1], "--clicktest") == 0) {
         @autoreleasepool { return clicktest(argv[2]); }
+    }
+    if (argc > 3 && strcmp(argv[1], "--cicons") == 0) {
+        @autoreleasepool { return ciconshot(argv[2], argv[3]); }
     }
     if (argc > 2 && strcmp(argv[1], "--slice") == 0) {
         @autoreleasepool { return sliceTest(argv[2]); }

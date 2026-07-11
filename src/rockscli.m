@@ -63,8 +63,12 @@ static GResource *loadResource(NSString *path, NSString **err) {
     NSData *d = [NSData dataWithContentsOfFile:path];
     if (!d) { *err = [NSString stringWithFormat:@"cannot read %@", path]; return nil; }
     NSString *ext = path.pathExtension.lowercaseString;
-    if ([ext isEqualToString:@"rsc"] || [ext isEqualToString:@"rsrc"])
-        return GRscRead(d, err);
+    if ([ext isEqualToString:@"rsc"] || [ext isEqualToString:@"rsrc"]) {
+        GResource *r = GRscRead(d, err);
+        NSString *warn = GRscLastImportWarning();
+        if (warn) fprintf(stderr, "rockscli: warning: %s\n", warn.UTF8String);
+        return r;
+    }
     GResource *r = GResourceFromJSON(d);
     if (!r) *err = @"not a Rocks project (.gemproj)";
     return r;
@@ -72,6 +76,16 @@ static GResource *loadResource(NSString *path, NSString **err) {
 
 static int listResource(GResource *r) {
     printf("%d tree%s\n", (int)r.trees.count, r.trees.count == 1 ? "" : "s");
+    // what came in besides the trees
+    int cicon = 0, mono = 0, withSel = 0;
+    for (GTree *t in r.trees)
+        for (GObject *o in [t allObjects]) {
+            if (o.type == GT_CICONBLK) { cicon++; if (o.icon.selPam) withSel++; }
+            if (o.type == GT_ICON) mono++;
+        }
+    if (r.freeStrings.count) printf("  free strings: %d\n", (int)r.freeStrings.count);
+    if (cicon) printf("  colour icons (CICONBLK): %d  (%d with a SELECTED form)\n", cicon, withSel);
+    if (mono)  printf("  mono icons (ICONBLK):    %d\n", mono);
     NSDictionary *syms = GExportSymbols(r);
     for (int i = 0; i < (int)r.trees.count; i++) {
         GTree *t = r.trees[i];

@@ -14,6 +14,15 @@ struct RSC {
     int32_t    *trees; int ntree, tree_cap;
     ArenaBlock *arena;
     int cell_w, cell_h;
+    /* extended format (rsh_vrsn & RSC_VRSN_EXTENDED) */
+    int            extended;
+    RSC_CICONBLK **cib;     int ncib;       /* indexed by a G_CICON's ob_spec */
+    RSC_RGB       *palette;                 /* 256 entries, or NULL */
+    /* free strings: rsrc_gaddr(R_STRING, i) */
+    char         **strings; int nstring, string_cap;
+    /* things the file carried that we read past but do not model yet — reported
+     * so an import is never silently lossy */
+    int            n_bitblk, n_freeimg;
 };
 
 static void *arena_alloc(RSC *r, size_t n) {
@@ -76,7 +85,7 @@ static uint32_t pam_len(const uint8_t *p, size_t len, uint32_t off) {
 static int is_box(int t)    { return t==G_BOX || t==G_IBOX || t==G_BOXCHAR; }
 static int is_string(int t) { return t==G_STRING||t==G_BUTTON||t==G_TITLE||t==G_CHECKBOX||t==G_RADIO||t==G_POPUP; }
 static int is_ted(int t)    { return t==G_TEXT||t==G_BOXTEXT||t==G_FTEXT||t==G_FBOXTEXT||t==G_FIELD; }
-static int is_cicon(int t)  { return t==G_CICON || t==G_IMAGE; }
+static int is_pam(int t)    { return t==G_PAMICON || t==G_IMAGE; }
 
 static char *dup_cstr(RSC *r, const uint8_t *p, size_t len, uint32_t off) {
     if (off == 0 || off >= len) return arena_alloc(r, 1);   /* "" */
@@ -84,6 +93,134 @@ static char *dup_cstr(RSC *r, const uint8_t *p, size_t len, uint32_t off) {
     char *s = arena_alloc(r, e - off + 1);
     if (s) memcpy(s, p + off, e - off);
     return s;
+}
+
+/* ---- the extended (CICONBLK) section -------------------------------------
+ *
+ * Past the classic image, at the word-aligned rsh_rssize, sits a 0-terminated
+ * array of LONGs:
+ *      [0] the true file size (rsh_rssize is only 16 bits, so it cannot say)
+ *      [1] offset of the CICONBLK pointer array   (0 / -1 = none)
+ *      [2] offset of an optional 256-colour palette
+ *
+ * The pointer array is LONGs terminated by -1, one per CICONBLK; the blocks
+ * themselves follow it packed back to back:
+ *
+ *      ICONBLK   (34 bytes: the mono fallback, geometry and label)
+ *      LONG      numRez
+ *      mono data (isize)          isize = ((wicon+15)/16)*2 * hicon
+ *      mono mask (isize)
+ *      char[12]  unused name slot (ib_ptext points here when ib_wtext == 0)
+ *      numRez x {
+ *          CICON header (22 bytes; sel_data non-zero = a SELECTED form follows)
+ *          col_data (isize * num_planes)
+ *          col_mask (isize)
+ *          [ sel_data (isize * num_planes), sel_mask (isize) ]
+ *      }
+ *
+ * A G_CICON object's ob_spec is an INDEX into the pointer array, not an offset.
+ */
+static uint32_t iconblk_bytes(int w, int h) {
+    if (w <= 0 || h <= 0) return 0;
+    return (uint32_t)(((w + 15) / 16) * 2) * (uint32_t)h;
+}
+
+/* Read one ICONBLK's fields (34 bytes) — shared by G_ICON and a CICONBLK's mono. */
+static void read_iconblk(RSC_ICONBLK *ib, const uint8_t *b, int be) {
+    ib->ib_char  = (int16_t)rd16(b + 12, be);
+    ib->ib_xchar = (int16_t)rd16(b + 14, be); ib->ib_ychar = (int16_t)rd16(b + 16, be);
+    ib->ib_xicon = (int16_t)rd16(b + 18, be); ib->ib_yicon = (int16_t)rd16(b + 20, be);
+    ib->ib_wicon = (int16_t)rd16(b + 22, be); ib->ib_hicon = (int16_t)rd16(b + 24, be);
+    ib->ib_xtext = (int16_t)rd16(b + 26, be); ib->ib_ytext = (int16_t)rd16(b + 28, be);
+    ib->ib_wtext = (int16_t)rd16(b + 30, be); ib->ib_htext = (int16_t)rd16(b + 32, be);
+}
+
+/* Returns 0 on success. On failure the resource is still usable, just without
+ * colour icons — a broken extension must not lose the dialogs. */
+static int parse_extension(RSC *r, const uint8_t *p, size_t len, uint16_t rssize, int be) {
+    size_t osize = ((size_t)rssize + 1) & ~(size_t)1;
+    if (osize + 8 > len) return -1;
+
+    uint32_t cib_off = rd32(p + osize + 4, be);
+    uint32_t pal_off = (osize + 12 <= len) ? rd32(p + osize + 8, be) : 0;
+    r->extended = 1;
+
+    if (pal_off && pal_off != 0xFFFFFFFFu && pal_off + 256 * 8 <= len) {
+        r->palette = arena_alloc(r, 256 * sizeof(RSC_RGB));
+        if (r->palette)
+            for (int i = 0; i < 256; i++) {
+                const uint8_t *e = p + pal_off + (size_t)i * 8;
+                r->palette[i].r   = (int16_t)rd16(e + 0, be);
+                r->palette[i].g   = (int16_t)rd16(e + 2, be);
+                r->palette[i].b   = (int16_t)rd16(e + 4, be);
+                r->palette[i].pen = (int16_t)rd16(e + 6, be);
+            }
+    }
+    if (!cib_off || cib_off == 0xFFFFFFFFu || cib_off >= len) return 0;   /* no colour icons */
+
+    /* the pointer array: LONGs, terminated by -1 */
+    int n = 0;
+    while (cib_off + (size_t)(n + 1) * 4 <= len && rd32(p + cib_off + (size_t)n * 4, be) != 0xFFFFFFFFu) {
+        if (++n > 4096) return -1;                      /* runaway: not a real array */
+    }
+    if (n == 0) return 0;
+
+    r->cib = arena_alloc(r, (size_t)n * sizeof(RSC_CICONBLK *));
+    if (!r->cib) return -1;
+    r->ncib = n;
+
+    size_t at = cib_off + (size_t)(n + 1) * 4;          /* first block, past the -1 */
+    for (int i = 0; i < n; i++) {
+        if (at + 38 > len) { r->ncib = i; return -1; }
+        size_t start = at;
+        RSC_CICONBLK *cb = rsc_new_ciconblk(r);
+        if (!cb) return -1;
+        r->cib[i] = cb;
+
+        read_iconblk(&cb->mono, p + at, be);
+        uint32_t isize = iconblk_bytes(cb->mono.ib_wicon, cb->mono.ib_hicon);
+        int32_t numRez = (int32_t)rd32(p + at + 34, be);
+        if (isize == 0 || numRez < 0 || numRez > 32) { r->ncib = i; return -1; }
+        at += 38;
+
+        if (at + 2 * (size_t)isize + 12 > len) { r->ncib = i; return -1; }
+        cb->mono.ib_pdata = rsc_intern_bytes(r, p + at, isize); at += isize;
+        cb->mono.ib_pmask = rsc_intern_bytes(r, p + at, isize); at += isize;
+        /* ib_ptext is a file offset when the icon has a text box, otherwise it
+         * points at the 12-byte name slot that follows the mask. */
+        uint32_t ptext = rd32(p + start + 8, be);
+        cb->mono.ib_ptext = (cb->mono.ib_wtext && ptext && ptext < len)
+                          ? dup_cstr(r, p, len, ptext)
+                          : dup_cstr(r, p, len, (uint32_t)at);
+        at += 12;                                        /* the unused name slot */
+
+        cb->nrez = (int16_t)numRez;
+        cb->rez  = numRez ? arena_alloc(r, (size_t)numRez * sizeof(RSC_CICON_REZ)) : NULL;
+        for (int j = 0; j < numRez; j++) {
+            if (at + 22 > len) { cb->nrez = (int16_t)j; r->ncib = i + 1; return -1; }
+            RSC_CICON_REZ *z = &cb->rez[j];
+            z->num_planes = (int16_t)rd16(p + at, be);
+            int has_sel   = rd32(p + at + 10, be) != 0;  /* the sel_data slot is a flag */
+            uint32_t psize = isize * (uint32_t)(z->num_planes > 0 ? z->num_planes : 0);
+            at += 22;
+            if (z->num_planes <= 0 || z->num_planes > 32 ||
+                at + psize + isize + (has_sel ? psize + isize : 0) > len) {
+                cb->nrez = (int16_t)j; r->ncib = i + 1; return -1;
+            }
+            z->col_data = rsc_intern_bytes(r, p + at, psize); at += psize;
+            z->col_mask = rsc_intern_bytes(r, p + at, isize); at += isize;
+            if (has_sel) {
+                z->sel_data = rsc_intern_bytes(r, p + at, psize); at += psize;
+                z->sel_mask = rsc_intern_bytes(r, p + at, isize); at += isize;
+            } else {
+                z->sel_data = z->sel_mask = NULL;
+            }
+        }
+        /* keep the block verbatim so an imported file can go back out unchanged */
+        cb->raw_len = (uint32_t)(at - start);
+        cb->raw = rsc_intern_bytes(r, p + start, cb->raw_len);
+    }
+    return 0;
 }
 
 /* ---- reader -------------------------------------------------------------- */
@@ -159,11 +296,15 @@ static RSC *try_parse(const uint8_t *p, size_t len, int be) {
                 if (pmask && pmask + bytes <= len) ib->ib_pmask = rsc_intern_bytes(r, p + pmask, bytes);
             }
             g->ob_spec = ib;
-        } else if (is_cicon(t)) {
-            RSC_CICON *ci = rsc_new_cicon(r);
+        } else if (is_pam(t)) {
+            RSC_PAMICON *ci = rsc_new_pamicon(r);
             uint32_t pl = pam_len(p, len, spec);
             if (pl && ci) { ci->pam = rsc_intern_bytes(r, p + spec, pl); ci->pam_len = pl; }
             g->ob_spec = ci;
+        } else if (t == G_CICON) {
+            /* Filled in below, once the extension has been located: ob_spec here
+             * is an index into the file's CICONBLK array, not an offset. */
+            g->ob_spec = (void *)(uintptr_t)spec;
         } else {
             g->ob_spec = NULL;
         }
@@ -176,6 +317,34 @@ static RSC *try_parse(const uint8_t *p, size_t len, int be) {
         rsc_add_tree(r, (int)((off - objBase) / SZ_OBJ));
     }
     if (r->ntree == 0) { rsc_free(r); return NULL; }
+
+    r->n_bitblk  = (int16_t)h[14];      /* rsh_nbb     */
+    r->n_freeimg = (int16_t)h[16];      /* rsh_nimages */
+
+    /* Free strings: a table of LONG offsets, reached by rsrc_gaddr(R_STRING, i).
+     * They belong to no object, so nothing above would have picked them up. */
+    uint32_t frstr = h[5];
+    int nstring = (int16_t)h[15];
+    if (nstring > 0 && frstr && frstr + (size_t)nstring * 4 <= len) {
+        for (int i = 0; i < nstring; i++)
+            rsc_add_string(r, dup_cstr(r, p, len, rd32(p + frstr + (size_t)i * 4, be)));
+    }
+
+    /* The extension: colour icons and the palette. A malformed one costs us the
+     * icons, not the whole resource. */
+    if (h[0] & RSC_VRSN_EXTENDED) {
+        parse_extension(r, p, len, rssize, be);
+        /* A G_CICON's ob_spec is an index into the CICONBLK array; resolve it. */
+        for (int i = 0; i < r->nobj; i++) {
+            RSC_OBJECT *g = &r->obj[i];
+            if ((g->ob_type & 0xFF) != G_CICON) continue;
+            uint32_t idx = (uint32_t)(uintptr_t)g->ob_spec;
+            g->ob_spec = ((int)idx < r->ncib) ? (void *)r->cib[idx] : NULL;
+        }
+    } else {
+        for (int i = 0; i < r->nobj; i++)      /* a G_CICON with no extension: nothing to point at */
+            if ((r->obj[i].ob_type & 0xFF) == G_CICON) r->obj[i].ob_spec = NULL;
+    }
     return r;
 }
 
@@ -234,8 +403,8 @@ int rsc_write(const RSC *r, uint8_t **out_p, size_t *out_len, const char **err) 
             uint32_t bytes = (uint32_t)(((ib->ib_wicon + 15) / 16) * 2) * (ib->ib_hicon > 0 ? ib->ib_hicon : 0);
             ib_data_off[idx] = imlen; if (ib->ib_pdata && bytes) IM_APPEND(ib->ib_pdata, bytes); else if (bytes) { uint8_t z=0; for(uint32_t k=0;k<bytes;k++) IM_APPEND(&z,1);}
             ib_mask_off[idx] = imlen; if (ib->ib_pmask && bytes) IM_APPEND(ib->ib_pmask, bytes); else if (bytes) IM_APPEND(imdata + ib_data_off[idx], bytes);
-        } else if (is_cicon(t) && o->ob_spec) {
-            RSC_CICON *ci = o->ob_spec;
+        } else if (is_pam(t) && o->ob_spec) {
+            RSC_PAMICON *ci = o->ob_spec;
             int idx = pv_add(&cics, ci);
             cic_off = realloc(cic_off, cics.cap*sizeof(uint32_t));
             cic_off[idx] = imlen;
@@ -283,7 +452,7 @@ int rsc_write(const RSC *r, uint8_t **out_p, size_t *out_len, const char **err) 
         else if (is_string(t)) spec = strs.off[sv_intern(&strs, (const char *)o->ob_spec)];
         else if (is_ted(t)) spec = tedBase + (uint32_t)pv_find(&teds, o->ob_spec) * SZ_TED;
         else if (t == G_ICON) spec = ibBase + (uint32_t)pv_find(&ibs, o->ob_spec) * SZ_IB;
-        else if (is_cicon(t)) { int k = pv_find(&cics, o->ob_spec); spec = k>=0 ? imBase + cic_off[k] : 0; }
+        else if (is_pam(t)) { int k = pv_find(&cics, o->ob_spec); spec = k>=0 ? imBase + cic_off[k] : 0; }
         wr32(d+12, spec);
         wr16(d+16, pack_coord(o->ob_x, cw)); wr16(d+18, pack_coord(o->ob_y, ch));
         wr16(d+20, pack_coord(o->ob_w, cw)); wr16(d+22, pack_coord(o->ob_h, ch));
@@ -344,7 +513,7 @@ void rsc_free(RSC *r) {
     if (!r) return;
     ArenaBlock *b = r->arena;
     while (b) { ArenaBlock *n = b->next; free(b); b = n; }
-    free(r->obj); free(r->trees); free(r);
+    free(r->obj); free(r->trees); free(r->strings); free(r);
 }
 void rsc_set_cell(RSC *r, int cw, int ch) { r->cell_w = cw > 0 ? cw : 8; r->cell_h = ch > 0 ? ch : 16; }
 
@@ -384,4 +553,31 @@ uint8_t *rsc_intern_bytes(RSC *r, const uint8_t *b, uint32_t n) {
 RSC_TEDINFO *rsc_new_tedinfo(RSC *r) { RSC_TEDINFO *t = arena_alloc(r, sizeof *t);
     if (t) { t->te_ptext = t->te_ptmplt = t->te_pvalid = arena_alloc(r, 1); } return t; }
 RSC_ICONBLK *rsc_new_iconblk(RSC *r) { return arena_alloc(r, sizeof(RSC_ICONBLK)); }
-RSC_CICON   *rsc_new_cicon(RSC *r)   { return arena_alloc(r, sizeof(RSC_CICON)); }
+RSC_PAMICON  *rsc_new_pamicon(RSC *r)  { return arena_alloc(r, sizeof(RSC_PAMICON)); }
+RSC_CICONBLK *rsc_new_ciconblk(RSC *r) { return arena_alloc(r, sizeof(RSC_CICONBLK)); }
+
+int rsc_is_extended(const RSC *r) { return r ? r->extended : 0; }
+const RSC_RGB *rsc_palette(const RSC *r) { return r ? r->palette : NULL; }
+
+int rsc_nstrings(const RSC *r) { return r ? r->nstring : 0; }
+const char *rsc_string(const RSC *r, int i) {
+    return (r && i >= 0 && i < r->nstring) ? r->strings[i] : NULL;
+}
+int rsc_add_string(RSC *r, const char *s) {
+    if (r->nstring == r->string_cap) {
+        int cap = r->string_cap ? r->string_cap * 2 : 16;
+        char **n = realloc(r->strings, (size_t)cap * sizeof(char *));
+        if (!n) return -1;
+        r->strings = n; r->string_cap = cap;
+    }
+    r->strings[r->nstring] = rsc_intern_str(r, s ? s : "");
+    return r->nstring++;
+}
+
+int rsc_nbitblks(const RSC *r)   { return r ? r->n_bitblk : 0; }
+int rsc_nfreeimages(const RSC *r) { return r ? r->n_freeimg : 0; }
+
+int rsc_nciconblks(const RSC *r) { return r ? r->ncib : 0; }
+RSC_CICONBLK *rsc_ciconblk(const RSC *r, int i) {
+    return (r && i >= 0 && i < r->ncib) ? r->cib[i] : NULL;
+}

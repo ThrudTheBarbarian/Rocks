@@ -118,6 +118,23 @@ G_CICON(44)`.
   tree index, with a little-endian fallback for PC/GEM files. `char/pixel`-packed
   coordinates are unpacked to pixels (default cell 8×16). Mono `ICONBLK` bitplanes
   are preserved and rendered.
+- **Extended (`vrsn & 4`, EmuTOS's `NEW_FORMAT_RSC`):** the appended CICON section
+  is parsed — colour icons, their optional SELECTED forms, and the file's 256-colour
+  palette. Note this bit does *not* lift the 64KB cap on the object/TEDINFO/string
+  tables (every `RSHDR` offset is a 16-bit word); it only lets the icon data, reached
+  through 32-bit offsets, live past it. **The source export has no such limit at all** —
+  it emits resolved pointers, so nothing there is bounded by 64KB.
+- **Colour icons.** A real Atari `G_CICON` (type **33**) is a `CICONBLK`: planar,
+  palette-indexed, with a 1-bit mask — it cannot carry alpha or true colour. On import
+  the deepest version is expanded to an **RGBA PAM**, so the whole editor (canvas,
+  inspector, test drive, `.c`/`.xt` export) has one image path; the original block is
+  kept verbatim so re-export stays byte-faithful. Rocks' own colour icon is a separate
+  type (**44**, `G_PAMICON`) holding a straight RGBA PAM — strictly richer, and what
+  fpga-xt uses.
+- **Free strings** (`rsrc_gaddr(R_STRING, i)`) are read, kept, and exported as
+  `#define STR_…` — real resources are full of them (EmuTOS's desktop has 64).
+- **Lossy imports are never silent:** anything Rocks reads past but cannot preserve
+  (BITBLKs, free images) is reported on import.
 - **Write:** classic big-endian, coordinates re-packed so the same tools read it
   back. Extended widgets keep their type numbers; a `G_CICON` embeds its P7 PAM
   blob in the image-data section (`ob_spec` → the PAM). Standard files stay

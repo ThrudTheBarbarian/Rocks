@@ -24,7 +24,70 @@ static char *dupLatin1(RSC *r, NSString *s) {
 static int typeIsBox(int t)    { return t==G_BOX || t==G_IBOX || t==G_BOXCHAR; }
 static int typeIsString(int t) { return t==G_STRING||t==G_BUTTON||t==G_TITLE||t==G_CHECKBOX||t==G_RADIO||t==G_POPUP; }
 static int typeIsTed(int t)    { return t==G_TEXT||t==G_BOXTEXT||t==G_FTEXT||t==G_FBOXTEXT||t==G_FIELD; }
-static int typeIsCicon(int t)  { return t==G_CICON || t==G_IMAGE; }
+static int typeIsPam(int t)    { return t==G_PAMICON || t==G_IMAGE; }
+
+// ---- the standard Atari colour icon (CICONBLK) ----------------------------
+//
+// A CICONBLK holds a mono fallback plus one planar, palette-indexed version per
+// screen depth, each with a 1-bit mask and an optional SELECTED form.  We expand
+// the DEEPEST version to RGBA so the editor has one image path (everything else
+// already speaks PAM), and keep the block's original bytes so a file that came in
+// can go back out unchanged.
+
+// The file's own 256-colour palette, flattened to RGB bytes; NULL if it had none.
+// Set for the duration of one GRscRead — the reader is not re-entrant anyway.
+static uint8_t gPaletteRGB[256 * 3];
+static const uint8_t *gPalette = NULL;
+
+static void setPalette(const RSC_RGB *pal) {
+    gPalette = NULL;
+    if (!pal) return;
+    for (int i = 0; i < 256; i++) {
+        // VDI thousandths (0..1000) -> 0..255
+        gPaletteRGB[i*3+0] = (uint8_t)((pal[i].r * 255 + 500) / 1000);
+        gPaletteRGB[i*3+1] = (uint8_t)((pal[i].g * 255 + 500) / 1000);
+        gPaletteRGB[i*3+2] = (uint8_t)((pal[i].b * 255 + 500) / 1000);
+    }
+    gPalette = gPaletteRGB;
+}
+
+static GIcon *GIconFromCICONBLK(RSC_CICONBLK *cb, const uint8_t *palette) {
+    GIcon *ic = [GIcon new];
+    ic.isColor = YES;
+    if (!cb) return ic;
+
+    RSC_ICONBLK *ib = &cb->mono;
+    int w = ib->ib_wicon, h = ib->ib_hicon;
+    ic.iconChar = ib->ib_char; ic.charX = ib->ib_xchar; ic.charY = ib->ib_ychar;
+    ic.iconX = ib->ib_xicon; ic.iconY = ib->ib_yicon; ic.iconW = w; ic.iconH = h;
+    ic.textX = ib->ib_xtext; ic.textY = ib->ib_ytext;
+    ic.textW = ib->ib_wtext; ic.textH = ib->ib_htext;
+    ic.label = NSStr(ib->ib_ptext);
+
+    uint32_t planeBytes = (uint32_t)(((w + 15) / 16) * 2) * (h > 0 ? h : 0);
+    if (ib->ib_pdata && planeBytes) ic.monoData = [NSData dataWithBytes:ib->ib_pdata length:planeBytes];
+    if (ib->ib_pmask && planeBytes) ic.monoMask = [NSData dataWithBytes:ib->ib_pmask length:planeBytes];
+    if (cb->raw && cb->raw_len) ic.ciconRaw = [NSData dataWithBytes:cb->raw length:cb->raw_len];
+
+    // the deepest colour version is the one worth showing
+    RSC_CICON_REZ *best = NULL;
+    for (int i = 0; i < cb->nrez; i++)
+        if (!best || cb->rez[i].num_planes > best->num_planes) best = &cb->rez[i];
+    if (!best || !best->col_data || !planeBytes) return ic;
+
+    NSData *d = [NSData dataWithBytes:best->col_data
+                               length:(NSUInteger)planeBytes * best->num_planes];
+    NSData *m = best->col_mask ? [NSData dataWithBytes:best->col_mask length:planeBytes] : nil;
+    ic.pam = GPAMFromPlanar(d, m, w, h, best->num_planes, palette);
+
+    if (best->sel_data) {
+        NSData *sd = [NSData dataWithBytes:best->sel_data
+                                    length:(NSUInteger)planeBytes * best->num_planes];
+        NSData *sm = best->sel_mask ? [NSData dataWithBytes:best->sel_mask length:planeBytes] : nil;
+        ic.selPam = GPAMFromPlanar(sd, sm, w, h, best->num_planes, palette);
+    }
+    return ic;
+}
 
 // ---- read: C OBJECT tree -> GObject --------------------------------------
 
@@ -71,11 +134,15 @@ static GObject *buildG(RSC_OBJECT *objs, int base, int rel, int nobj) {
             if (ib->ib_pmask && bytes) ic.monoMask = [NSData dataWithBytes:ib->ib_pmask length:bytes];
         }
         g.icon = ic;
-    } else if (typeIsCicon(t)) {
-        RSC_CICON *ci = o->ob_spec;
+    } else if (typeIsPam(t)) {
+        RSC_PAMICON *ci = o->ob_spec;
         GIcon *ic = [GIcon new]; ic.isColor = YES;
         if (ci && ci->pam && ci->pam_len) ic.pam = [NSData dataWithBytes:ci->pam length:ci->pam_len];
         g.icon = ic;
+    } else if (t == G_CICON) {
+        // A real Atari colour icon.  Expand the deepest version to RGBA for the
+        // editor, and keep the block verbatim so re-export stays byte-faithful.
+        g.icon = GIconFromCICONBLK((RSC_CICONBLK *)o->ob_spec, gPalette);
     }
 
     int c = o->ob_head;
@@ -92,14 +159,40 @@ static GObject *buildG(RSC_OBJECT *objs, int base, int rel, int nobj) {
     return g;
 }
 
+static NSString *gImportWarning = nil;
+NSString *GRscLastImportWarning(void) { return gImportWarning; }
+
 GResource *GRscRead(NSData *data, NSString **err) {
     const char *cerr = NULL;
+    gImportWarning = nil;
     RSC *r = rsc_read(data.bytes, data.length, &cerr);
     if (!r) { if (err) *err = NSStr(cerr); return nil; }
+
+    // Say plainly what we read past and will not write back.
+    NSMutableArray *lost = [NSMutableArray array];
+    if (rsc_nbitblks(r))
+        [lost addObject:[NSString stringWithFormat:@"%d BITBLK bitmap%s",
+                         rsc_nbitblks(r), rsc_nbitblks(r) == 1 ? "" : "s"]];
+    if (rsc_nfreeimages(r))
+        [lost addObject:[NSString stringWithFormat:@"%d free image%s",
+                         rsc_nfreeimages(r), rsc_nfreeimages(r) == 1 ? "" : "s"]];
+    if (lost.count)
+        gImportWarning = [NSString stringWithFormat:
+            @"This resource carries %@, which Rocks does not preserve yet. "
+             "Everything else — trees, free strings and colour icons — imports intact.",
+            [lost componentsJoinedByString:@" and "]];
 
     GResource *res = [GResource new];
     res.trees = [NSMutableArray array];
     res.bigEndian = YES; res.packedCoords = YES; res.charWidth = 8; res.charHeight = 16;
+    setPalette(rsc_palette(r));            // used while expanding CICONBLKs below
+
+    // Free strings belong to no object; without this they are simply lost.
+    NSMutableArray *fs = [NSMutableArray array];
+    for (int i = 0; i < rsc_nstrings(r); i++)
+        [fs addObject:NSStr(rsc_string(r, i))];
+    res.freeStrings = fs;
+
     int nobj = 0;
     RSC_OBJECT *objs = rsc_objects(r, &nobj);
     for (int i = 0; i < rsc_ntrees(r); i++) {
@@ -162,9 +255,9 @@ NSData *GRscWrite(GResource *res, NSString **err) {
                 if (gi.monoData.length) ib->ib_pdata = rsc_intern_bytes(r, gi.monoData.bytes, (uint32_t)gi.monoData.length);
                 if (gi.monoMask.length) ib->ib_pmask = rsc_intern_bytes(r, gi.monoMask.bytes, (uint32_t)gi.monoMask.length);
                 o->ob_spec = ib;
-            } else if (typeIsCicon(t)) {
+            } else if (typeIsPam(t)) {
                 GIcon *gi = g.icon;
-                RSC_CICON *ci = rsc_new_cicon(r);
+                RSC_PAMICON *ci = rsc_new_pamicon(r);
                 NSData *pam = gi.pam;
                 if (!pam && gi.externalPath) pam = [NSData dataWithContentsOfFile:gi.externalPath];
                 if (!pam) { NSImage *img = [gi image]; if (img) pam = GPAMFromImage(img); }

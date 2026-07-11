@@ -41,6 +41,8 @@ static NSDictionary *objToDict(GObject *o) {
         NSMutableDictionary *ic = [NSMutableDictionary dictionary];
         ic[@"isColor"] = @(o.icon.isColor); ic[@"label"] = o.icon.label ?: @"";
         if (o.icon.pam) ic[@"pam"] = b64(o.icon.pam);
+        if (o.icon.selPam) ic[@"selPam"] = b64(o.icon.selPam);
+        if (o.icon.ciconRaw) ic[@"ciconRaw"] = b64(o.icon.ciconRaw);
         if (o.icon.externalPath) ic[@"externalPath"] = o.icon.externalPath;
         if (o.icon.monoData) ic[@"monoData"] = b64(o.icon.monoData);
         if (o.icon.monoMask) ic[@"monoMask"] = b64(o.icon.monoMask);
@@ -91,6 +93,7 @@ static GObject *objFromDict(NSDictionary *d) {
         GIcon *ic = [GIcon new];
         ic.isColor = [id_[@"isColor"] boolValue]; ic.label = id_[@"label"] ?: @"";
         ic.pam = unb64(id_[@"pam"]); ic.externalPath = id_[@"externalPath"];
+        ic.selPam = unb64(id_[@"selPam"]); ic.ciconRaw = unb64(id_[@"ciconRaw"]);
         ic.monoData = unb64(id_[@"monoData"]); ic.monoMask = unb64(id_[@"monoMask"]);
         ic.iconChar = [id_[@"iconChar"] intValue];
         ic.charX = [id_[@"charX"] intValue]; ic.charY = [id_[@"charY"] intValue];
@@ -111,6 +114,7 @@ NSDictionary *GResourceToDictionary(GResource *r) {
                             @"root": objToDict(t.root) }];
     }
     return @{ @"version": @1, @"bigEndian": @(r.bigEndian),
+              @"freeStrings": r.freeStrings ?: @[],
               @"packedCoords": @(r.packedCoords), @"embedIcons": @(r.embedIcons),
               @"charWidth": @(r.charWidth), @"charHeight": @(r.charHeight),
               @"trees": trees };
@@ -124,6 +128,7 @@ GResource *GResourceFromDictionary(NSDictionary *d) {
     r.embedIcons = d[@"embedIcons"] ? [d[@"embedIcons"] boolValue] : YES;
     r.charWidth = d[@"charWidth"] ? [d[@"charWidth"] intValue] : 8;
     r.charHeight = d[@"charHeight"] ? [d[@"charHeight"] intValue] : 16;
+    r.freeStrings = [(d[@"freeStrings"] ?: @[]) mutableCopy];
     r.trees = [NSMutableArray array];
     for (NSDictionary *td in d[@"trees"]) {
         GTree *t = [GTree new];
