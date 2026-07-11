@@ -12,13 +12,15 @@ GEM code loads (`img.c`).
 ## Build & run
 
 ```sh
-make          # -> build/Rocks.app
+make          # -> build/Rocks.app and build/rockscli
 make run      # build and launch
+make check    # export a real .rsc to C and diff it back, field by field
 ./build/Rocks.app/Contents/MacOS/Rocks --selftest [file.rsc]   # headless checks
 ```
 
 Requires the Xcode command-line toolchain (clang). No Xcode project, no XIB — the
-UI is built in code.
+UI is built in code. The theme, the UI font and the `make check` sample come from
+a sibling `fpga-xt/gem` checkout; override its location with `GEM_DIR=<path>`.
 
 ## Window
 
@@ -33,9 +35,47 @@ UI is built in code.
   (text/template/valid/font/justify/colour), box colour word, and the icon
   (import `.pam`/`.png`/… for a colour `G_CICON`).
 
+## Source export
+
+A resource is only useful if code can name the things in it. Rocks emits symbolic
+names — one `#define` per tree and per object — so application code never hard-codes
+an object index that shifts the moment you insert a widget.
+
+Names come from the tree: a tree called `MAIN` holding an OK button gives
+`#define MAIN 0` (the tree) and `#define MAIN_OK 3` (the object). An object's name
+is taken from the **Name** field in the inspector if you set one, otherwise it is
+derived from the object's text or label, otherwise from its type
+(`MAIN_FIELD`). Clashes get an index suffix (`MAIN_OK_5`).
+
+From the **File** menu — *Export C Source…* and *Export xtc Source…* — or headless:
+
+```sh
+rockscli app.gemproj -o build/app --emit h,c     # app.h + app.c
+rockscli app.gemproj -o build/app --emit xt      # app.xt
+rockscli legacy.rsc  -o out/legacy --emit h,c,rsc
+rockscli --list app.rsc                          # trees, objects, symbols
+```
+
+- **`.h`** — the symbolic names, plus the AES structs (`OBJECT`, `TEDINFO`,
+  `ICONBLK`, `CICON`). Define `ROCKS_AES_TYPES` to supply your own from `aes.h`.
+- **`.c`** — the trees as static initialised data. C folds address constants, so
+  every `ob_spec` is resolved at compile time and there is nothing to call at
+  start-up. No `.rsc` file is needed at run time.
+- **`.xt`** — the same for the [xtc](https://atari-xt.com/compiler/) language.
+  xtc will not constant-fold a global whose type contains a pointer, so the tables
+  are pure integers (`ob_spec` is the AES 32-bit LONG, which is what it is on a
+  real Atari) and a generated `<stem>_fixup()` pokes the addresses in at start-up
+  — the job `rsrc_load` does on real GEM. Call it once before handing a tree to
+  the AES. Targets m68k and 6502.
+
+`make check` exports a real `.rsc`, then walks the generated tree and the original
+file in lockstep and diffs every field — geometry, links, box words, strings,
+TEDINFO text/template/valid, ICONBLK bitplanes.
+
 ## Menus
 
-- **File:** New, Open/Save native `.gemproj` (JSON), Import/Export GEM `.rsc`.
+- **File:** New, Open/Save native `.gemproj` (JSON), Import/Export GEM `.rsc`,
+  Export C source (`.h`/`.c`) and xtc source (`.xt`).
 - **Edit:** Undo/Redo, Cut/Copy/Paste, Duplicate, Delete, Select All.
 - **Object:** align (6 ways), distribute H/V, bring to front / send to back.
 - **View:** snap to grid, alignment guides, zoom.
@@ -64,6 +104,8 @@ G_CICON(44)`.
 |------|------|
 | `GModel.*`         | OBJECT tree model, payloads, flatten-to-classic |
 | `GRsc.*`           | classic `.rsc` reader + writer |
+| `GExport.*`        | source export: symbols + `.h` / `.c` / `.xt` emitters |
+| `rockscli.m`       | headless resource compiler (`build/rockscli`) |
 | `GImage.*`         | P7 PAM decode/encode, mono ICONBLK render |
 | `GProject.*`       | `.gemproj` JSON (also used for undo snapshots) |
 | `GRender.*`        | WYSIWYG OBJECT drawing |
@@ -79,5 +121,12 @@ G_CICON(44)`.
 - Menu-tree (`GK_MENU`) and `G_IMAGE`/BITBLK pixel editing are read-preserved but
   not yet authored in the UI.
 - Imported coordinate cell height is assumed 8×16; resources designed at 8×8 will
-  look tall until a per-document cell-size control is added.
+  look tall until a per-document cell-size control is added (`rockscli --cell 8x8`
+  sets it for an export).
 - `G_CICON` is an fpga-xt extension; classic editors won't render it.
+- A `.rsc` carries no tree names, so an imported one exports as `TREE0`, `TREE1`…
+  until you rename the trees. Names live in the `.gemproj`.
+- The `.xt` export targets m68k/6502. It cannot target arm64 yet: xtc's arm64
+  backend reports `sizeof(u8@) == 2` and mis-lays-out any struct with a pointer
+  member, so a pointer-typed `OBJECT` faults there. The integer tables Rocks emits
+  side-step it, but a 64-bit address will not fit in `ob_spec` until that is fixed.

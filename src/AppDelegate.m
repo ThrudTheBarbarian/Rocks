@@ -43,6 +43,9 @@ static NSMenuItem *mi(NSMenu *m, NSString *title, SEL action, NSString *key) {
     [file addItem:[NSMenuItem separatorItem]];
     mi(file, @"Import GEM .rsc…", @selector(importRsc:), @"i");
     mi(file, @"Export GEM .rsc…", @selector(exportRsc:), @"e");
+    [file addItem:[NSMenuItem separatorItem]];
+    mi(file, @"Export C Source…", @selector(exportCSource:), @"");
+    mi(file, @"Export xtc Source…", @selector(exportXtc:), @"");
     fileItem.submenu = file;
 
     // Edit

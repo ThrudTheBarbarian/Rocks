@@ -25,6 +25,7 @@ static NSDictionary *objToDict(GObject *o) {
     if (o.extType) m[@"extType"] = @(o.extType);
     m[@"x"] = @(o.x); m[@"y"] = @(o.y); m[@"w"] = @(o.w); m[@"h"] = @(o.h);
     if (o.text) m[@"text"] = o.text;
+    if (o.name.length) m[@"name"] = o.name;
     if (o.ted) {
         m[@"ted"] = @{ @"text": o.ted.text ?: @"", @"tmplt": o.ted.tmplt ?: @"",
                        @"valid": o.ted.valid ?: @"", @"font": @(o.ted.font),
@@ -68,6 +69,7 @@ static GObject *objFromDict(NSDictionary *d) {
     o.x = [d[@"x"] intValue]; o.y = [d[@"y"] intValue];
     o.w = [d[@"w"] intValue]; o.h = [d[@"h"] intValue];
     o.text = d[@"text"];
+    o.name = d[@"name"];
     NSDictionary *td = d[@"ted"];
     if (td) {
         GTedinfo *t = [GTedinfo new];

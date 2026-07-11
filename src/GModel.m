@@ -128,7 +128,7 @@ NSString *GObTypeName(GObType t) {
     GObject *n = [GObject new];
     n.type = _type; n.extType = _extType; n.flags = _flags; n.state = _state;
     n.x = _x; n.y = _y; n.w = _w; n.h = _h;
-    n.text = _text;
+    n.text = _text; n.name = _name;
     if (_ted) { GTedinfo *t = [GTedinfo new];
         t.text = _ted.text; t.tmplt = _ted.tmplt; t.valid = _ted.valid;
         t.font = _ted.font; t.fontId = _ted.fontId; t.just = _ted.just;

@@ -130,6 +130,12 @@
     [self popup:@"type" items:typeNames selected:tsel x:10 width:230];
     _y += 28;
 
+    // symbolic name for the .h/.c/.xt export; blank means "derive one"
+    [self label:@"Name"];
+    NSTextField *nf = [self field:@"name" value:_obj.name ?: @"" x:10 width:230];
+    nf.placeholderString = @"auto — from the text, else the type";
+    _y += 28;
+
     // geometry — a small label sits directly above each field box
     [self section:@"Geometry"];
     CGFloat gx[4] = {10, 68, 126, 184};
@@ -314,6 +320,7 @@
     else if ([id_ isEqualToString:@"w"]) o.w = MAX(iv, 1);
     else if ([id_ isEqualToString:@"h"]) o.h = MAX(iv, 1);
     else if ([id_ isEqualToString:@"text"]) o.text = sv;
+    else if ([id_ isEqualToString:@"name"]) o.name = sv.length ? sv : nil;
     // flags
     else if ([id_ isEqualToString:@"f_sel"]) [self setFlag:OF_SELECTABLE on:on o:o];
     else if ([id_ isEqualToString:@"f_def"]) [self setFlag:OF_DEFAULT on:on o:o];

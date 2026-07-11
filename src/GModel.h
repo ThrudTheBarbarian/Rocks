@@ -112,6 +112,9 @@ static inline GColorWord gcw_default(void) {
 @property GFlags flags;
 @property GState state;
 @property int x, y, w, h;
+// Symbolic name for source export (see GExport.h). Optional: when nil the
+// exporter derives one from the text/label, then from the type.
+@property (nullable, copy) NSString *name;
 @property (nullable, copy) NSString *text;   // string spec
 @property (nullable, strong) GTedinfo *ted;
 @property (nullable, strong) GBox *box;

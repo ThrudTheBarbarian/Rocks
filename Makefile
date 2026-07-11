@@ -1,16 +1,25 @@
 # Rocks — a GEM Resource Construction Set for macOS (AppKit / Objective-C).
 #
-#   make        build Rocks.app
-#   make run    build and launch
+#   make          build Rocks.app
+#   make run      build and launch
+#   make rockscli build the headless resource compiler (build/rockscli)
 #   make clean
 
 APP      := Rocks
 BUNDLE   := build/$(APP).app
 BIN      := $(BUNDLE)/Contents/MacOS/$(APP)
-SRCS     := $(wildcard src/*.m)
+CLI      := build/rockscli
+
+# main.m and rockscli.m each define main(), so neither app nor CLI gets both.
+ALL_MSRCS := $(wildcard src/*.m)
+SRCS     := $(filter-out src/rockscli.m,$(ALL_MSRCS))
 CSRCS    := $(wildcard src/*.c)
 OBJS     := $(patsubst src/%.m,build/obj/%.o,$(SRCS)) \
             $(patsubst src/%.c,build/obj/%.o,$(CSRCS))
+
+# The CLI is the model + format + exporters, with no views or controllers.
+CLI_OBJS := $(addprefix build/obj/,rockscli.o GModel.o GRsc.o GProject.o GImage.o \
+                                   GExport.o rsc.o)
 
 CC       := clang
 CFLAGS   := -x objective-c -fobjc-arc -Wall -Wno-deprecated-declarations \
@@ -19,10 +28,35 @@ CONLY    := -std=c11 -Wall -O0 -g
 LDFLAGS  := -framework Cocoa -framework AppKit -framework Foundation \
             -framework CoreText -framework CoreGraphics
 
-THEME_SRC := ../fpga-xt/gem/themes
-FONT_SRC  := ../fpga-xt/gem/fonts
-.PHONY: all run clean
-all: $(BIN) $(BUNDLE)/Contents/Info.plist theme fonts
+# The fpga-xt/gem checkout supplies the theme, the UI font and the sample .rsc
+# used by `make check`.  Look in the usual places; override with GEM_DIR=<path>.
+GEM_DIR   ?= $(firstword $(wildcard ../fpga-xt/gem ../../../fpga-xt/gem $(HOME)/src/fpga-xt/gem))
+THEME_SRC := $(GEM_DIR)/themes
+FONT_SRC  := $(GEM_DIR)/fonts
+.PHONY: all run clean rockscli check
+all: $(BIN) $(BUNDLE)/Contents/Info.plist theme fonts $(CLI)
+
+rockscli: $(CLI)
+
+$(CLI): $(CLI_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CLI_OBJS) $(LDFLAGS) -o $@
+
+# Export a real .rsc to C, then walk the generated tree and the original file in
+# lockstep and diff every field — geometry, links, strings, TEDINFO, bitplanes.
+# Compiling the output only proves it parses; this proves it carries the resource.
+RSC_SAMPLE ?= $(GEM_DIR)/resources/desktop.rsc
+check: $(CLI) $(BIN)
+	@if [ ! -f "$(RSC_SAMPLE)" ]; then \
+	    echo "check: no sample .rsc at '$(RSC_SAMPLE)' — pass RSC_SAMPLE=<file.rsc>"; \
+	else \
+	    mkdir -p build/check; \
+	    ./$(CLI) "$(RSC_SAMPLE)" -o build/check/res --emit h,c >/dev/null && \
+	    $(CC) -std=c11 -w -Isrc -Ibuild/check \
+	        tests/export_check.c build/check/res.c src/rsc.c -o build/check/export_check && \
+	    ./build/check/export_check "$(RSC_SAMPLE)" && \
+	    ./$(BIN) --selftest >/dev/null && echo "  selftest — OK"; \
+	fi
 
 # Bundle the Aristo2 theme into the app so it renders self-contained.
 theme:

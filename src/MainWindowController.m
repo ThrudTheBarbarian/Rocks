@@ -8,6 +8,7 @@
 #import "OutlineController.h"
 #import "GProject.h"
 #import "GRsc.h"
+#import "GExport.h"
 #import "GHelp.h"
 #import "GImage.h"
 
@@ -463,6 +464,51 @@ static const CGFloat kRightW = 320;
     NSData *d = GRscWrite(_doc.resource, &err);
     if (!d) { [self alert:err ?: @"Export failed."]; return; }
     [d writeToURL:p.URL atomically:YES];
+}
+
+// MARK: source export
+//
+// Same emitters rockscli uses, so the File menu and a Makefile produce identical
+// output. See GExport.h.
+
+// The output base name: from the project's own name when it has one.
+- (NSString *)exportStem {
+    NSString *s = _doc.url.lastPathComponent.stringByDeletingPathExtension;
+    return s.length ? s : @"resource";
+}
+
+- (BOOL)writeText:(NSString *)text to:(NSString *)path {
+    NSError *e = nil;
+    if ([text writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&e]) return YES;
+    [self alert:e.localizedDescription ?: @"Could not write the file."];
+    return NO;
+}
+
+- (void)exportCSource:(id)sender {
+    NSSavePanel *p = [NSSavePanel savePanel];
+    p.allowedFileTypes = @[@"h"];
+    p.nameFieldStringValue = [[self exportStem] stringByAppendingPathExtension:@"h"];
+    p.message = @"Writes a .h of symbolic names and a .c of the object trees.";
+    if ([p runModal] != NSModalResponseOK) return;
+
+    NSString *stem = p.URL.path.stringByDeletingPathExtension;
+    NSString *base = stem.lastPathComponent;
+    if ([self writeText:GExportHeader(_doc.resource, base)
+                     to:[stem stringByAppendingPathExtension:@"h"]])
+        [self writeText:GExportCSource(_doc.resource, base)
+                     to:[stem stringByAppendingPathExtension:@"c"]];
+}
+
+- (void)exportXtc:(id)sender {
+    NSSavePanel *p = [NSSavePanel savePanel];
+    p.allowedFileTypes = @[@"xt"];
+    p.nameFieldStringValue = [[self exportStem] stringByAppendingPathExtension:@"xt"];
+    p.message = @"Writes an .xt holding the trees and a fixup to call at start-up.";
+    if ([p runModal] != NSModalResponseOK) return;
+
+    NSString *stem = p.URL.path.stringByDeletingPathExtension;
+    [self writeText:GExportXtc(_doc.resource, stem.lastPathComponent)
+                 to:[stem stringByAppendingPathExtension:@"xt"]];
 }
 
 - (void)alert:(NSString *)msg {
