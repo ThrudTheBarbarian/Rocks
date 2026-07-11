@@ -284,6 +284,16 @@ NSDictionary<NSString *, NSNumber *> *GExportSymbols(GResource *res) {
     return m;
 }
 
+NSString *GExportSymbolForObject(GResource *res, GObject *o) {
+    if (!o) return nil;
+    GXPlan *p = buildPlan(res);
+    for (GXTree *xt in p.trees) {
+        NSUInteger i = [xt.objects indexOfObject:o];
+        if (i != NSNotFound) return xt.syms[i];
+    }
+    return nil;
+}
+
 // ---- .h --------------------------------------------------------------------
 
 NSString *GExportHeader(GResource *res, NSString *stem) {

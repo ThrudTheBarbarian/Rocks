@@ -15,6 +15,11 @@ extern NSPasteboardType const GPaletteDragType;
 @property BOOL snapEnabled;
 @property BOOL showGuides;
 @property int gridSize;
+// Test-drive: the canvas stops editing the tree and starts behaving like the AES
+// (see GForm.h). The caller snapshots the resource before turning this on and
+// restores it after, so nothing done here reaches the document or the undo stack.
+@property (nonatomic) BOOL testMode;
+- (void)resetTestDrive;   // clear focus/highlight and the last exit result
 - (void)refresh;         // model changed: resize + redraw
 - (void)sizeToFitModel;
 - (void)reparentByGeometry;   // re-derive containment hierarchy from geometry

@@ -3,6 +3,7 @@
 #import <AppKit/AppKit.h>
 
 @interface MainWindowController : NSWindowController
+- (void)openFileAtPath:(NSString *)path;   // Rocks <file> on the command line
 // File
 - (void)newDocument:(id)sender;
 - (void)openDocument:(id)sender;

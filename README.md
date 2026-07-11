@@ -35,6 +35,31 @@ a sibling `fpga-xt/gem` checkout; override its location with `GEM_DIR=<path>`.
   (text/template/valid/font/justify/colour), box colour word, and the icon
   (import `.pam`/`.png`/… for a colour `G_CICON`).
 
+## Test drive
+
+**View ▸ Test Drive (⌘R)** stops the canvas being an editor and makes it behave
+like the AES, so you can find out whether a dialog actually *works* before
+building anything: radio groups stay exclusive, check boxes latch, buttons
+highlight while held, popups open their linked tree and copy the choice back, and
+editable fields accept typing through their TEDINFO template and `te_pvalid`
+mask (so a digits-only field rejects letters, and an upper-case mask folds what
+you type). Tab cycles the fields, Return fires `OF_DEFAULT`, Esc fires
+`OF_CANCEL`, and a banner names the object the form exited through — using the
+same symbol the `.h` export emits, so what you read is what you write in code.
+
+Clicking and typing really do mutate the objects, so Rocks snapshots the resource
+on the way in and restores it on the way out: the document is untouched and the
+undo stack never sees any of it.
+
+The rules live in `GForm.*`, deliberately with no view attached, and are checked
+headlessly — `--formtest` covers the semantics, `--clicktest <file.rsc>` drives a
+real resource through the same hit-test → click path the canvas uses:
+
+```sh
+./build/Rocks.app/Contents/MacOS/Rocks --formtest
+./build/Rocks.app/Contents/MacOS/Rocks --clicktest resource.rsc
+```
+
 ## Source export
 
 A resource is only useful if code can name the things in it. Rocks emits symbolic
@@ -78,7 +103,7 @@ TEDINFO text/template/valid, ICONBLK bitplanes.
   Export C source (`.h`/`.c`) and xtc source (`.xt`).
 - **Edit:** Undo/Redo, Cut/Copy/Paste, Duplicate, Delete, Select All.
 - **Object:** align (6 ways), distribute H/V, bring to front / send to back.
-- **View:** snap to grid, alignment guides, zoom.
+- **View:** test drive, snap to grid, alignment guides, zoom.
 
 ## Widget types
 
@@ -105,6 +130,7 @@ G_CICON(44)`.
 | `GModel.*`         | OBJECT tree model, payloads, flatten-to-classic |
 | `GRsc.*`           | classic `.rsc` reader + writer |
 | `GExport.*`        | source export: symbols + `.h` / `.c` / `.xt` emitters |
+| `GForm.*`          | AES form behaviour (test drive): clicks, radios, validated text |
 | `rockscli.m`       | headless resource compiler (`build/rockscli`) |
 | `GImage.*`         | P7 PAM decode/encode, mono ICONBLK render |
 | `GProject.*`       | `.gemproj` JSON (also used for undo snapshots) |
@@ -126,7 +152,9 @@ G_CICON(44)`.
 - `G_CICON` is an fpga-xt extension; classic editors won't render it.
 - A `.rsc` carries no tree names, so an imported one exports as `TREE0`, `TREE1`…
   until you rename the trees. Names live in the `.gemproj`.
-- The `.xt` export targets m68k/6502. It cannot target arm64 yet: xtc's arm64
-  backend reports `sizeof(u8@) == 2` and mis-lays-out any struct with a pointer
-  member, so a pointer-typed `OBJECT` faults there. The integer tables Rocks emits
-  side-step it, but a 64-bit address will not fit in `ob_spec` until that is fixed.
+- The `.xt` export targets m68k/6502. Build it with `-A 68030`, or `-A m68k`
+  (plain 68000 only reaches ±32KB of PC-relative data, so a large resource needs
+  `-mpic`). It cannot target arm64 yet: xtc's arm64 backend reports
+  `sizeof(u8@) == 2` and mis-lays-out any struct with a pointer member, so a
+  pointer-typed `OBJECT` faults there. The integer tables Rocks emits side-step
+  that, but a 64-bit address will not fit in `ob_spec` until it is fixed.

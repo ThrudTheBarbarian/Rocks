@@ -11,6 +11,10 @@
     [self buildMenu];
     _wc = [[MainWindowController alloc] init];
     [_wc showWindow:nil];
+    // Rocks <file.gemproj|file.rsc> — open it straight away, so a resource can be
+    // put on screen from a script (and from the Finder).
+    NSArray *args = NSProcessInfo.processInfo.arguments;
+    if (args.count > 1 && ![args[1] hasPrefix:@"-"]) [_wc openFileAtPath:args[1]];
     [NSApp activateIgnoringOtherApps:YES];
 }
 
@@ -89,6 +93,9 @@ static NSMenuItem *mi(NSMenu *m, NSString *title, SEL action, NSString *key) {
     // View
     NSMenuItem *viewItem = [[NSMenuItem alloc] init]; [main addItem:viewItem];
     NSMenu *view = [[NSMenu alloc] initWithTitle:@"View"];
+    NSMenuItem *td = mi(view, @"Test Drive", @selector(toggleTestDrive:), @"r");
+    td.state = NSControlStateValueOff;
+    [view addItem:[NSMenuItem separatorItem]];
     NSMenuItem *snap = mi(view, @"Snap to Grid", @selector(toggleSnap:), @"'"); snap.state = NSControlStateValueOn;
     NSMenuItem *guides = mi(view, @"Alignment Guides", @selector(toggleGuides:), @";"); guides.state = NSControlStateValueOn;
     [view addItem:[NSMenuItem separatorItem]];

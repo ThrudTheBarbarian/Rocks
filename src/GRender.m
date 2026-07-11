@@ -34,7 +34,16 @@ static NSFont *gUIFont(CGFloat size) {
     return [NSFont systemFontOfSize:size];
 }
 
+// Test-drive mode parks a caret on one object; everything else draws without one.
+static __weak GObject *gCaretObj = nil;
+static int gCaretSlot = 0;
+static int caretFor(GObject *o) { return (o && o == gCaretObj) ? gCaretSlot : -1; }
+
 @implementation GRender
+
++ (void)setEditCaretObject:(GObject *)o slot:(int)slot {
+    gCaretObj = o; gCaretSlot = slot;
+}
 
 + (NSColor *)penColor:(int)i {
     // Classic GEM/VDI 16-colour palette (index 0 = white background, 1 = black).
@@ -96,7 +105,10 @@ static NSString *tfSlice(GObject *o) {
     return (o.state & OS_DISABLED) ? [base stringByAppendingString:@".disabled"] : base;
 }
 
-static void drawTed(GTedinfo *t, NSRect r, NSColor *normal, CGFloat size) {
+// `caret` is an index into the VALUE (0..length), or -1 for no caret.  It is
+// drawn at the left edge of the template slot that value position occupies, so
+// it lands where the next typed character will appear.
+static void drawTed(GTedinfo *t, NSRect r, NSColor *normal, CGFloat size, int caret) {
     if (!t) return;
     if (t.font == 5) size = roundf(size * 0.72f);   // te_font 5 = small system font
     NSFont *f = gUIFont(size);
@@ -112,16 +124,20 @@ static void drawTed(GTedinfo *t, NSRect r, NSColor *normal, CGFloat size) {
     NSString *tmpl = t.tmplt ?: @"";
     int nslots = 0;
     for (NSUInteger i = 0; i < tmpl.length; i++) if ([tmpl characterAtIndex:i] == '_') nslots++;
+    NSInteger caretAt = -1;                 // index into `out` where the caret goes
     if (tmpl.length == 0) {
         [out appendAttributedString:[[NSAttributedString alloc] initWithString:val attributes:va]];
+        if (caret >= 0) caretAt = MIN((NSInteger)caret, (NSInteger)out.length);
     } else {
         int L = (int)val.length, off = 0;
         if (t.just == 1) off = MAX(0, nslots - L);          // right
         else if (t.just == 2) off = MAX(0, (nslots - L) / 2); // centre
+        int wantSlot = (caret >= 0) ? caret + off : -1;
         int slot = 0;
         for (NSUInteger i = 0; i < tmpl.length; i++) {
             unichar c = [tmpl characterAtIndex:i];
             if (c == '_') {
+                if (slot == wantSlot) caretAt = (NSInteger)out.length;
                 int vi = slot - off; BOOL isVal = (vi >= 0 && vi < L);
                 unichar ch = isVal ? [val characterAtIndex:vi] : ' ';
                 [out appendAttributedString:[[NSAttributedString alloc]
@@ -133,6 +149,8 @@ static void drawTed(GTedinfo *t, NSRect r, NSColor *normal, CGFloat size) {
                     initWithString:[NSString stringWithCharacters:&c length:1] attributes:na]];
             }
         }
+        // caret past the last slot (a full field): sit at the end of the value
+        if (caret >= 0 && caretAt < 0 && wantSlot >= nslots) caretAt = (NSInteger)out.length;
     }
     NSSize sz = [out size];
     // With editable slots, te_just already positioned the value inside them (label
@@ -142,7 +160,16 @@ static void drawTed(GTedinfo *t, NSRect r, NSColor *normal, CGFloat size) {
         if (t.just == 1) x = NSMaxX(r) - sz.width - 3;                 // right
         else if (t.just == 2) x = r.origin.x + (r.size.width - sz.width) / 2; // centre
     }
-    [out drawAtPoint:NSMakePoint(x, r.origin.y + (r.size.height - sz.height) / 2)];
+    CGFloat y = r.origin.y + (r.size.height - sz.height) / 2;
+    [out drawAtPoint:NSMakePoint(x, y)];
+
+    if (caretAt >= 0) {
+        CGFloat cx = x;
+        if (caretAt > 0)
+            cx += [[out attributedSubstringFromRange:NSMakeRange(0, caretAt)] size].width;
+        [[GRender penColor:1] set];
+        NSRectFill(NSMakeRect(roundf(cx), y + 1, 1, sz.height - 2));
+    }
 }
 
 // A labelled group box (fieldset): a frame whose top border is broken by the
@@ -265,9 +292,13 @@ static void strokeBox(NSRect r, int thickness, int pen) {
         case GT_TEXT: case GT_FTEXT: {
             GTheme *th = gTheme();
             BOOL editable = (o.type == GT_FTEXT) && (o.flags & OF_EDITABLE);
-            if (editable && th && [th hasSlice:@"textfield"])
-                [th draw:tfSlice(o) inRect:r];
-            drawTed(o.ted, r, [GRender penColor:o.ted ? o.ted.color.text : 1], fontSize);
+            BOOL themed = editable && th && [th hasSlice:@"textfield"];
+            if (themed) [th draw:tfSlice(o) inRect:r];
+            // Real resources routinely leave te_color at 0, which is VDI pen 0 =
+            // white — invisible on the theme's white field.  Drawn on the theme,
+            // take its foreground, exactly as G_FIELD does.
+            NSColor *ink = themed ? th.fg : [GRender penColor:o.ted ? o.ted.color.text : 1];
+            drawTed(o.ted, r, ink, fontSize, caretFor(o));
             break;
         }
         case GT_BOXTEXT: case GT_FBOXTEXT: {
@@ -278,23 +309,25 @@ static void strokeBox(NSRect r, int thickness, int pen) {
                 break;
             }
             BOOL editable = (o.type == GT_FBOXTEXT) && (o.flags & OF_EDITABLE);
-            if (editable && th && [th hasSlice:@"textfield"]) {
+            BOOL themed = editable && th && [th hasSlice:@"textfield"];
+            if (themed) {
                 [th draw:tfSlice(o) inRect:r];
             } else {
                 fillBoxRounded(r, cw, o.extType); strokeBoxRounded(r, o.ted ? o.ted.thickness : 1, cw.border, o.extType);
             }
-            drawTed(o.ted, r, [GRender penColor:cw.text], fontSize);
+            // as G_FTEXT: te_color 0 is pen 0 (white) and would vanish on the theme
+            drawTed(o.ted, r, themed ? th.fg : [GRender penColor:cw.text], fontSize, caretFor(o));
             break;
         }
         case GT_FIELD: {
             GTheme *th = gTheme();
             if (th) {
                 [th draw:tfSlice(o) inRect:r];
-                drawTed(o.ted, r, th.fg, fontSize);
+                drawTed(o.ted, r, th.fg, fontSize, caretFor(o));
             } else {
                 [[NSColor whiteColor] set]; NSRectFill(r);
                 [[GRender penColor:1] set]; NSFrameRect(r);
-                drawTed(o.ted, r, [GRender penColor:1], fontSize);
+                drawTed(o.ted, r, [GRender penColor:1], fontSize, caretFor(o));
             }
             break;
         }

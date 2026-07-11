@@ -55,7 +55,9 @@ check: $(CLI) $(BIN)
 	    $(CC) -std=c11 -w -Isrc -Ibuild/check \
 	        tests/export_check.c build/check/res.c src/rsc.c -o build/check/export_check && \
 	    ./build/check/export_check "$(RSC_SAMPLE)" && \
-	    ./$(BIN) --selftest >/dev/null && echo "  selftest — OK"; \
+	    ./$(BIN) --selftest >/dev/null && echo "  selftest  — OK" && \
+	    ./$(BIN) --formtest && \
+	    ./$(BIN) --clicktest "$(RSC_SAMPLE)"; \
 	fi
 
 # Bundle the Aristo2 theme into the app so it renders self-contained.

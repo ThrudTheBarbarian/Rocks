@@ -8,6 +8,7 @@
 #import "GTheme.h"
 #import "GImage.h"
 #import "GRender.h"
+#import "GForm.h"
 
 // Headless checks: Rocks --selftest [file.rsc]
 static int selftest(int argc, const char *argv[]) {
@@ -64,6 +65,176 @@ static int selftest(int argc, const char *argv[]) {
     return (before == after) ? 0 : 1;
 }
 
+// Rocks --formtest: exercise the AES form rules (GForm) with no window.
+// These are the semantics test-drive mode relies on and they are easy to get
+// subtly wrong, so they are checked rather than eyeballed.
+static int gFails = 0, gChecks = 0;
+static void ck(BOOL cond, const char *what) {
+    gChecks++;
+    if (!cond) { gFails++; printf("  FAIL %s\n", what); }
+}
+
+static int formtest(void) {
+    // a dialog: two radios, a check box, a validated field, OK (default) + Cancel
+    GResource *r = [GResource emptyDialog];
+    GTree *t = r.trees[0];
+    GObject *root = t.root;
+
+    GObject *r1 = [GObject objectOfType:GT_RADIO frame:NSMakeRect(10, 10, 80, 20)];
+    GObject *r2 = [GObject objectOfType:GT_RADIO frame:NSMakeRect(10, 34, 80, 20)];
+    GObject *cb = [GObject objectOfType:GT_CHECKBOX frame:NSMakeRect(10, 58, 80, 20)];
+    r1.flags |= OF_SELECTABLE | OF_RBUTTON;
+    r2.flags |= OF_SELECTABLE | OF_RBUTTON;
+    cb.flags |= OF_SELECTABLE;
+    r1.state |= OS_SELECTED;                       // r1 starts on
+
+    GObject *fld = [GObject objectOfType:GT_FIELD frame:NSMakeRect(10, 90, 160, 20)];
+    fld.flags |= OF_EDITABLE;
+    fld.ted.tmplt = @"____";                        // 4 slots
+    fld.ted.valid = @"9999";                        // digits only
+    fld.ted.text  = @"";
+
+    GObject *ok  = [GObject objectOfType:GT_BUTTON frame:NSMakeRect(200, 150, 60, 24)];
+    GObject *can = [GObject objectOfType:GT_BUTTON frame:NSMakeRect(130, 150, 60, 24)];
+    ok.flags  |= OF_SELECTABLE | OF_EXIT | OF_DEFAULT;  ok.text = @"OK";
+    can.flags |= OF_SELECTABLE | OF_EXIT | OF_CANCEL;   can.text = @"Cancel";
+    GObject *dis = [GObject objectOfType:GT_BUTTON frame:NSMakeRect(60, 150, 60, 24)];
+    dis.flags |= OF_SELECTABLE | OF_EXIT;  dis.state |= OS_DISABLED;  dis.text = @"Nope";
+
+    for (GObject *o in @[r1, r2, cb, fld, ok, can, dis]) [root.children addObject:o];
+
+    // ---- radio exclusivity -------------------------------------------------
+    [GForm released:r2 inTree:t];
+    ck((r2.state & OS_SELECTED) != 0, "clicking a radio selects it");
+    ck((r1.state & OS_SELECTED) == 0, "its peer is deselected");
+    [GForm released:r2 inTree:t];
+    ck((r2.state & OS_SELECTED) != 0, "a radio does not toggle off when re-clicked");
+
+    // ---- check box latches and toggles ------------------------------------
+    [GForm released:cb inTree:t];
+    ck((cb.state & OS_SELECTED) != 0, "check box turns on");
+    [GForm released:cb inTree:t];
+    ck((cb.state & OS_SELECTED) == 0, "check box toggles back off");
+
+    // ---- buttons: momentary, and they exit ---------------------------------
+    GObject *exit = nil;
+    GObject *held = [GForm pressed:ok inTree:t exit:&exit];
+    ck(held == ok && (ok.state & OS_SELECTED), "an exit button lights while held");
+    ck(exit == nil, "...but does not exit until released");
+    ck([GForm released:ok inTree:t] == ok, "releasing it exits through it");
+    ck((ok.state & OS_SELECTED) == 0, "...and the highlight does not stick");
+
+    // ---- disabled objects are inert ----------------------------------------
+    exit = nil;
+    ck([GForm pressed:dis inTree:t exit:&exit] == nil && exit == nil, "a disabled button ignores a press");
+    ck([GForm released:dis inTree:t] == nil, "a disabled button ignores a release");
+
+    // ---- default / cancel lookup -------------------------------------------
+    ck([GForm objectWithFlag:OF_DEFAULT in:t] == ok,  "Return finds OF_DEFAULT");
+    ck([GForm objectWithFlag:OF_CANCEL  in:t] == can, "Esc finds OF_CANCEL");
+
+    // ---- validated text entry ----------------------------------------------
+    ck([GForm slotCountOf:fld] == 4, "template slot count");
+    int caret = 0;
+    ck([GForm insert:'1' into:fld caret:&caret], "'1' accepted by the 9999 mask");
+    ck(![GForm insert:'x' into:fld caret:&caret], "'x' rejected by the 9999 mask");
+    ck([GForm insert:'2' into:fld caret:&caret] && [GForm insert:'3' into:fld caret:&caret] &&
+       [GForm insert:'4' into:fld caret:&caret], "fills the remaining slots");
+    ck([fld.ted.text isEqualToString:@"1234"], "text is '1234'");
+    ck(![GForm insert:'5' into:fld caret:&caret], "a full template rejects more input");
+    ck(caret == 4, "caret sits at the end");
+    ck([GForm deleteBackwardIn:fld caret:&caret] && [fld.ted.text isEqualToString:@"123"],
+       "backspace deletes before the caret");
+    caret = 0;
+    ck([GForm deleteForwardIn:fld caret:&caret] && [fld.ted.text isEqualToString:@"23"],
+       "forward delete removes at the caret");
+
+    // ---- case folding in the mask ------------------------------------------
+    GObject *up = [GObject objectOfType:GT_FIELD frame:NSMakeRect(0, 0, 80, 20)];
+    up.flags |= OF_EDITABLE; up.ted.tmplt = @"___"; up.ted.text = @"";
+    up.ted.valid = @"AAA";                            // upper alpha, folds case
+    int c2 = 0;
+    ck([GForm insert:'a' into:up caret:&c2] && [up.ted.text isEqualToString:@"A"],
+       "the 'A' mask upper-cases input");
+    ck(![GForm insert:'7' into:up caret:&c2], "the 'A' mask rejects a digit");
+    up.ted.valid = @"";                               // no mask: anything printable
+    GObject *any = [GObject objectOfType:GT_FIELD frame:NSMakeRect(0, 0, 80, 20)];
+    any.flags |= OF_EDITABLE; any.ted.tmplt = @"___"; any.ted.text = @""; any.ted.valid = @"";
+    int c3 = 0;
+    ck([GForm insert:'#' into:any caret:&c3], "an empty mask accepts anything printable");
+
+    // ---- tab order ----------------------------------------------------------
+    NSArray *fields = [GForm editableObjectsIn:t];
+    ck(fields.count == 1 && fields[0] == fld, "only the editable field is in the tab order");
+
+    printf("formtest: %d checks, %d failure(s) — %s\n", gChecks, gFails, gFails ? "FAIL" : "OK");
+    return gFails ? 1 : 0;
+}
+
+// Rocks --clicktest <file.rsc> — drive a REAL resource through the same sequence
+// the canvas does on a click: hit-test at a point, then GForm pressed/released.
+// This is the click path without a window: no synthetic mouse events, no screen.
+static int clicktest(const char *path) {
+    NSData *d = [NSData dataWithContentsOfFile:[NSString stringWithUTF8String:path]];
+    NSString *err = nil;
+    GResource *res = d ? GRscRead(d, &err) : nil;
+    if (!res) { printf("clicktest: cannot read %s (%s)\n", path, err.UTF8String ?: "?"); return 1; }
+
+    // Click an object by hit-testing its centre, exactly as CanvasView does:
+    // press, and only release what the press actually took hold of (a TOUCHEXIT
+    // object exits on the way down and is never released, so it applies once).
+    GObject *(^clickAt)(GTree *, GObject *) = ^GObject *(GTree *tr, GObject *target) {
+        NSPoint o = [tr absoluteOriginOf:target];
+        NSPoint c = NSMakePoint(o.x + target.w / 2.0, o.y + target.h / 2.0);
+        GObject *hit = [tr hitTest:c];
+        GObject *exitObj = nil;
+        GObject *held = [GForm pressed:hit inTree:tr exit:&exitObj];
+        GObject *viaRelease = held ? [GForm released:held inTree:tr] : nil;
+        return exitObj ?: viaRelease;
+    };
+
+    int radiosSeen = 0, groupsChecked = 0;
+    for (GTree *tr in res.trees) {
+        // gather the radio groups (radios sharing a parent)
+        NSMutableDictionary<NSValue *, NSMutableArray<GObject *> *> *groups = [NSMutableDictionary dictionary];
+        for (GObject *o in [tr allObjects]) {
+            if (![GForm isRadio:o]) continue;
+            radiosSeen++;
+            GObject *parent = [tr parentOf:o] ?: tr.root;
+            NSValue *k = [NSValue valueWithNonretainedObject:parent];
+            if (!groups[k]) groups[k] = [NSMutableArray array];
+            [groups[k] addObject:o];
+        }
+        for (NSArray<GObject *> *grp in groups.allValues) {
+            if (grp.count < 2) continue;
+            groupsChecked++;
+            for (GObject *pick in grp) {
+                GObject *hitObj = [tr hitTest:NSMakePoint([tr absoluteOriginOf:pick].x + pick.w / 2.0,
+                                                          [tr absoluteOriginOf:pick].y + pick.h / 2.0)];
+                ck(hitObj == pick, "hit-testing a radio's centre finds that radio");
+                clickAt(tr, pick);
+                int on = 0;
+                for (GObject *g in grp) if (g.state & OS_SELECTED) on++;
+                ck((pick.state & OS_SELECTED) != 0, "the clicked radio is selected");
+                ck(on == 1, "exactly one radio in the group is selected");
+            }
+        }
+        // Clicking a push button reports itself and leaves no stuck highlight.
+        // (A radio may also carry OF_EXIT; it is meant to latch, so skip those.)
+        for (GObject *o in [tr allObjects]) {
+            if (o.type == GT_BUTTON && (o.flags & OF_EXIT) &&
+                ![GForm isRadio:o] && ![GForm isDisabled:o]) {
+                ck(clickAt(tr, o) == o, "clicking a push button exits through it");
+                ck((o.state & OS_SELECTED) == 0, "...and leaves no stuck highlight");
+                break;
+            }
+        }
+    }
+    printf("clicktest %s: %d radios, %d group(s); %d checks, %d failure(s) — %s\n",
+           path, radiosSeen, groupsChecked, gChecks, gFails, gFails ? "FAIL" : "OK");
+    return gFails ? 1 : 0;
+}
+
 // Rocks --slice <name> renders that theme slice at several sizes to scratch.
 static int sliceTest(const char *name) {
     GTheme *th = [GTheme defaultTheme];
@@ -100,6 +271,12 @@ static int sliceTest(const char *name) {
 int main(int argc, const char *argv[]) {
     if (argc > 1 && strcmp(argv[1], "--selftest") == 0) {
         @autoreleasepool { return selftest(argc, argv); }
+    }
+    if (argc > 1 && strcmp(argv[1], "--formtest") == 0) {
+        @autoreleasepool { return formtest(); }
+    }
+    if (argc > 2 && strcmp(argv[1], "--clicktest") == 0) {
+        @autoreleasepool { return clicktest(argv[2]); }
     }
     if (argc > 2 && strcmp(argv[1], "--slice") == 0) {
         @autoreleasepool { return sliceTest(argv[2]); }

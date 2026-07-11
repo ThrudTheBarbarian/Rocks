@@ -31,4 +31,9 @@ NSString *GExportXtc(GResource *res, NSString *stem);
 // tree, "MAIN" -> tree index. Exposed so tests and tooling can check it.
 NSDictionary<NSString *, NSNumber *> *GExportSymbols(GResource *res);
 
+// The symbol one object would export as ("MAIN_OK"), or nil if it is not in the
+// resource. Test-drive mode names the exit object with this, so what the editor
+// reports is exactly what the generated header calls it.
+NSString *_Nullable GExportSymbolForObject(GResource *res, GObject *o);
+
 NS_ASSUME_NONNULL_END

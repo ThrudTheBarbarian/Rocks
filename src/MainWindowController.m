@@ -29,6 +29,7 @@
     NSPopUpButton *_treePopup;
     NSTextView *_helpText;
     NSSplitView *_cvSplit;
+    NSData *_testSnapshot;      // resource state before test-drive; restored on exit
 }
 
 static const CGFloat kPaletteW = 158;
@@ -413,7 +414,14 @@ static const CGFloat kRightW = 320;
     NSOpenPanel *p = [NSOpenPanel openPanel];
     p.allowedFileTypes = @[@"gemproj", @"json", @"rsc", @"rsrc"];
     if ([p runModal] != NSModalResponseOK) return;
-    NSURL *u = p.URLs.firstObject;
+    [self openURL:p.URLs.firstObject];
+}
+
+- (void)openFileAtPath:(NSString *)path {
+    [self openURL:[NSURL fileURLWithPath:path.stringByExpandingTildeInPath]];
+}
+
+- (void)openURL:(NSURL *)u {
     NSData *d = [NSData dataWithContentsOfURL:u];
     NSString *ext = u.pathExtension.lowercaseString;
     NSString *err = nil;
@@ -634,6 +642,27 @@ typedef void (^AlignBlock)(GObject *o, int minX, int minY, int maxX, int maxY);
 }
 
 // MARK: View
+
+// Test-drive: the canvas behaves like the AES instead of like an editor (GForm.h).
+// Clicking a check box or typing in a field really does mutate the objects, so we
+// snapshot the resource on the way in and put it back on the way out — the
+// document is untouched and the undo stack never sees any of it.
+- (void)toggleTestDrive:(id)sender {
+    BOOL on = !_canvas.testMode;
+    if (on) {
+        _testSnapshot = [_doc snapshot];
+    } else if (_testSnapshot) {
+        _doc.resource = GResourceFromJSON(_testSnapshot);
+        _testSnapshot = nil;
+        [_doc setSelectionObjects:@[]];
+        [self refreshAll];
+    }
+    _canvas.testMode = on;
+    [(NSMenuItem *)sender setState:on ? NSControlStateValueOn : NSControlStateValueOff];
+    _inspector.hidden = on;     // its fields would edit objects the restore then discards
+    [self.window makeFirstResponder:_canvas];
+    _canvas.needsDisplay = YES;
+}
 
 - (void)toggleSnap:(id)sender {
     _canvas.snapEnabled = !_canvas.snapEnabled;

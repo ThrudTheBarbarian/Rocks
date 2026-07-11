@@ -2,6 +2,8 @@
 
 #import "CanvasView.h"
 #import "GRender.h"
+#import "GForm.h"
+#import "GExport.h"
 
 NSPasteboardType const GPaletteDragType = @"net.gornall.rocks.palette";
 
@@ -25,6 +27,14 @@ typedef NS_ENUM(int, GHandle) {
     NSArray<NSValue *> *_guideLines; // horizontal/vertical guide segments (view space)
     BOOL     _didDrag;
     int      _activeMenu;       // which menu title's dropdown is shown
+    // test-drive state
+    GObject *_focus;            // the editable field with the caret
+    int      _caret;            // caret position within _focus's value
+    GObject *_pressing;         // object currently held down
+    GObject *_lastExit;         // what the form last exited through
+    GObject *_openPopup;        // the G_POPUP whose list is showing
+    GTree   *_popupTree;        // its linked tree (ob_type high byte = tree index)
+    NSPoint  _popupOffset;      // model-space offset that tree is drawn at
 }
 
 - (instancetype)initWithFrame:(NSRect)f {
@@ -51,6 +61,90 @@ typedef NS_ENUM(int, GHandle) {
 - (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
 
 - (GTree *)tree { return self.doc.tree; }
+
+// MARK: test drive
+//
+// In test mode the canvas stops being an editor: no selection, no handles, no
+// guides, no marquee, no palette drops.  Clicks and keys go to GForm instead,
+// which applies the AES rules to the objects in place.
+
+- (void)setTestMode:(BOOL)on {
+    if (_testMode == on) return;
+    _testMode = on;
+    [self resetTestDrive];
+    if (on) {
+        [self.doc clearSelection];
+        // Start on the first editable field, as form_do does.
+        [self focusOn:[GForm editableObjectsIn:self.tree].firstObject];
+    }
+    self.needsDisplay = YES;
+}
+
+- (void)resetTestDrive {
+    _pressing = nil; _lastExit = nil;
+    _openPopup = nil; _popupTree = nil;
+    [self focusOn:nil];
+    self.needsDisplay = YES;
+}
+
+// A G_POPUP's choices live in a separate tree; the ob_type high byte says which
+// (RSC-FORMAT §5).  Opening one drops that tree in place, just below the popup.
+- (void)openPopupFor:(GObject *)o {
+    int idx = o.extType;
+    NSArray<GTree *> *trees = self.doc.resource.trees;
+    if (idx <= 0 || idx >= (int)trees.count) { NSBeep(); return; }   // 0 = not linked
+    _openPopup = o;
+    _popupTree = trees[idx];
+    NSPoint at = [self.tree absoluteOriginOf:o];
+    // drop it directly under the popup, and undo the linked root's own origin
+    _popupOffset = NSMakePoint(at.x - _popupTree.root.x, at.y + o.h - _popupTree.root.y);
+    self.needsDisplay = YES;
+}
+
+- (void)closePopup { _openPopup = nil; _popupTree = nil; self.needsDisplay = YES; }
+
+// A click while a popup list is open: choose an item, or dismiss.
+- (BOOL)handlePopupClickAt:(NSPoint)m {
+    if (!_openPopup) return NO;
+    NSPoint local = NSMakePoint(m.x - _popupOffset.x, m.y - _popupOffset.y);
+    GObject *hit = [_popupTree hitTest:local];
+    if (hit && hit != _popupTree.root && ![GForm isDisabled:hit]) {
+        NSString *choice = hit.text ?: hit.ted.text;
+        if (choice.length) _openPopup.text = choice;   // the chosen value comes back
+    }
+    [self closePopup];      // any click closes it, inside or out
+    return YES;
+}
+
+- (void)focusOn:(GObject *)o {
+    _focus = o;
+    _caret = o ? (int)(o.ted.text.length) : 0;   // caret lands after the existing text
+    [GRender setEditCaretObject:o slot:_caret];
+}
+
+- (void)setCaret:(int)c {
+    _caret = MAX(0, c);
+    [GRender setEditCaretObject:_focus slot:_caret];
+}
+
+// Move the edit focus by `delta` places through the tab order, wrapping.
+- (void)cycleFocusBy:(int)delta {
+    NSArray<GObject *> *fields = [GForm editableObjectsIn:self.tree];
+    if (!fields.count) return;
+    NSUInteger i = _focus ? [fields indexOfObject:_focus] : NSNotFound;
+    NSInteger next = (i == NSNotFound) ? 0 : ((NSInteger)i + delta);
+    next = (next % (NSInteger)fields.count + (NSInteger)fields.count) % (NSInteger)fields.count;
+    [self focusOn:fields[next]];
+    self.needsDisplay = YES;
+}
+
+// The form leaving through `o` — report it, but keep the dialog live so the user
+// can carry on poking at it.
+- (void)exitThrough:(GObject *)o {
+    if (!o) return;
+    _lastExit = o;
+    self.needsDisplay = YES;
+}
 
 // MARK: coordinate mapping
 
@@ -98,7 +192,20 @@ typedef NS_ENUM(int, GHandle) {
     [tf concat];
     if (tree.isMenu) [GRender drawMenuTree:tree activeIndex:_activeMenu];
     else [GRender drawTree:tree];
+
+    // an open popup list sits above the dialog, at the popup's own position
+    if (_testMode && _openPopup && _popupTree) {
+        NSAffineTransform *pt = [NSAffineTransform transform];
+        [pt translateXBy:_popupOffset.x yBy:_popupOffset.y];
+        [pt concat];
+        GObject *pr = _popupTree.root;
+        NSRect box = NSMakeRect(pr.x, pr.y, pr.w, pr.h);
+        [[NSColor colorWithWhite:0 alpha:0.3] set]; NSRectFill(NSOffsetRect(box, 2, 2));
+        [GRender drawTree:_popupTree];
+    }
     [gc restoreGraphicsState];
+
+    if (_testMode) { [self drawTestBanner]; return; }   // no editor chrome while test-driving
 
     // selection overlays
     for (GObject *o in self.doc.selection) {
@@ -175,6 +282,7 @@ typedef NS_ENUM(int, GHandle) {
 // MARK: context menu
 
 - (NSMenu *)menuForEvent:(NSEvent *)e {
+    if (_testMode) return nil;      // the canvas is a running dialog, not an editor
     [self.window makeFirstResponder:self];
     NSPoint v = [self convertPoint:e.locationInWindow fromView:nil];
     GObject *hit = [self hitTestMenuAware:[self modelFromView:v]];
@@ -206,6 +314,22 @@ typedef NS_ENUM(int, GHandle) {
     [self.window makeFirstResponder:self];
     NSPoint v = [self convertPoint:e.locationInWindow fromView:nil];
     NSPoint m = [self modelFromView:v];
+
+    if (_testMode) {
+        if ([self handlePopupClickAt:m]) return;   // an open list swallows the click
+        GObject *hit = [self hitTestMenuAware:m];
+        if (hit && hit.type == GT_POPUP && ![GForm isDisabled:hit]) {
+            [self openPopupFor:hit];
+            return;
+        }
+        GObject *exit = nil;
+        _pressing = [GForm pressed:hit inTree:self.tree exit:&exit];
+        if (hit && [GForm isEditable:hit]) [self focusOn:hit];
+        [self exitThrough:exit];                 // OF_TOUCHEXIT fires on the way down
+        self.needsDisplay = YES;
+        return;
+    }
+
     _downModel = m; _didDrag = NO; _guideLines = nil;
     BOOL shift = (e.modifierFlags & NSEventModifierFlagShift) != 0;
 
@@ -273,6 +397,7 @@ typedef NS_ENUM(int, GHandle) {
 }
 
 - (void)mouseDragged:(NSEvent *)e {
+    if (_testMode) return;   // a held button neither moves nor selects
     NSPoint v = [self convertPoint:e.locationInWindow fromView:nil];
     NSPoint m = [self modelFromView:v];
     CGFloat dx = m.x - _downModel.x, dy = m.y - _downModel.y;
@@ -293,6 +418,18 @@ typedef NS_ENUM(int, GHandle) {
 }
 
 - (void)mouseUp:(NSEvent *)e {
+    if (_testMode) {
+        // The click only counts if it comes up on the object it went down on.
+        NSPoint m = [self modelFromView:[self convertPoint:e.locationInWindow fromView:nil]];
+        GObject *hit = [self hitTestMenuAware:m];
+        if (_pressing) {
+            if (hit == _pressing) [self exitThrough:[GForm released:_pressing inTree:self.tree]];
+            else _pressing.state &= ~OS_SELECTED;      // dragged off: drop the highlight
+        }
+        _pressing = nil;
+        self.needsDisplay = YES;
+        return;
+    }
     if ((_mode == DM_MOVE || _mode == DM_RESIZE) && _didDrag) [self reparentByGeometry];
     _guideLines = nil;
     if ((_mode == DM_MOVE || _mode == DM_RESIZE) && _didDrag && _dragSnapshot) {
@@ -497,9 +634,32 @@ typedef NS_ENUM(int, GHandle) {
     return best ?: self.tree.root;
 }
 
+// A strip along the top of the canvas: that we are test-driving, and what the
+// form last exited through — named with the same symbol the .h export emits, so
+// what you read here is what you write in code.
+- (void)drawTestBanner {
+    NSString *msg = @"TEST DRIVE — click, Tab between fields, Return = default, Esc = cancel";
+    NSColor *bg = [NSColor colorWithSRGBRed:0.15 green:0.45 blue:0.25 alpha:0.95];
+    if (_lastExit) {
+        NSString *sym = GExportSymbolForObject(self.doc.resource, _lastExit);
+        int idx = (int)[[self.tree allObjects] indexOfObject:_lastExit];
+        msg = [NSString stringWithFormat:@"exited through  %@  (object %d)",
+                        sym ?: (_lastExit.text ?: GObTypeName(_lastExit.type)), idx];
+        bg = [NSColor colorWithSRGBRed:0.15 green:0.35 blue:0.7 alpha:0.95];
+    }
+    NSDictionary *a = @{ NSFontAttributeName: [NSFont boldSystemFontOfSize:11],
+                         NSForegroundColorAttributeName: [NSColor whiteColor] };
+    NSSize sz = [msg sizeWithAttributes:a];
+    NSRect bar = NSMakeRect(8, 8, sz.width + 16, sz.height + 8);
+    [bg set];
+    [[NSBezierPath bezierPathWithRoundedRect:bar xRadius:4 yRadius:4] fill];
+    [msg drawAtPoint:NSMakePoint(bar.origin.x + 8, bar.origin.y + 4) withAttributes:a];
+}
+
 // MARK: keyboard
 
 - (void)keyDown:(NSEvent *)e {
+    if (_testMode) { [self testKeyDown:e]; return; }
     unichar k = [e.charactersIgnoringModifiers length] ? [e.charactersIgnoringModifiers characterAtIndex:0] : 0;
     int step = (e.modifierFlags & NSEventModifierFlagShift) ? _gridSize : 1;
     int dx = 0, dy = 0;
@@ -518,12 +678,60 @@ typedef NS_ENUM(int, GHandle) {
     }];
 }
 
+// Keys in test mode: Tab cycles fields, Return fires OF_DEFAULT, Esc fires
+// OF_CANCEL, and anything printable goes through the field's validation mask.
+- (void)testKeyDown:(NSEvent *)e {
+    NSString *chars = e.charactersIgnoringModifiers;
+    unichar k = chars.length ? [chars characterAtIndex:0] : 0;
+    BOOL shift = (e.modifierFlags & NSEventModifierFlagShift) != 0;
+
+    switch (k) {
+        case '\t':  [self cycleFocusBy:shift ? -1 : 1];                  return;
+        case '\r':
+        case 0x03:  [self exitThrough:[GForm objectWithFlag:OF_DEFAULT in:self.tree]];  return;
+        case 0x1B:  [self exitThrough:[GForm objectWithFlag:OF_CANCEL  in:self.tree]];  return;
+    }
+    if (!_focus) { NSBeep(); return; }
+
+    switch (k) {
+        case NSLeftArrowFunctionKey:  [self setCaret:_caret - 1]; break;
+        case NSRightArrowFunctionKey: [self setCaret:MIN(_caret + 1, (int)_focus.ted.text.length)]; break;
+        case NSHomeFunctionKey:       [self setCaret:0]; break;
+        case NSEndFunctionKey:        [self setCaret:(int)_focus.ted.text.length]; break;
+        case NSUpArrowFunctionKey:    [self cycleFocusBy:-1]; break;
+        case NSDownArrowFunctionKey:  [self cycleFocusBy:1]; break;
+        case 8:
+        case 127:                                       // Backspace
+            if (![GForm deleteBackwardIn:_focus caret:&_caret]) NSBeep();
+            [GRender setEditCaretObject:_focus slot:_caret];
+            break;
+        case NSDeleteFunctionKey:                       // forward Delete
+            if (![GForm deleteForwardIn:_focus caret:&_caret]) NSBeep();
+            break;
+        default: {
+            // e.characters (not charactersIgnoringModifiers) so Shift gives capitals
+            NSString *typed = e.characters;
+            if (!typed.length) { NSBeep(); return; }
+            BOOL any = NO;
+            for (NSUInteger i = 0; i < typed.length; i++)
+                any |= [GForm insert:[typed characterAtIndex:i] into:_focus caret:&_caret];
+            if (!any) NSBeep();                         // rejected by te_pvalid, or field full
+            [GRender setEditCaretObject:_focus slot:_caret];
+            break;
+        }
+    }
+    self.needsDisplay = YES;
+}
+
 // MARK: palette drop (create new objects)
 
-- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)s { return NSDragOperationCopy; }
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)s {
+    return _testMode ? NSDragOperationNone : NSDragOperationCopy;
+}
 - (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)s { return NSDragOperationCopy; }
 
 - (BOOL)performDragOperation:(id<NSDraggingInfo>)info {
+    if (_testMode) return NO;
     NSString *typeStr = [info.draggingPasteboard stringForType:GPaletteDragType];
     if (!typeStr) return NO;
     GObType type = (GObType)typeStr.intValue;
