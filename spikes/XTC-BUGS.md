@@ -295,3 +295,36 @@ it fires for *any* `objc_draw` — including AES-internal trees — and a hook k
 "the window currently drawing" can be handed an object index that is not its own.
 Passing the window through the hook's own `ud`, re-registered per draw, is exact and
 removes the class of bug entirely.
+
+### Cleared #2: "the AES never calls our content callback"
+
+A second, longer hunt — through PIC relocations, the `.so` symbol table, `--emit-lib`
+devirtualisation and (briefly, and wrongly) a suspected non-deterministic codegen —
+that ended at **my own bug**, again.
+
+`XGApplication.boot()` declared the back-buffer surface as a **stack local** and passed
+its address to `vdi_init`, which **stores the pointer** rather than copying the struct
+(`gem/vdi/core.c`: `ws_tab[0].target = default_target`). When `boot()` returned, the
+VDI was holding dead stack.
+
+It presented as a *callback* problem because `wind_redraw_area()` opens with
+
+```c
+    gfx_surface *d = vdi_screen_target(); if(!d) return;
+```
+
+so the redraw bailed out before it ever reached `draw_one() -> W->draw`. Every argument
+to `wind_content()` was correct — I verified the relocated function pointer, the handle
+and the `ud` on hardware — and none of that mattered.
+
+Two lessons worth keeping:
+
+1. **`test_window.xt` could not catch it**, because its surface lives in `main()`, which
+   never returns. A test that keeps everything alive cannot detect a lifetime bug. The
+   toolkit was broken in exactly the shape the test was blind to.
+2. **Trust the build.** Much of the confusion was a `.so` that had silently failed to
+   rebuild (Gap H) while the loader kept running the previous binary, so edits appeared
+   to do nothing — and "appears to do nothing" is indistinguishable from a codegen bug
+   if you are not checking exit codes.
+
+No compiler bug. Recorded here because I nearly reported one.
