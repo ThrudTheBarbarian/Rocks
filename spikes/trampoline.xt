@@ -1,0 +1,72 @@
+// Spike 3: the seam the whole toolkit hangs on.
+//
+// GEM's wind_content(handle, fn, ud) and objc_set_userdraw(fn, ud) take a bare C
+// function pointer plus a void* — xtc has no closures, so the callback cannot
+// carry self.  The XGWindow must ride in the void*.
+//
+// This models it exactly with libc's qsort: the C library invokes an xtc function
+// pointer, handing it pointers that are REALLY xtc objects.  The callback casts
+// them back and calls a VIRTUAL method on each — i.e. app code, entered from C,
+// dispatching through a vtable.  That is precisely drawRect being called by the AES.
+#import <Stdio.xt>
+
+class XGView {
+    u16 tag;
+    void init(void) { tag = (u16)0; }
+    u16 area(void) { return (u16)1; }        // virtual
+}
+
+class XGButton : XGView {
+    u16 area(void) { return (u16)100 + tag; }   // the override the AES must reach
+}
+
+// libc.so — a C function that calls back into us.
+void qsort(pointer base, u32 n, u32 size, pointer cmp);
+
+typedef i32 cmp_t(pointer a, pointer b);
+
+u16 gCalls;
+
+// THE TRAMPOLINE.  A plain free function with a C signature.  Its arguments are
+// void*s that are really xtc objects — exactly wind_content's `ud`.
+i32 byArea(pointer a, pointer b)
+{
+    // qsort hands us &element, and each element is an XGView@ — so deref once.
+    XGView@@ pa = (XGView@@)a;
+    XGView@@ pb = (XGView@@)b;
+    XGView@  va = @pa;
+    XGView@  vb = @pb;
+
+    gCalls = gCalls + (u16)1;
+    u16 aa = va.area();          // VIRTUAL dispatch, entered from C
+    u16 ab = vb.area();
+    if (aa < ab) { return (i32)-1; }
+    if (aa > ab) { return (i32)1; }
+    return (i32)0;
+}
+
+XGView@ arr[3];
+
+void main(void)
+{
+    XGButton@ b1 = new XGButton(); b1.tag = (u16)30;   // area 130
+    XGButton@ b2 = new XGButton(); b2.tag = (u16)10;   // area 110
+    XGButton@ b3 = new XGButton(); b3.tag = (u16)20;   // area 120
+    arr[0] = b1; arr[1] = b2; arr[2] = b3;
+
+    gCalls = (u16)0;
+    // Hand a C library a pointer to OUR data and a pointer to OUR code.
+    qsort((pointer)&arr[0], (u32)3, (u32)sizeof(XGView@), (pointer)&byArea);
+
+    Stdio.printf("callback invocations = %d   (C called into xtc)\n", (i16)gCalls);
+    Stdio.printf("sorted areas: %d %d %d   (expect 110 120 130)\n",
+                 (i16)arr[0].area(), (i16)arr[1].area(), (i16)arr[2].area());
+
+    if (gCalls > (u16)0 &&
+        arr[0].area() == (u16)110 && arr[1].area() == (u16)120 && arr[2].area() == (u16)130) {
+        Stdio.printf("PASS: C invokes an xtc callback; it recovers an xtc object from a\n");
+        Stdio.printf("      void* and dispatches a virtual method.  The seam works.\n");
+    } else {
+        Stdio.printf("FAIL\n");
+    }
+}

@@ -1,0 +1,20 @@
+// Does a float actually survive the xtc -> C (libm) boundary?  ELF attributes can
+// lie; a wrong float ABI puts the value in the wrong register and comes back as
+// garbage.  This is the behavioural test.
+#import <Stdio.xt>
+
+float sqrtf(float x);            // libm.so, C ABI
+double pow(double a, double b);  // libm.so, doubles too
+
+void main(void)
+{
+    float  r = sqrtf(2.25);          // expect 1.5
+    double p = pow(2.0, 10.0);       // expect 1024.0
+    Stdio.printf("sqrtf(2.25) = %f   (expect 1.500000)\n", r);
+    Stdio.printf("pow(2,10)   = %f   (expect 1024.000000)\n", (float)p);
+    if (r > 1.49 && r < 1.51 && p > 1023.9 && p < 1024.1) {
+        Stdio.printf("PASS: float ABI agrees across the boundary (softfp)\n");
+    } else {
+        Stdio.printf("FAIL: float ABI mismatch\n");
+    }
+}

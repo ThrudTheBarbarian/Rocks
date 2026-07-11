@@ -1,0 +1,10 @@
+#import <Stdio.xt>
+#import <Spike4>
+class MyView : XView { u16 area(void) { return (u16)42; } }
+void main(void) {
+    MyView@ m = new MyView();
+    u16 rend = XDriver.render(m);
+    Stdio.printf("lib render(app subclass) = %d  (expect 42+420=462)\n", (i16)rend);
+    if (rend == (u16)462) { Stdio.printf("PASS: with a slot AND self., the .so boundary works\n"); }
+    else { Stdio.printf("FAIL: got %d\n", (i16)rend); }
+}

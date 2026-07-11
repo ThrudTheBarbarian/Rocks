@@ -1,0 +1,24 @@
+// No libraries. No .so. One program, one class hierarchy.
+// Does a SELF-CALL inside a base method dispatch to the subclass override?
+#import <Stdio.xt>
+
+class A {
+    u16 f(void) { return (u16)1; }              // overridden below
+    u16 viaSelf(void) { return f() * (u16)10; } // implicit self-call
+    u16 viaThis(void) { return self.f() * (u16)10; }  // explicit self
+}
+
+class B : A {
+    u16 f(void) { return (u16)42; }
+}
+
+void main(void)
+{
+    B@ b = new B();
+    A@ a = b;                                   // base-typed pointer to a B
+
+    Stdio.printf("b.f()          = %d   (expect 42)\n",  (i16)b.f());
+    Stdio.printf("a.f()          = %d   (expect 42)  <- through base ptr\n", (i16)a.f());
+    Stdio.printf("b.viaSelf()    = %d  (expect 420) <- implicit self-call in A.viaSelf\n", (i16)b.viaSelf());
+    Stdio.printf("b.viaThis()    = %d  (expect 420) <- explicit self.f()\n", (i16)b.viaThis());
+}

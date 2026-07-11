@@ -1,0 +1,24 @@
+#import <Stdio.xt>
+#import <Spike1>
+
+class MyView : XView {
+    u16 area(void) { return (u16)42; }      // the override
+}
+
+void main(void)
+{
+    MyView@ m = new MyView();
+
+    u16 direct = m.area();          // expect 42  — app-side dispatch
+    u16 desc   = m.describe();      // expect 420 — LIBRARY body calling the override
+    u16 rend   = XDriver.render(m); // expect 462 — library fn through a base ptr
+
+    Stdio.printf("direct   area()      = %d   (expect 42)\n",  (i16)direct);
+    Stdio.printf("lib      describe()  = %d  (expect 420)\n",  (i16)desc);
+    Stdio.printf("lib      render()    = %d  (expect 462)\n",  (i16)rend);
+    if (direct == (u16)42 && desc == (u16)420 && rend == (u16)462) {
+        Stdio.printf("PASS: vtable crosses the .so boundary\n");
+    } else {
+        Stdio.printf("FAIL: library did NOT reach the override\n");
+    }
+}

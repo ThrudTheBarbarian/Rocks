@@ -1,0 +1,44 @@
+// Spike 2: does #import <GEM> give us the AES with VERBATIM struct layouts?
+//
+// Build an OBJECT tree in xtc, hand it to the real AES, and check the answers.
+// objc_offset and objc_find are pure geometry — no framebuffer needed — but they
+// walk the OBJECT struct, so a single wrong field offset gives wrong answers.
+#import <Stdio.xt>
+#import <GEM>
+
+OBJECT tree[3];
+
+void main(void)
+{
+    // root box 0,0 320x200, one child at 100,50 sized 80x20
+    tree[0].ob_next = -1; tree[0].ob_head =  1; tree[0].ob_tail = 1;
+    tree[0].ob_type = 20; tree[0].ob_flags = 0; tree[0].ob_state = 0;
+    tree[0].ob_x = 0;   tree[0].ob_y = 0;   tree[0].ob_w = 320; tree[0].ob_h = 200;
+
+    tree[1].ob_next =  2; tree[1].ob_head = -1; tree[1].ob_tail = -1;
+    tree[1].ob_type = 26; tree[1].ob_flags = 0; tree[1].ob_state = 0;   // G_BUTTON
+    tree[1].ob_x = 100; tree[1].ob_y = 50;  tree[1].ob_w = 80;  tree[1].ob_h = 20;
+
+    tree[2].ob_next =  0; tree[2].ob_head = -1; tree[2].ob_tail = -1;
+    tree[2].ob_type = 26; tree[2].ob_flags = 32; tree[2].ob_state = 0;  // OF_LASTOB
+    tree[2].ob_x = 200; tree[2].ob_y = 120; tree[2].ob_w = 60;  tree[2].ob_h = 20;
+
+    Stdio.printf("sizeof(OBJECT) = %d   (C says 24)\n", (i16)sizeof(OBJECT));
+
+    // absolute position of child 1 — the AES walks parent links to compute it
+    i32 ax = 0; i32 ay = 0;
+    objc_offset(&tree[0], 1, &ax, &ay);
+    Stdio.printf("objc_offset(1) = %d,%d   (expect 100,50)\n", (i16)ax, (i16)ay);
+
+    // hit-test: a point inside child 1, and one in the root only
+    i32 hit  = objc_find(&tree[0], 0, 8, 140, 60);    // inside the button
+    i32 miss = objc_find(&tree[0], 0, 8,  10, 10);    // root only
+    Stdio.printf("objc_find(140,60) = %d   (expect 1)\n", (i16)hit);
+    Stdio.printf("objc_find(10,10)  = %d   (expect 0)\n", (i16)miss);
+
+    if (sizeof(OBJECT) == 24 && ax == 100 && ay == 50 && hit == 1 && miss == 0) {
+        Stdio.printf("PASS: GEM imported, OBJECT layout verbatim, AES walks our tree\n");
+    } else {
+        Stdio.printf("FAIL\n");
+    }
+}

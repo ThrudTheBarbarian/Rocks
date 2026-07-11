@@ -1,0 +1,21 @@
+// The LIBRARY.  No libc, no Stdio — it only computes, so the test probes exactly
+// one thing: does a body compiled INSIDE the .so dispatch to an override defined
+// in the app?
+class XView {
+    u16 tag;
+    void init(void) { tag = (u16)0; }
+
+    // Virtual.  The app overrides this.  The base value is deliberately absurd
+    // so a mis-dispatch is unmistakable rather than plausible.
+    u16 area(void) { return (u16)1; }
+
+    // A LIBRARY body calling the virtual method.  This is the case that matters:
+    // compiled in the .so, must reach code in the app.
+    u16 describe(void) { return area() * (u16)10; }
+}
+
+class XDriver {
+    // The library calling back through a base-typed pointer — exactly what the
+    // AES/Xtg does when it invokes drawRect on an app's view subclass.
+    static u16 render(XView@ v) { return v.area() + v.describe(); }
+}

@@ -1,0 +1,13 @@
+class XView {
+    u16 tag;
+    void init(void) { tag = (u16)0; }
+    u16 area(void) { return (u16)1; }
+    u16 describe(void) { return self.area() * (u16)10; }   // FIX B: explicit self
+}
+// FIX A (workaround): an override inside the library forces area() to get a
+// vtable slot, which --emit-lib otherwise omits.
+class XForceSlot : XView { u16 area(void) { return (u16)7; } }
+
+class XDriver {
+    static u16 render(XView@ v) { return v.area() + v.describe(); }
+}
