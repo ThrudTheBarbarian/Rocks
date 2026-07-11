@@ -150,24 +150,36 @@ app's *windows* still composite fine, so the menu is the one place its wedged-ne
 shows — and it should show. If it ever grates, defer the clear until the new owner's
 paint lands.
 
-### The dropdown needs one new primitive
+### The dropdown: a grab, and a scratch overlay
 
-A click in the strip routes to the active app, which `objc_find`s its own menu tree.
-But **the dropdown is bigger than the strip** — it falls over other windows. So it
-cannot live in the strip buffer.
+A click in the strip routes to the active app, which `objc_find`s its own menu tree
+and drops the menu down over the windows below. That looks like it needs an
+always-on-top window in the z-order, with rules for what happens if another window is
+topped while the menu is down.
 
-It needs a **client-owned, server-composited, always-on-top transient window**. Which
-is precisely what `menu_popup` needs, and what `form_alert` needs. One primitive,
-three cases:
+**It does not, because a menu grabs input.** You cannot top a window while a menu is
+down — the first click *dismisses the menu*. The two are strictly serial, never
+concurrent, so there is no interaction to design.
 
-| | is a transient top window |
-|---|---|
-| a menu dropdown | ✔ |
-| `menu_popup` | ✔ |
-| `form_alert` / modal dialog | ✔ |
+GEM already names the grab: **`wind_update(BEG_MCTRL)`**. Making it real server-side
+is the whole fix, and it is also the fix for the only race here — an input event in
+flight to another app while the menu is still down:
 
-Get that right and all three fall out of it. It is the only thing besides the
-per-window backing store (§2) that the compositor genuinely has to understand.
+```
+    while a grab is held:   the server routes ALL input to the holder, and tops nothing.
+    menu dismissed:         END_MCTRL.  Normal routing resumes.
+```
+
+This is not a menu special case: `form_do` and any modal dialog need exactly the same
+thing.
+
+So the dropdown is a **scratch overlay**, not a window: it never enters the z-order,
+never persists, and never interacts with topping, because its entire lifetime sits
+inside a grab. It does not even need save-under — on dismiss the server recomposites
+that rect from the **window backing stores**, which is precisely what §2 bought.
+
+`menu_popup` and `form_alert` are the same shape: grab, overlay, dismiss,
+recomposite.
 
 ## 6. What Xtg has to change
 
@@ -197,9 +209,10 @@ the server still calls `aes_init`.
 2. **Backing-store drawing** (§2) first, with a **single** client — provable before
    any multi-app work: run `aesdesk` as the server and one Xtg app as a client.
 3. **Input routing** (§3). `aes_set_events` is already the seam.
-4. **The transient top window** (§5) — one primitive, and it buys the menu dropdown,
-   `menu_popup` and `form_alert` together.
-5. **The menu bar** (§5) — a clear, a message, and a clipped workstation. No surface.
+4. **The input grab** (§5) — `wind_update(BEG_MCTRL)`, honoured by the server. It is
+   what makes menus, `menu_popup` and `form_alert` all safe, and it is the race fix.
+5. **The menu bar** (§5) — a clear, a message, and a clipped workstation. No surface,
+   and the dropdown is a scratch overlay recomposited from the backing stores.
 6. Then, and only then, multiple concurrent apps.
 
 Steps 2 and 3 are the whole architecture; 4-6 are consequences of it.
