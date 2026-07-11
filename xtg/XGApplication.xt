@@ -36,6 +36,17 @@ class XGApplication : XGResponder
 
     // Boot GEM.  This is the ~20 lines every C GEM app copy-pastes; now it lives
     // in one place, and the app never sees it.
+    //
+    // NOTE: this is the SERVER path — it initialises the AES, which means the
+    // process running it IS the window system (see doc/AES-SERVER.md).  That is
+    // true today because aesdesk is the only GEM process, but it is not what an
+    // application should do: libGEM's window list is a per-process static, so a
+    // second GEM process would get a PRIVATE AES drawing to the same framebuffer.
+    //
+    // Once the AES server lands this becomes attach(): connect, get an ap_id, get
+    // a backing surface.  Nothing else in Xtg changes — views, the responder chain,
+    // the draw seam, target/action, the run loop and the .rsc nib path all sit ON
+    // the AES API rather than underneath it, so the split is invisible to them.
     bool boot(void) {
         os_fbinfo fb;
         os_fbinfo wp;
