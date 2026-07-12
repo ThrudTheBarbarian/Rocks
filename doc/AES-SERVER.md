@@ -189,20 +189,39 @@ So the menu bar is not a window and not a surface: it is a **region `gemd` clear
 and the active app paints**. Ownership follows the top window, which is exactly TOS's
 rule.
 
-### What it costs: one exception, and it must be written down
+### What it draws into: a surface `gemd` loans it — NOT the framebuffer
 
-The client now draws into **server-owned pixels**. It needs a second VDI workstation
-— on the framebuffer, clipped to the strip. That is the *single* place a client
-touches the framebuffer, and it is precisely the classic-GEM failure mode that §2
-option (c) was rejected to avoid (an app scribbling on the desktop).
+A VDI workstation does not cross a process boundary. `v_opnvwk(&surface)` is entirely
+client-side — the client builds a `gfx_surface` and opens a workstation on it locally. So
+nothing "hands a workstation to an app": what must cross is **memory** and **geometry**.
+Whose memory is then the whole question.
 
-It is containable: **`gemd` hands out a strip workstation only to the active app
-and revokes it on switch, and the clip rect is the enforcement.**
+**Rejected: mapping the framebuffer's top strip into the client.** The strip *is* a
+contiguous prefix of the framebuffer (rows 0..strip_h-1), so it could be mapped exactly —
+with the MMU as enforcement. But page alignment then constrains the menu-bar height:
+`stride = 1920×4 = 7680`, so `strip_h × 7680 ≡ 0 (mod 4096)` requires **`strip_h` to be a
+multiple of 8**. At 24px it is exact; at 25px the client also gets 512 bytes of row 25 —
+128 corruptible pixels of the desktop. A load-bearing constraint wired to a theme metric.
+No.
 
-If we ever want the exception closed, there is a cheap upgrade that needs no protocol
-change: **one** server-owned strip surface, *loaned* to whoever is active — not one
-per app. ~190 KB total, and the compositor then treats the strip like any other
-surface. Worth knowing about; not worth paying for now.
+> This also kills the argument an earlier draft made — that the hole was contained because
+> *"the clip rect is the enforcement"*. **It is not.** A clip rect is client-side VDI state;
+> a buggy client simply ignores it. It *is* the app's good manners. Only a mapping enforces
+> anything across a process boundary.
+
+**Decided: `gemd` owns one strip-sized shm surface** (1920 × 24 × 4 ≈ 184 KB, *total*, not
+per app), loans it to whichever app is active, and composites it like any other surface. The
+client opens a workstation on **that**, draws its menu tree with `objc_draw`, and posts
+damage. **The client never sees the framebuffer.**
+
+Menu repaints are rare — app switch, an item checked or disabled, a title highlighting
+during tracking — and only the damaged sub-rect is blitted. It is not a cost anyone will
+measure, and it buys the invariant outright:
+
+> **Only `gemd` touches the screen. No exceptions.**
+
+The strip still needs no backing store *for occlusion* — that observation was right. It was
+simply irrelevant: the surface is there for **isolation**, not occlusion.
 
 ### The residual: a wedged app shows a blank menu bar
 

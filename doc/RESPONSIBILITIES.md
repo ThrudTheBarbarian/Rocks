@@ -117,7 +117,7 @@ holds the grab must never be able to block*. §4 is where that constraint comes 
 | **compositing** and `fb_present` | it alone decides what pixel is on screen |
 | a fallback background **colour** | *only* a colour. The wallpaper belongs to `desktop.so` (§4) |
 | **input** (`sys_input`) | it does the top-level hit-test and routes |
-| the **menu strip** | it reserves the region (`g_top_reserve`) and clears it. It does not draw the menu (§10) |
+| the **menu strip** | it reserves the region (`g_top_reserve`), owns the surface, and clears it. It does not *draw* the menu — it cannot (§10) |
 | the **grab** | it decides who receives input, and honours `wind_update(BEG_MCTRL)` |
 | **lifecycle** | it reaps a dead client's windows |
 
@@ -306,7 +306,8 @@ in server mode; `appl_init` puts it in client mode.
 
 ### It must never
 
-- **Touch the framebuffer.** With exactly one deliberate exception — §10.
+- **Touch the framebuffer.** Ever. There are **no exceptions** — not even the menu strip,
+  which is a surface `gemd` loans out, not a mapping of the screen (§10).
 - **Assume it owns the screen.** A client does not know where its window is on screen,
   what is above it, or whether it is visible at all. It draws into its buffer and posts
   damage. That is all.
@@ -445,34 +446,84 @@ precisely the point of §4.
 
 ---
 
-## 10. The one deliberate exception: the menu strip
+## 10. The menu strip: a loaned surface, not a hole in the framebuffer
 
-Every rule above is kept clean except one. It is written here so it is not discovered by
-accident.
+The strip is the one place where it is tempting to let a client draw straight to the
+screen. **Resist it.** This section records why, because the tempting version looks
+cheaper than it is.
 
-**The menu strip has no backing store** — it is never occluded (windows are kept out of
-it, and menu dropdowns hang *below* it), so it needs none. Which means the active app
-paints it **directly**, through a second VDI workstation on the framebuffer, clipped to
-the strip.
+### Why the strip is delegated at all
 
-This is the **only** place a client touches the framebuffer, and it is precisely the
-classic-GEM failure mode ("any app can scribble anywhere on the screen") that the whole
-backing-store design exists to prevent. It is contained by three rules:
+`menu_bar(tree)` hands the AES an `OBJECT` tree **in the client's address space**, which
+`gemd` cannot reach (§3). So `gemd` *cannot* draw the menu. The active app must draw its
+own, with the same `objc_draw` it uses for everything else.
 
-1. `gemd` hands out a strip workstation **only to the active app**.
-2. It **revokes** that workstation on an app switch.
-3. **The clip rect is the enforcement** — not the app's good manners.
+The only question is **what it draws into**.
 
-Why the strip is delegated at all: `menu_bar(tree)` hands the AES an `OBJECT` tree **in
-the client's address space**, which `gemd` cannot reach (§3). So the app must draw its
-own menu. `gemd` clears the strip and tells the new owner; the owner draws it with the
-same `objc_draw` it uses for everything else.
+### A VDI workstation does not cross a process boundary
 
-**If we ever want the hole closed:** *one* `gemd`-owned strip surface, **loaned** to
-whoever is active (not one per app). ~190 KB total, no protocol change, and the
-compositor then treats the strip like any other surface. It can wait.
+Worth stating plainly, because loose language here hides the real problem. A workstation
+is **not** a handle `gemd` can pass out. `v_opnvwk(&surface)` is entirely client-side: the
+client builds a `gfx_surface { w, h, stride, px }` and opens a workstation on it *locally*.
 
----
+So nothing "hands a workstation to an app". What must cross is **the memory** (a mapping)
+and **the geometry**. Which forces the real question: *whose* memory?
+
+### The rejected option: map the framebuffer's top strip into the client
+
+Because the menu bar is at the **top**, the strip is a **contiguous prefix** of the
+framebuffer — bytes `[0, strip_h × stride)`. (An arbitrary window rect is *not* contiguous;
+its rows are a stride apart. The strip is special.) So `gemd` *could* map exactly those
+bytes and nothing else, and the MMU would be the enforcement.
+
+**But it only works if the mapping is page-aligned**, and on our geometry that silently
+constrains the menu-bar height:
+
+```
+    stride = 1920 × 4 = 7680 = 2^9 · 3 · 5        page = 4096 = 2^12
+    strip_h × 7680 ≡ 0 (mod 4096)    ⟺    strip_h ≡ 0 (mod 8)
+
+    strip_h = 24  ->  184,320 bytes = 45 pages exactly.       clean.
+    strip_h = 25  ->  192,000 bytes = 46.875 pages -> 47 pages mapped
+                      -> the client also reaches 512 bytes of row 25
+                      -> 128 pixels of the desktop, corruptible.
+```
+
+A load-bearing constraint wired to a *theme metric*, waiting for someone to make the menu
+bar 25px tall. No.
+
+> **And note the argument this kills.** An earlier draft of this document claimed the hole
+> was contained because *"the clip rect is the enforcement — not the app's good manners."*
+> **That is false.** A clip rect is client-side VDI state; a buggy or hostile client simply
+> does not honour it. A clip rect **is** the app's good manners. The only thing that can
+> enforce anything across a process boundary is the mapping.
+
+### The decision: `gemd` loans the active app an shm strip surface
+
+`gemd` owns **one** strip-sized surface (1920 × 24 × 4 ≈ **184 KB**), loans it to whichever
+app is active, and composites it exactly like any other surface. The client opens a
+workstation on *that*, draws its menu tree into it, and posts damage.
+
+**The client never sees the framebuffer at all.**
+
+| | |
+|---|---|
+| cost | one 184 KB buffer, **total** — not per app |
+| blits | only on a menu repaint: app switch, an item checked/disabled, a title highlighting during tracking. And only the damaged sub-rect. Nobody will measure it. |
+| new machinery | **none.** The strip becomes just another surface on the path that already exists. |
+| page-alignment constraint | **gone.** |
+
+The strip still needs **no backing store for occlusion** — it is never occluded, and that
+observation was correct. But it was *irrelevant*: the buffer is not there for occlusion, it
+is there for **isolation**. That is the mistake this section exists to record.
+
+### Which means Rule 1 has no exceptions
+
+> **Only `gemd` touches the screen.** No client, ever, for any reason.
+
+`gemd` still owns the strip region, still reserves it (`g_top_reserve`), still clears it
+before handing it to a new owner. It simply hands over **a surface**, not a window onto the
+framebuffer.
 
 ## 11. Buffer lifetime: refcount, do not handshake
 
