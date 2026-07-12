@@ -137,10 +137,57 @@ holds the grab must never be able to block*. §4 is where that constraint comes 
 - **The menu strip is cleared before it is handed over.** A new menu owner gets clean
   space; it never has to erase the previous app's menu.
 
+### How a repaint starts — two triggers, and they must not be confused
+
+There are exactly **two** reasons the screen changes, and they are asymmetric. Almost
+every mistake in a window system comes from muddling them.
+
+| what changed | who can notice | who acts | app involved? |
+|---|---|---|---|
+| **geometry** — a window moved, was topped, or was revealed from under another | `gemd` | `gemd` re-composites from the backing store | **no.** This is exactly what the backing store buys. |
+| **content** — text inserted, a list scrolled, a selection changed | **only the app** | the app draws into **its own** backing store, then posts a damage rect | **yes, and only the app.** |
+
+**`gemd` never knows that an app's content is stale, and must never try to find out.** It
+has no idea what a line of text is. It does not diff buffers (that would be O(pixels) and
+pointless), and it does not poll. The app tells it:
+
+```
+    the app inserts "xxx" into a line:
+
+      app mutates its model
+      the view marks itself dirty
+      run loop -> drawRect -> the VDI writes into the APP'S OWN buffer
+                              (local memory; zero IPC; full speed)
+      app posts ONE message:  "this rect of my surface is new"
+      gemd blits that rect.   It never learns why.
+```
+
+`gemd` is told *"these pixels changed"* — never *"I inserted text"*.
+
+**Scrolling is the case worth stating explicitly**, because the drawable area is
+unchanged while the content is entirely different. The pixels genuinely *did* all change,
+so a damage rect covering the whole scrolled region is **correct, not wasteful**. The app
+may of course be clever *inside its own buffer* — `vr_transfer_bits` the region up by N
+pixels and redraw only the newly-exposed strip, which costs no IPC at all — but the
+*composited output* differs everywhere in that view, and the damage rect must say so.
+
+**A consequence: `WM_REDRAW` nearly disappears.** Classic GEM sends it because the server
+exposed part of your window and only you could repaint it. Here `gemd` already has those
+pixels. `WM_REDRAW` survives only for **resize** (the buffer changed size, so content must
+reflow) and the **first paint**. Every other repaint is the app deciding, unprompted, that
+its own content is stale.
+
+**And note what the app does *not* have to know:** whether it is visible. It draws and
+posts damage regardless; `gemd` clips. If the damaged region is occluded, the backing
+store still holds the new content, so it is correct the moment it is revealed. That is why
+§5 can flatly forbid a client from caring whether it is on screen.
+
 ### It must never
 
 - **Draw an app's content.** It has the pixels; it does not have the *meaning*. It can
   re-composite what the app last drew; it cannot repaint a window from scratch.
+- **Guess whether an app's content has changed.** No polling, no buffer diffing. Content
+  staleness is knowable only by the app, and the app says so with a damage rect (above).
 - **Parse an app's `OBJECT` tree.** Those pointers are in *another address space*. This
   is not a style rule, it is a hardware fact — and it is why the menu bar works the way
   it does (§10).
@@ -277,6 +324,20 @@ GEM costs it exactly one method (`XGApplication.boot()` → `.attach()`) and not
   can move without the app being told.
 - **Re-implement what GEM already does.** If Xtg is drawing a button border, that is a
   bug in Xtg, not a feature.
+- **Repaint more than changed.** A view that marks itself dirty must cost a repaint of
+  *that view*, not of the window. See the known gap below.
+
+### ⚠ Known gap: `setNeedsDisplay` has no rect
+
+Today `setNeedsDisplay()` raises a **single global boolean**, and the run loop responds by
+redrawing the **whole window**. For a button changing state that is invisible. For a text
+editor inserting one character it is exactly backwards: it redraws every view and damages
+the entire window for one line.
+
+This is a defect in **Xtg**, not in the architecture — the AES's `objc_draw` already takes
+a clip rect, so the mechanism is there and Xtg simply is not using it. The fix is to
+accumulate a **union of dirty rects** per window and pass it both to `objc_draw` (as the
+clip) and to `gemd` (as the damage rect). Tracked in §12.
 
 ---
 
@@ -288,7 +349,12 @@ GEM costs it exactly one method (`XGApplication.boot()` → `.attach()`) and not
 so it is *not* asked to redraw merely because it was occluded, moved, or topped.
 
 **Must.**
-- Draw its content when asked (`WM_REDRAW`).
+- **Post a damage rect whenever its own content changes.** Nothing else can know (§3).
+  This is the app's single most important obligation: `gemd` cannot compensate for an app
+  that quietly draws and never says so, and it cannot compensate for an app that changes
+  its model and never draws.
+- Draw its content on `WM_REDRAW` — which now means only **resize** and **first paint**
+  (§3). It is *not* sent for occlusion, moves or topping any more.
 - Draw its menu bar when told it has become the active app (§10).
 - Return to `evnt_multi` promptly. Not a moral requirement — a functional one (§9).
 
@@ -436,6 +502,10 @@ The honest list. Someone will have to make a call on each.
    quiet decision.
 3. **The liveness constants.** 2 s to the busy cursor and 7 s to grab revocation (§9) are
    a guess. They should be tunable, and felt on real hardware.
+4. **Xtg: dirty rects, not a dirty flag.** `setNeedsDisplay()` currently repaints the whole
+   window (§6). It must accumulate a union of dirty rects and pass it to `objc_draw` as the
+   clip and to `gemd` as the damage. Purely an Xtg change; no protocol impact. Needed
+   before any real text editing is usable.
 
 ### Closed, and worth not reopening
 
