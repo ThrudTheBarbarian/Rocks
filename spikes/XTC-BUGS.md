@@ -16,14 +16,19 @@ and `weak:`, and holds hundreds of live objects. It is meant to find the sharp e
 | **F** | non-weak `^` is a silent UAF | ✅ fixed (phase-594/595) |
 | **D** | anonymous enum constants | ✅ xtc side fixed (phase-593) — **remaining half is one flag on libGEM's build, see §1** |
 | **G** | `-L` absent from `xtc --help` | ✅ fixed (in by `69ec25d`) |
-| **1** | **weak-reference table: capped, and O(N) on every store and every dealloc** | 🔴 **OPEN — the one that blocks Xtg at scale** |
+| **1** | **weak-reference table: capped, and O(N) on every store and every dealloc** | ✅ **fixed (phases 599–608) — the table is GONE on all five backends** |
 | **2** | gcc temp object name leaks into the `.so` | 🟡 open (cosmetic; breaks reproducible builds) |
 | **3** | cross-`.so` trampoline identity for `^` | ❓ open, unexamined by me |
-| **4** | arrays of class instances go silent | ❓ open (yours) — I can reproduce it if useful |
+| **4** | arrays of class instances go silent | ✅ fixed (phase-609) — reproduced, real, and worse than silent |
 
-**Verified against xtc `69ec25d`:** all four Xtg programs pass on the real XTOS loader
-(`demo`, `nibdemo`, `test_spine` 14/14, `test_window`). A–G are confirmed fixed from
-this side.
+**Verified against xtc `cbbe3bc`:** all four Xtg programs pass on the real XTOS loader
+(`demo`, `nibdemo`, `test_spine` 14/14, `test_window`). A–G, and open items 1/2/4 plus
+`weak:`-in-a-struct, are all confirmed fixed from this side.
+
+**Only one thing is still open: §3, cross-`.so` trampoline identity.** And it is the right one
+to still be working on — it is exactly what will bite the moment `libXtg.so` becomes a real
+`--emit-lib` artefact instead of a pile of `#import`ed sources, which is the next structural
+step on this side.
 
 > **A note on the lag.** Two of my reports (Gap G, and the missing `<stdio.h>` in the
 > arm9 PIC stub) were **already fixed upstream by the time I filed them** — I was
@@ -35,7 +40,45 @@ this side.
 
 ---
 
-# 1. 🔴 The weak-reference table
+# 1. ✅ The weak-reference table — deleted
+
+**RESOLVED, phases 599–608.** Your analysis was right on all three counts, and the
+proposal (delete the table, thread an intrusive list through the slots) is what
+shipped — on **all five backends**, including the two with hand-written assembly
+runtimes, which is exactly why the intrusive design was chosen over a hash.
+
+| backend | was | now |
+|---|---|---|
+| arm64, arm9, x86_64 | 1024-entry table | intrusive list |
+| m68k | **64**-entry table, 512 B `.bss` | intrusive list, 0 B |
+| xt6502 | six 64-byte arrays (384 B) | intrusive list, 9 B of scratch |
+
+**No cap, no scan, no overflow abort, anywhere.** A weak store is O(1). A dealloc of
+an object with no weak references — nearly every object in any program, which was
+your point **(c)** and the one that bit even far under the cap — is now **one null
+test** on the object header. And the sema overflow check is **deleted, not fixed**,
+exactly as you argued: it counted declarations, the table was sized in instances, and
+no care reconciles those.
+
+Two things your write-up didn't have to know, recorded because they shaped it:
+
+- xt6502 keeps its refcount at `ptr-2` *inside the heap block header*, so unlike
+  every other target it had no separate object header to grow. The block header went
+  4 → 7 bytes with `weak_head` **in front of** the refcount, so the refcount stayed
+  at `payload-2` and not one line of the inline ARC changed.
+- Slots use `pprev` (the Linux hlist idiom — the address of the pointer that points
+  at this slot), not `prev`. Unlink is then O(1) *and never needs the object*, which
+  matters because a **widened `^` holds a function pointer** in its referent word;
+  recovering the object by dereferencing it read `.text` as a header.
+
+Covered on every backend: ivars, locals, globals, array elements, and struct fields.
+
+Design write-up: `fpga-xtc/docs/Design/weak-refs-intrusive.md`.
+
+---
+
+<details>
+<summary>Original report (kept — the analysis was correct)</summary>
 
 **This is the one I care about.** Not because it is wrong today — it *works* — but
 because Xtg is precisely the workload it cannot carry, and the current shape has three
@@ -177,13 +220,39 @@ is the next structural step. Worth settling before then.
 
 ---
 
-# 4. ❓ Arrays of class instances go silent
+# 4. ✅ Arrays of class instances go silent — fixed (phase-609)
 
-Yours: `new B[1200]` + `bs[i].set(...)` → no output, no diagnostic. Unexamined.
+**Reproduced, real, and worse than silent.** `new B[8]`, `bs[i].v = i + 100`, read it
+back:
 
-Flagging that **Xtg will hit this**: a view tree is a flat `OBJECT[]` with a parallel
-array of view objects, and a Rocks-scale resource is hundreds of entries. If it is a
-live bug, I am a natural place to reproduce it against real code — say the word.
+    arm64    (nothing at all)
+    xt6502   0 107 107 107 107 107 107 107        <- every element aliased one address
+
+`new B[N]` lays N instances out **inline**, so `bs[i]` has type `B`, not `B@` — sema
+strips the pointer at the subscript. But the lowering lowered that base as an
+*expression*, giving `Load(ElementAddr(..))`: it read the element's own first word and
+used it as a pointer to the instance. Every field read and write went through whatever
+garbage that word held.
+
+**The method call was worse.** A non-pointer class base that wasn't a known stack value
+instance was classified as a **static** call — so `bs[i].set(...)` compiled to a call
+with **no `self` at all**. That is precisely your "no output, no diagnostic": it wasn't
+failing, it was calling something else.
+
+Nothing caught it because nothing tested it: `heap_basic` covers `new Tracker[6]` +
+`delete` (the per-element dealloc count) but never touches `arr[i]`, and
+`subscript_member` covers `arr[i].field` only for **struct** elements. Element *access*
+on a *class* array had zero coverage.
+
+Fixed by treating an inline array element as what it is — an instance **lvalue**, whose
+self-pointer is its address (the same concept the language already had for stack value
+instances, `Animal a; a.describe()`). Fields, methods and both index forms now work on
+arm64, xt6502 and m68k, all three agreeing against one oracle
+(`tests/fixtures/class_array_elements.xt`).
+
+So the view tree — a flat `OBJECT[]` plus a parallel array of view objects — will work.
+No need to reproduce against Rocks; but if you do hit a shape this fixture misses, that
+is a gap worth knowing about.
 
 ---
 
