@@ -164,7 +164,7 @@ holds the grab must never be able to block*. §4 is where that constraint comes 
 |---|---|
 | the window list, z-order, geometry | `awin g_w[MAXW]` lives here and nowhere else. Honours `W_BOTTOM` at insertion (§4) |
 | window **chrome** | title bar, closer, mover, sizer, sliders — all themed |
-| **compositing** and `fb_present` | it alone decides what pixel is on screen. Composites **with the blitter**, in hardware (§12) |
+| **compositing** and `fb_present` | it alone decides what pixel is on screen. Composites **with the blitter**, in hardware (§13) |
 | a fallback background **colour** | *only* a colour. The wallpaper belongs to `desktop.so` (§4) |
 | **input** (`sys_input`) | it does the top-level hit-test and routes |
 | the **menu strip** | it reserves the region (`g_top_reserve`) and owns one strip surface **per app**. It composites the active app's. It does not *draw* the menu — it cannot (§10) |
@@ -177,6 +177,9 @@ holds the grab must never be able to block*. §4 is where that constraint comes 
   damage, `gemd` can bring that window forward, move it, or reveal it from under another
   — *without asking the client anything*. This is the whole point of the per-window
   backing store, and **every other promise leans on it.**
+  *(The one exception is the memory pressure valve — §12. Under duress `gemd` may drop a
+  fully-occluded window's surface and ask its owner to redraw on reveal. Never on the normal
+  path.)*
 - **Damage is honoured.** A client posts a rect; `gemd` composites it in z-order and
   presents. It does not batch it into next week.
 - **Input goes to exactly one place.** The window under the pointer, or the grab holder
@@ -337,7 +340,7 @@ in server mode; `appl_init` puts it in client mode.
   primitive — `vr_recfl`, `v_gtext`, `vr_transfer_bits` — is issued client-side, with **zero
   IPC to `gemd`**. Note this does *not* mean "the CPU writes pixels": the VDI submits
   **blitter** commands through its own `/dev/blitter` fd, and `theme_draw`, text and fills
-  are hardware (§12).
+  are hardware (§13).
 - **`objc_*`.** The tree walk (`objc_draw`), hit-testing (`objc_find`), coordinate
   resolution (`objc_offset`), editing (`objc_edit`), and the `G_USERDEF` callback
   (`objc_set_userdraw`). All client-side; `gemd` never sees a tree.
@@ -411,7 +414,7 @@ the entire window for one line.
 This is a defect in **Xtg**, not in the architecture — the AES's `objc_draw` already takes
 a clip rect, so the mechanism is there and Xtg simply is not using it. The fix is to
 accumulate a **union of dirty rects** per window and pass it both to `objc_draw` (as the
-clip) and to `gemd` (as the damage rect). Tracked in §14.
+clip) and to `gemd` (as the damage rect). Tracked in §15.
 
 ---
 
@@ -626,15 +629,107 @@ covers three separate bugs:
 | **resize** | the old buffer outlives the client's in-flight draw |
 | **window closed while `gemd` is mid-composite** | `gemd`'s own ref keeps it alive until the composite ends |
 | **app died while `gemd` still holds its pixels** | the dead client's ref is dropped; `gemd`'s keeps the memory valid |
-| **a blit is in flight into a dead process's surface** | the surface outlives the process until the blit retires (§12) |
+| **a blit is in flight into a dead process's surface** | the surface outlives the process until the blit retires (§13) |
 
 **What it does not fix, and does not pretend to: tearing.** A client can be painting frame
 N+1 into a buffer `gemd` is compositing frame N from. Refcounting is *lifetime*, not
-*exclusion*. That is a separate decision — §14.
+*exclusion*. That is a separate decision — §15.
 
 ---
 
-## 12. The blitter: how pixels actually get drawn
+## 12. Surface memory: capacity, extent, and resize
+
+A backing store is the **elephant** in the memory budget, and the naive policy — "allocate
+exactly the window size, reallocate on every resize" — fails badly. This section is the policy.
+
+### First, the size is not what it looks like
+
+**A backing store is *window*-sized, not screen-sized.** A surface has its own stride, so:
+
+```
+    800 x 600 window        800 x 600 x 4  =  1.92 MB       (not 8.5)
+    full-screen window     1920 x 1080 x 4 =  8.5 MB        (the only 8.5 MB case)
+```
+
+A plausible session:
+
+| | |
+|---|---|
+| the desktop (full screen) | 8.5 MB |
+| 4 app windows @ 800×600 | 7.7 MB |
+| 4 menu strips | 0.8 MB |
+| **total** | **≈ 17 MB** |
+
+Nothing against phase 1's 480 MB OS heap; **13% of phase 2's 128 MB `plv`**, which is shared
+with glyph atlases and DMA buffers. So it is a budget, not a crisis — but it needs a policy,
+and for a sharper reason than steady-state size.
+
+### The real problem is interactive resize
+
+Dragging a window edge fires a resize **on every mouse move** — dozens per second. A naive
+realloc-per-resize would reallocate, copy and remap an 8 MB surface **sixty times a second**.
+*That* is what falls over, not the steady state.
+
+### The rule: a surface has a **capacity** and an **extent**
+
+- **capacity** — what is allocated
+- **extent** (`w`, `h`) — what the window currently is
+
+**Resize within capacity is free.** Change `w`/`h`; no realloc, no copy, no remap, no new
+handle, no protocol traffic. Only growth *past* capacity reallocates.
+
+> ### 🔴 A surface's stride is its CAPACITY width, not its current width.
+>
+> This must be designed in from **day one**. If the stride tracked the *visible* width, growing
+> a window by one pixel would invalidate the entire layout of the buffer — every row would move.
+> With a fixed stride, the window simply uses the top-left `w × h` **sub-rect** and the rows stay
+> put. The VDI draws into the sub-rect; `gemd` blits the sub-rect.
+>
+> Small decision, very expensive to retrofit.
+
+### Quantise capacity; do not multiply it
+
+An over-allocation *multiplier* is the obvious policy and it is the wrong one. **1.5× on both
+axes is 2.25× the memory** — and for a full-screen window it asks for 2880×1620 = **18.7 MB**
+of capacity that **no window can ever use**, because nothing can be bigger than the screen.
+
+Rounding capacity up to a **64-pixel grid** does the same job for a fraction of the cost:
+
+| | exact | 1.5× on both axes | **64 px grid** |
+|---|---|---|---|
+| 800 × 600 | 1.92 MB | 4.32 MB (**+125%**) | 832 × 640 = **2.13 MB (+11%)** |
+| full screen | 8.5 MB | 18.7 MB (**unusable**) | **8.5 MB (+0%)** |
+
+And it still solves the resize problem: a realloc happens only every **64 px of drag** — a
+handful of times per gesture, not sixty times a second.
+
+**Capacity is capped at screen size**, always. No window can exceed it.
+
+### Shrink when the gesture settles — never during it
+
+"Never shrink" is tempting and wrong: **maximise a window once and it holds 8.5 MB forever.**
+Do that to three windows and `plv` is gone.
+
+```
+    resize in progress:   never shrink capacity.   (grow by 64px steps if needed)
+    button-up / settle:   shrink capacity to fit the final extent.
+```
+
+`gemd` knows when the drag ends, so "settle" is a well-defined moment. This keeps the
+cheap-resize property *and* gives the memory back.
+
+### The pressure valve
+
+Under memory pressure, `gemd` may **drop the backing store of a fully-occluded or minimised
+window**, and ask its owner to redraw on reveal.
+
+This deliberately trades away §3's promise — *"a window's pixels survive occlusion"* — for RAM,
+and **only under duress**. It is written down as an explicit valve so that it is a decision
+rather than a discovery. The normal path never does this.
+
+---
+
+## 13. The blitter: how pixels actually get drawn
 
 Everything above talks about "drawing" as if it were the CPU writing pixels. It is not.
 **Drawing is hardware**, and that changes three things: where surfaces live, how a client
@@ -687,7 +782,7 @@ every button in the system.
 > `theme_draw` *is* currently CPU. Giving the VDI a blitter backend is what makes uncached
 > surfaces acceptable, so **the blitter backend and the move to PL-visible backing stores must
 > land together** — either alone is worse than neither. All of this section is **phase 2**;
-> see §13.
+> see §14.
 
 ### `/dev/blitter`: a client may never touch the engine directly
 
@@ -771,7 +866,7 @@ fds sharing one slot, is what fairness means.
 
 ---
 
-## 13. Staging: what lands when
+## 14. Staging: what lands when
 
 Standing up `gemd`, splitting the client libraries, rewriting the toolkit **and** bringing up
 hardware blitting at once is too much in flight. It is staged. This section exists so the
@@ -790,7 +885,7 @@ Everything in §3–§11. **No blitter.**
 | **Xtg needs** | **one method.** `XGApplication.boot()` → `.attach()`. |
 
 > **⚠ Do not put backing stores in `plv` "to be ready for the blitter".** `plv` is **uncached**
-> (§12), and a *software* VDI writing to uncached memory is the worst of both worlds: the full
+> (§13), and a *software* VDI writing to uncached memory is the worst of both worlds: the full
 > uncached penalty, none of the hardware speed. Backing stores move to `plv` **when the VDI's
 > blitter backend moves**, and not one commit before. The two are a single change.
 
@@ -798,7 +893,7 @@ Everything in §3–§11. **No blitter.**
 
 | | |
 |---|---|
-| **kernel** | `/dev/blitter`: handle-based commands, priority ioctl, per-process fairness, retire counter (§12). Plus `plv` surface allocation. |
+| **kernel** | `/dev/blitter`: handle-based commands, priority ioctl, per-process fairness, retire counter (§13). Plus `plv` surface allocation. |
 | **GEM** | a **blitter backend for the VDI**; backing stores move to `plv` (contiguous, uncached); `gemd` composites with the blitter |
 | **Xtg** | `XGGraphics` stages a custom `drawRect` through a private *cached* buffer and lands it with one blit — so raw pixel-pushing apps still draw fast against an uncached surface |
 
@@ -810,7 +905,7 @@ In phase 1 drawing is **synchronous**, so *"I posted damage"* genuinely does mea
 are in memory"*. The fence is unnecessary and the field sits unused, always comparing
 "retired".
 
-In phase 2 that is **false** (§12.3): a queued blitter means the client's draws may still be
+In phase 2 that is **false** (§13.3): a queued blitter means the client's draws may still be
 in flight when `gemd`'s priority composite jumps ahead. If the seq field is not in the wire
 protocol from the start, phase 2 becomes a **protocol change across every client**.
 
@@ -819,10 +914,14 @@ protocol from the start, phase 2 becomes a **protocol change across every client
 > assumption "drawing is synchronous" is false the moment the engine is queued — the staging
 > merely hides it.
 
+**And the stride rule (§12).** A surface's stride is its **capacity** width, not its current
+width. If phase 1 sets stride from the visible width, every resize invalidates the buffer
+layout and the capacity/extent scheme cannot be added later without touching every draw path.
+
 **Two more, cheaper:**
 
 - **Surfaces are named by *handle* everywhere**, never by address — so phase 2 changes only the
-  allocator behind the id, not the protocol (§12.1).
+  allocator behind the id, not the protocol (§13.1).
 - **The VDI keeps a backend interface** (fill / blit / scaled-blit / blend), even while the only
   implementation is software. If the VDI's internals assume direct pixel access to the target,
   a command-queue backend is a rewrite rather than a backend.
@@ -835,7 +934,7 @@ No `plv` pressure, no contiguity requirement, no cache-maintenance discipline, n
 
 ---
 
-## 14. Not yet decided
+## 15. Not yet decided
 
 The honest list. Someone will have to make a call on each.
 
