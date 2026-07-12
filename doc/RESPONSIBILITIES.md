@@ -1,84 +1,112 @@
 # Who does what
 
-The contract between the layers: what each one **owns**, what it may **assume**, and
-what it must **never** do. Companion to `AES-SERVER.md` (which argues *why* the split
-is shaped this way) and `XTG-DESIGN.md` (which argues *why* a view is a GEM object).
+The contract between the layers of the XT graphics stack: what each one **owns**, what
+it may **assume**, and what it must **never** do.
 
-This document is the one to read when you are about to write code and need to know
-whose job something is.
+Read this when you are about to write code and need to know whose job something is.
+
+Companions: `AES-SERVER.md` argues *why* the client/server split is shaped this way;
+`XTG-DESIGN.md` argues *why* a UI view is a GEM object. This document assumes neither —
+it states the conclusions and the obligations.
 
 ---
 
-## 0. The stack
+## 0. Terms
+
+Written for three audiences (the OS thread, the compiler thread, and the UI thread), so
+nothing below assumes you know the GEM vocabulary.
+
+| | |
+|---|---|
+| **XTOS** | the operating system. FreeRTOS on a Zynq-7020 (Cortex-A9). Processes, shared memory, the framebuffer, the input device. Knows nothing about windows. |
+| **GEM** | the graphics stack, in two halves. Historically Atari's; here, ours. |
+| **VDI** | GEM's *drawing* half. `v_gtext`, `vr_recfl`, `vr_transfer_bits` — pixels, lines, text, blits. Draws onto a **surface**. |
+| **AES** | GEM's *windowing* half. Windows, events, menus, dialogs. `wind_*`, `evnt_*`, `objc_*`, `form_*`. |
+| **`OBJECT` tree** | how the AES represents a UI: a **flat array** of `OBJECT` structs, linked by index into a tree. One entry per widget (button, checkbox, text field…). The AES draws it (`objc_draw`), hit-tests it (`objc_find`), edits it (`objc_edit`). |
+| **`G_USERDEF`** | an `OBJECT` type meaning *"call this function pointer to draw me"*. The hook that lets app code draw inside the AES's own traversal. |
+| **`gemd`** | **the window server.** One process. Owns windows, z-order, chrome, compositing, input routing. *Not the desktop* — see §4. |
+| **`libGEM.so`** | linked into **every** process. In `gemd` it is the server; in an app it is the client half, which turns AES calls into messages. Same library, two modes. |
+| **`libXtg.so`** ("Xtg") | our AppKit-style UI toolkit, in the **xtc** language, sitting *on* the AES API. Views, responder chain, target/action, run loop. |
+| **`desktop.so`** | the app that draws the wallpaper and the icons. **An ordinary client.** See §4. |
+| **`Rocks.so`** | the resource editor. Another ordinary client, and Xtg's proof-of-concept. |
+| **nib** | a `.rsc` resource file authored in Rocks. It *contains* an `OBJECT` tree, so Xtg loads it and binds views onto it directly — there is no conversion step. |
+| **damage / damage rect** | "this rectangle of my window changed". A client posts one; `gemd` composites it. |
+| **backing store** | the off-screen buffer a client draws its window into. `gemd` composites from it. See §3. |
+| **the grab** | "all input comes to me, and nothing may be topped, until I release it." What a menu or a modal dialog holds. GEM spells it `wind_update(BEG_MCTRL)`. |
+| **xtc** | the language Xtg and Rocks are written in. Classes, protocols, ARC, `weak:`. **No closures, no selectors, no reflection** — which shapes several decisions below. |
+
+---
+
+## 1. The stack
 
 ```
     Rocks.so          desktop.so         (any other app)     <- ORDINARY CLIENTS.
-    the app           the app that        the app             gemd cannot tell
-                      draws wallpaper                         them apart.
+    the app           the app that        the app               gemd cannot tell
+                      draws wallpaper                           them apart.
                       and icons
       |                  |                   |
-      +--------- libXtg.so (the framework) --+     views, responders, actions,
+      +--------- libXtg.so (the toolkit) ----+     views, responders, actions,
       |                  |                   |     the run loop, nibs
-      +--------- libGEM.so (client half) ----+     objc_*, theme_*, form_*, v_*
+      +--------- libGEM.so (client mode) ----+     objc_*, theme_*, form_*, v_*
                          |
         messages (control)  |  shm (pixels)
                          v
     +-----------------------------------------------------------+
     |  gemd                THE WINDOW SERVER. ONE process.       |   who arbitrates
-    |                      windows, z-order, chrome, compositing |   between apps
-    |                      input routing, grabs, lifecycle       |
+    |  (libGEM.so,         windows, z-order, chrome, compositing |   between apps
+    |   server mode)       input routing, grabs, lifecycle       |
     +-----------------------------------------------------------+
     |  libxtos.so / XTOS   processes, shm, input, framebuffer    |   the machine
     +-----------------------------------------------------------+
 ```
 
-Two rules generate almost everything below:
+**Two rules generate almost everything in this document:**
 
-> **1. Only `gemd` touches the screen.**
-> **2. Only the app knows what its content looks like.**
+> ### 1. Only `gemd` touches the screen.
+> ### 2. Only the app knows what its content looks like.
 
-Every responsibility falls out of holding both at once. Rule 1 alone gives you X11
-(stream every primitive to the server). Rule 2 alone gives you classic GEM (everyone
-scribbles on the framebuffer). Holding both *forces* the per-window backing store,
-*forces* the menu bar to be painted by its owner, and *forces* the grab — none of
-those were free choices.
+Rule 1 alone gives you X11 (stream every drawing primitive to the server). Rule 2 alone
+gives you classic GEM (every app scribbles directly on the framebuffer). Holding **both
+at once** forces the per-window backing store (§3), forces the menu bar to be painted by
+its owner (§10), and forces the grab (§9). None of those were free choices — they are
+consequences.
 
-**And note what is not in that list: the desktop.** It is a client, `desktop.so`,
-sitting beside `Rocks.so`. See §3.
+**Note what is *not* in that diagram's server box: the desktop.** It is a client,
+`desktop.so`, sitting beside `Rocks.so`. That is §4, and it is the single most
+load-bearing decision here.
 
 ---
 
-## 1. XTOS
+## 2. XTOS
 
-**Owns.** Processes. The framebuffer (`sys_fb_info`, `sys_fb_wallpaper`). Shared
-memory. The input device. The syscall ABI, exported as real symbols from
-`libxtos.so` so that a non-C language can reach it.
+**Owns.** Processes. The framebuffer (`sys_fb_info`, `sys_fb_wallpaper`). Shared memory.
+The input device. The syscall ABI, exported as real symbols from `libxtos.so` so a
+non-C language can reach it.
 
 **Promises.**
 - A shm segment created by one process and mapped by another is the same memory.
 - Input events arrive in order, and only to the process that asked for them.
 - A dead process's shm mappings are reclaimed.
 
-**Must never.** Care about windows. XTOS has no concept of a window, and should not
-grow one — that is `gemd`'s entire job, and `gemd` is an ordinary process.
+**Must never.** Care about windows. XTOS has no concept of a window and should not grow
+one — that is `gemd`'s entire job, and `gemd` is an ordinary user process with no
+privileges XTOS knows about.
 
-**Settled.** `libxtos.so` is now built with `-g`, so xtc can type it through DWARF and
-no longer has to hand-mirror `os_fbinfo` (see `spikes/RESULTS.md` for why guessing a
-struct size is not survivable: a hand-guessed `sizeof(theme)` smashed the heap — it is
-19502 bytes).
+**Settled.** `libxtos.so` is now built with `-g`, so xtc can read its DWARF and type it
+directly instead of hand-mirroring structs. (Why that matters: a hand-guessed
+`sizeof(theme)` once smashed the heap — the real answer is 19502 bytes. See
+`spikes/RESULTS.md`.)
 
 ---
 
-## 2. `gemd` — *the window server*
+## 3. `gemd` — the window server
 
-**One process.** It is the only process that calls `aes_init`, and the only process
-that presents to the framebuffer.
+**One process.** The only one that calls `aes_init`, and the only one that presents to
+the framebuffer.
 
-**It is not the desktop.** That distinction is the subject of §3, and it is load-
-bearing enough to be worth stating before the table: `gemd` is deliberately *small*.
-It routes input, arbitrates z-order, composites, and does nothing else — because it
-is the process that holds **the grab**, and a process that holds the grab must never
-be able to block.
+**It is deliberately small.** It routes input, arbitrates z-order, composites, and does
+nothing else — because it is the process that holds **the grab**, and *a process that
+holds the grab must never be able to block*. §4 is where that constraint comes from.
 
 ### It owns
 
@@ -87,65 +115,64 @@ be able to block.
 | the window list, z-order, geometry | `awin g_w[MAXW]` lives here and nowhere else |
 | window **chrome** | title bar, closer, mover, sizer, sliders — all themed |
 | **compositing** and `fb_present` | it alone decides what pixel is on screen |
-| a fallback background **colour** | *only* a colour — the wallpaper belongs to the desktop **client** (§3) |
+| a fallback background **colour** | *only* a colour. The wallpaper belongs to `desktop.so` (§4) |
 | **input** (`sys_input`) | it does the top-level hit-test and routes |
-| the **menu strip** | it reserves it (`g_top_reserve`) and clears it |
-| the **grab** | it decides who is receiving input, and honours `BEG_MCTRL` |
+| the **menu strip** | it reserves the region (`g_top_reserve`) and clears it. It does not draw the menu (§10) |
+| the **grab** | it decides who receives input, and honours `wind_update(BEG_MCTRL)` |
 | **lifecycle** | it reaps a dead client's windows |
 
 ### It promises
 
-- **A window's pixels survive occlusion.** If a client has drawn its window and
-  posted damage, the desktop can bring that window forward, move it, or reveal it
-  from under another, *without asking the client anything*. This is the whole point of
-  the per-window backing store, and every other promise leans on it.
-- **Damage is honoured.** A client posts a rect; the desktop composites that rect in
-  z-order and presents. It does not batch it into next week.
-- **Input goes to exactly one place.** The window under the pointer, or the grab
-  holder if there is one. Never both, never neither.
-- **A grab is absolute.** While `BEG_MCTRL` is held, *all* input goes to the holder
-  and **nothing is topped**. This is what makes menus, `menu_popup` and `form_alert`
-  safe, and it is the only ordering guarantee they need.
-- **The strip is cleared before it is handed over.** A new menu owner gets clean
+- **A window's pixels survive occlusion.** Once a client has drawn its window and posted
+  damage, `gemd` can bring that window forward, move it, or reveal it from under another
+  — *without asking the client anything*. This is the whole point of the per-window
+  backing store, and **every other promise leans on it.**
+- **Damage is honoured.** A client posts a rect; `gemd` composites it in z-order and
+  presents. It does not batch it into next week.
+- **Input goes to exactly one place.** The window under the pointer, or the grab holder
+  if there is one. Never both, never neither.
+- **A grab is absolute.** While `BEG_MCTRL` is held, *all* input goes to the holder and
+  **nothing is topped**. This is what makes menus, `menu_popup` and `form_alert` safe,
+  and it is the only ordering guarantee they need.
+- **The menu strip is cleared before it is handed over.** A new menu owner gets clean
   space; it never has to erase the previous app's menu.
 
 ### It must never
 
-- **Draw an app's content.** It has the pixels; it does not have the meaning. It
-  cannot repaint a window from scratch, only re-composite what the app last drew.
-- **Parse an app's `OBJECT` tree.** Those pointers are in *another address space*.
-  This is not a style rule, it is a hardware fact, and it is why the menu bar works
-  the way it does (§5 of `AES-SERVER.md`).
-- **Assume a client is alive, responsive, or well-behaved.** See §7.
-- **Know what a file is.** No filesystem, no icons, no drag-and-drop semantics, no
-  file picker. All of that is the desktop's, and the desktop is an app.
-- **Block. Ever.** It holds the grab. See §3.
+- **Draw an app's content.** It has the pixels; it does not have the *meaning*. It can
+  re-composite what the app last drew; it cannot repaint a window from scratch.
+- **Parse an app's `OBJECT` tree.** Those pointers are in *another address space*. This
+  is not a style rule, it is a hardware fact — and it is why the menu bar works the way
+  it does (§10).
+- **Assume a client is alive, responsive, or well-behaved.** See §9.
+- **Know what a file is.** No filesystem, no icons, no drag-and-drop semantics, no file
+  picker. All of that belongs to `desktop.so`, which is an app (§4).
+- **Block. Ever.** It holds the grab.
 
 ---
 
-## 3. The desktop is an app
+## 4. The desktop is an app
 
-`desktop.so` is an **ordinary GEM client**. `gemd` cannot tell it apart from
-`Rocks.so` except by a single flag on its window.
+`desktop.so` is an **ordinary GEM client**. `gemd` cannot tell it apart from `Rocks.so`
+except by a single flag on its window.
 
 ### Why this matters more than replaceability
 
-You do get replaceability — swap in `desktop+` and nothing else changes. But that is
-the smaller prize.
+You do get replaceability — swap in `desktop+` and nothing else changes. That is the
+smaller prize.
 
 **The arbiter must be boring.** A desktop does file I/O, renders icons, runs
 drag-and-drop, opens a file picker, maybe indexes a search field. If the desktop *is*
 the server, all of that runs inside the process that owns input routing and the grab —
-and **every desktop bug becomes a system freeze**. Keeping them apart means the
-process that arbitrates between apps is small, does nothing risky, and has no reason
-to ever block.
+and **every desktop bug becomes a system freeze**. Keeping them apart means the process
+that arbitrates between apps is small, does nothing risky, and has no reason to block.
 
 TOS made the other choice. TOS also froze a lot.
 
 ### The wallpaper is content
 
-Rule 2 says only an app knows what its content looks like — and a wallpaper is
-content. So the desktop draws its wallpaper and icons into its own backing store with
+Rule 2 says only an app knows what its content looks like — and a wallpaper is content.
+So the desktop draws its wallpaper and icons into **its own backing store**, with
 `objc_draw`, exactly like every other client. `gemd` keeps a fallback background
 *colour* for when no desktop is running (or one is restarting), and nothing more.
 
@@ -160,68 +187,66 @@ desktop is started first and calls:
 ```
 
 - **No chrome**, because it passed none of the chrome bits. `wind_create`'s kind mask
-  already says this.
-- **Bottom of the z-order**, because it was created first, and new windows go on top.
-  Nobody has to declare it the bottom; it just *is*.
+  already expresses this.
+- **Bottom of the z-order**, because it was created *first*, and new windows go on top.
+  Nobody has to declare it the bottom; it just is.
 
-**One bit is genuinely new: it must not be toppable.** A screen-sized window that
-comes to the front when clicked would swallow every other app. That bit sits beside
-`W_CLOSER` and `W_MOVER` in a mask that already exists — call it `W_BOTTOM`.
+**One bit is genuinely new: it must not be toppable.** A screen-sized window that came
+to the front when clicked would swallow every other app. That bit sits beside `W_CLOSER`
+and `W_MOVER` in a mask that already exists — call it `W_BOTTOM`.
 
-That is the entire cost. One flag, and the desktop is an ordinary app.
-
-(The dropdown needs no level either: it lives inside a grab and never enters the
-z-order at all — see `AES-SERVER.md` §5.)
+That is the entire cost. **One flag, and the desktop is an ordinary app.**
 
 ### It follows that
 
-- **The desktop's menu bar is not special.** It is the active app's menu bar, and the
-  desktop is sometimes the active app. (This closes what was an open question.)
+- **The desktop's menu bar is not special.** It is simply the active app's menu bar, and
+  the desktop is sometimes the active app.
 - **The desktop can crash and be restarted** without taking the window system with it.
-  Apps keep running; the background goes to `gemd`'s fallback colour until it returns.
-- **`gemd` starts first**, and launches the desktop. Not the other way round.
+  Other apps keep running and stay clickable; the background falls back to `gemd`'s
+  colour until the desktop returns.
+- **`gemd` starts first** and launches the desktop. Not the other way round.
 
 ---
 
-## 4. libGEM, in a client
+## 5. `libGEM.so`, in a client
 
-The same library the desktop links, running on the other side of the wire. `appl_init`
-puts it in client mode; `aes_init` puts it in server mode.
+The same library `gemd` links, running on the other side of the wire. `aes_init` puts it
+in server mode; `appl_init` puts it in client mode.
 
 ### It owns
 
 - **The client's VDI.** `v_opnvwk` on the client's *own* surface. Every drawing
   primitive — `vr_recfl`, `v_gtext`, `vr_transfer_bits` — runs client-side, at full
-  speed, against local memory.
-- **`objc_*`.** The tree walk, hit-testing (`objc_find`), coordinate resolution
-  (`objc_offset`), editing (`objc_edit`), the userdef callback
-  (`objc_set_userdraw`). All of it is client-side; the server never sees a tree.
-- **`theme_draw` and `form_*`.** The theme atlas is read-only art; both sides may
-  load it, and there is no conflict.
+  speed, against local memory. **Zero IPC while drawing.**
+- **`objc_*`.** The tree walk (`objc_draw`), hit-testing (`objc_find`), coordinate
+  resolution (`objc_offset`), editing (`objc_edit`), and the `G_USERDEF` callback
+  (`objc_set_userdraw`). All client-side; `gemd` never sees a tree.
+- **`theme_draw` and `form_*`.** The theme atlas is read-only art; both sides may load
+  it, and there is no conflict.
 - **Translation.** `wind_create`, `wind_open`, `wind_content`, `evnt_multi` keep their
-  exact signatures. Only their *bodies* change from "touch `g_w[]`" to "send a
-  message". **This is the entire reason the split is tractable**, and it must stay
-  true: if an AES call ever grows a new parameter for the server's benefit, the
-  layering has gone wrong.
+  **exact signatures**. Only their *bodies* change, from "touch `g_w[]`" to "send a
+  message". This is the entire reason the client/server split is tractable, and it must
+  stay true: **if an AES call ever grows a new parameter for `gemd`'s benefit, the
+  layering has gone wrong.**
 
 ### It promises the app
 
 > **Nothing about the AES API changes.** An app written against single-process GEM
-> compiles and runs against the server unmodified.
+> compiles and runs against `gemd` unmodified.
 
 ### It must never
 
-- **Touch the framebuffer.** With exactly one deliberate exception — see §8.
-- **Assume it owns the screen.** It does not know its window's position on screen,
-  what is above it, or whether it is even visible. It draws into its buffer and posts
+- **Touch the framebuffer.** With exactly one deliberate exception — §10.
+- **Assume it owns the screen.** A client does not know where its window is on screen,
+  what is above it, or whether it is visible at all. It draws into its buffer and posts
   damage. That is all.
 
 ---
 
-## 5. Xtg — the framework
+## 6. Xtg — the toolkit
 
-Xtg sits **on** the AES API, not underneath it. That is why the server split costs it
-one method (`XGApplication.boot()` → `.attach()`) and nothing else.
+Xtg sits **on** the AES API, not underneath it. That is why moving to a client/server
+GEM costs it exactly one method (`XGApplication.boot()` → `.attach()`) and nothing else.
 
 ### It owns
 
@@ -229,138 +254,142 @@ one method (`XGApplication.boot()` → `.attach()`) and nothing else.
 |---|---|
 | **`XGView`** | a view **IS** a GEM object. It owns an *index* into an `OBJECT[]`, not a rectangle. |
 | **`XGViewTree`** | the flat `OBJECT[]` plus a parallel array of views. `addChild`/`removeChild` wrap `objc_add`/`objc_delete`. |
-| **the draw seam** | a view's `gemType()` returns `G_USERDEF`, so the **AES itself** calls `drawRect` during its own `objc_draw` traversal. |
-| **`XGResponder`** | the chain, built without reflection: defaults forward to `nextResponder`, and a subclass consumes by not calling `super`. |
-| **target/action** | a typed pair with a **weak** target. No selectors, no reflection. |
-| **the run loop** | `evnt_multi`, and the coalescing of `setNeedsDisplay` into one `wind_redraw_win` per pass. |
-| **nibs** | `XGNib.load` binds a view onto each object of a Rocks-authored `.rsc`. There is **no inflation step**. |
+| **the draw seam** | a view's `gemType()` returns `G_USERDEF`, so **the AES itself** calls `drawRect` during its own `objc_draw` traversal. |
+| **`XGResponder`** | the chain, built without reflection: defaults forward to `nextResponder`, and a subclass consumes an event by simply *not* calling `super`. |
+| **target/action** | one field: `weak: XGAction^` — a bound method (`&self.onOK`), with an auto-zeroing receiver. No selectors, no reflection. |
+| **the run loop** | `evnt_multi`, and the coalescing of `setNeedsDisplay` into one repaint per pass. |
+| **nibs** | `XGNib.load` binds a view onto each object of a Rocks-authored `.rsc`. There is **no inflation step** — the resource's own array *is* the view tree. |
 
 ### It promises the app
 
-- **`drawRect` is called by the AES**, with a `XGGraphics` already clipped and
-  offset to the view's frame. The view draws in its own coordinates, starting at 0,0.
-- **A stock widget needs no drawing code.** `XGButton` returns `G_BUTTON` and sets
-  `ob_spec`; GEM themes it. `XGButton` contains **zero** drawing code, and that is the
-  measure of whether the design is working.
-- **`setNeedsDisplay` is cheap.** It sets a flag. The run loop coalesces.
+- **`drawRect` is called by the AES**, with an `XGGraphics` already clipped and offset to
+  the view's frame. The view draws in its own coordinates, starting at 0,0.
+- **A stock widget needs no drawing code.** `XGButton` returns `G_BUTTON` and sets its
+  label; GEM themes it. `XGButton` contains **zero** drawing code — and that is the
+  measure of whether this design is working.
+- **`setNeedsDisplay` is cheap.** It sets a flag; the run loop coalesces.
 
 ### It must never
 
-- **Draw outside `drawRect`.** Painting from a click handler paints to a surface the
-  desktop may not composite, and to a clip rect that is not the view's.
-- **Cache a screen coordinate.** Ask `absoluteFrame` (which asks `objc_offset`).
-  A window can move without the app being told.
-- **Re-implement what GEM already does.** If Xtg is drawing a button border, that is
-  a bug in Xtg, not a feature.
+- **Draw outside `drawRect`.** Painting from a click handler paints to a surface `gemd`
+  may not composite, and to a clip rect that is not the view's.
+- **Cache a screen coordinate.** Ask `absoluteFrame` (which asks `objc_offset`). A window
+  can move without the app being told.
+- **Re-implement what GEM already does.** If Xtg is drawing a button border, that is a
+  bug in Xtg, not a feature.
 
 ---
 
-## 6. The application
+## 7. The application
 
-**Owns.** What its content looks like, what its controls mean, its documents, its
-menus.
+**Owns.** What its content looks like, what its controls mean, its documents, its menus.
 
-**May assume.** Everything in §5's promises. Additionally: that its window's backing
-store persists, so it is **not** asked to redraw merely because it was occluded,
-moved, or topped.
+**May assume.** Everything in §6's promises. And: **its window's backing store persists**,
+so it is *not* asked to redraw merely because it was occluded, moved, or topped.
 
 **Must.**
 - Draw its content when asked (`WM_REDRAW`).
-- Draw its menu bar when told it has become the active app.
-- Return to `evnt_multi` promptly. Not a moral requirement — a functional one. See §7.
+- Draw its menu bar when told it has become the active app (§10).
+- Return to `evnt_multi` promptly. Not a moral requirement — a functional one (§9).
 
 **Must never.** Assume it is the only app; assume it is visible; assume its menu is
 showing.
 
 ---
 
-## 7. The seams
+## 8. The seams
 
 Where two layers meet, exactly what crosses:
 
 | seam | what crosses | direction |
 |---|---|---|
-| app ↔ Xtg | `drawRect`, `mouseDown`, target/action, delegate protocols | both — Xtg calls **down** into app overrides |
-| Xtg ↔ libGEM | the AES API, verbatim | Xtg calls libGEM; libGEM calls back via `objc_set_userdraw` and `wind_content` |
-| libGEM ↔ desktop | **control**: window ops, damage rects, input events, grabs. **pixels**: shm, never the pipe. | both |
-| desktop ↔ XTOS | syscalls | one way |
+| app ↔ Xtg | `drawRect`, `mouseDown`, target/action, delegate protocols | both — Xtg calls **down** into the app's overrides |
+| Xtg ↔ libGEM | the AES API, verbatim | Xtg calls libGEM; libGEM calls **back** via `wind_content` and `objc_set_userdraw` |
+| libGEM ↔ `gemd` | **control**: window ops, damage rects, input events, grabs. **pixels**: shm, never the pipe. | both |
+| `gemd` ↔ XTOS | syscalls | one way |
 
-**The two callbacks are the whole design.** `wind_content` gives the AES a function to
-call when a window needs drawing; `objc_set_userdraw` gives it a function to call for
-each `G_USERDEF` inside that draw. Xtg hangs its entire view system off those two
-function pointers, and the `void*` on each is what carries the `XGWindow` across the
-C boundary — xtc has no closures, so that `void*` is load-bearing.
+**Two callbacks are the whole design.** `wind_content` gives the AES a function to call
+when a window needs drawing; `objc_set_userdraw` gives it a function to call for each
+`G_USERDEF` inside that draw. Xtg hangs its entire view system off those two function
+pointers — and the `void*` carried alongside each one is what smuggles the `XGWindow`
+across the C boundary. **xtc has no closures, so that `void*` is load-bearing.**
 
 ---
 
-## 8. When things go wrong
+## 9. When things go wrong
 
 The interesting half of any contract.
 
 | | what happens | whose job |
 |---|---|---|
 | **an app crashes** | `gemd` reaps its windows on `waitpid`. No ghost windows, no leaked shm. | `gemd` |
-| **an app wedges** (never returns to `evnt_multi`) | its **windows still composite** — the backing store means `gemd` needs nothing from it. It gets a **busy cursor**. Its **menu bar goes blank** on the next switch, because the strip is cleared before the new owner draws. | `gemd` |
-| **an app wedges while holding a grab** | **the grab times out.** Busy cursor at +2s, revoked at +7s. `gemd` discards its overlay, recomposites from the backing stores, and injects a *cancel* so the app runs its own dismissal path when it wakes. It may not re-grab until the user tops it again. | `gemd` (`AES-SERVER.md` §5) |
-| **an app posts damage for a rect outside its window** | clamped. A client's damage rect is a *request*, not an instruction. | `gemd` |
+| **an app wedges** (never returns to `evnt_multi`) | its **windows still composite** — the backing store means `gemd` needs nothing from it. It gets a **busy cursor**. Its **menu bar goes blank** on the next app switch, because the strip is cleared before the new owner draws. | `gemd` |
+| **an app wedges while holding a grab** | **the grab times out** (below). `gemd` discards its overlay, recomposites from the backing stores, and injects a *cancel* so the app runs its own dismissal path when it wakes. It may not re-grab until the user tops it again. | `gemd` |
+| **an app posts damage outside its window** | clamped. A client's damage rect is a *request*, not an instruction. | `gemd` |
 | **an app never draws** | its window composites as whatever its buffer contains — i.e. blank. Correct. | — |
-| **the desktop crashes** | nothing else stops. The background falls back to `gemd`'s colour; apps keep running and stay clickable. Restart it. | `gemd` |
-| **`gemd` crashes** | everything is gone. Which is why it is small, boring, and does no file I/O. | — |
+| **`desktop.so` crashes** | nothing else stops. The background falls back to `gemd`'s colour; other apps keep running and stay clickable. Restart it. | `gemd` |
+| **`gemd` crashes** | everything is gone. Which is exactly why it is small, boring, and does no file I/O (§4). | — |
 
-### Wedged is a state `gemd` can see, without asking
+### Wedged is a state `gemd` can detect without asking
 
 The liveness signal is **"is this client draining its event pipe?"** — which `gemd` can
-observe without the client doing anything, and that is the essential property, because
-a wedged client cooperates with nothing.
+observe *without the client doing anything*. That is the essential property, because a
+wedged client cooperates with nothing.
 
-The clock runs only when there is input **queued for that client and still unread**.
-It is *not* a wall-clock idle timer: a modal dialog sitting quietly while the user
-thinks is perfectly healthy, and a naive idle timer cannot tell the two apart.
+The clock runs **only when there is input queued for that client and still unread**. It
+is *not* a wall-clock idle timer: a modal dialog sitting quietly while the user thinks is
+perfectly healthy, and a naive idle timer cannot tell the two apart.
 
-    input queued for a client, unread:   +2s -> busy cursor
-                                         +7s -> its grab (if any) is revoked
-    client drains its pipe:              clock resets
+```
+    input queued for a client, unread:   +2s  ->  busy cursor
+                                         +7s  ->  its grab (if any) is revoked
+    client drains its pipe:                       clock resets
+```
 
-One clock detects **every** wedged app. Losing a grab is just the extra consequence
+One clock detects **every** wedged app. Losing a grab is merely the extra consequence
 when the wedged app happened to be holding one.
 
-A wedged app looking wedged is **right**. The design should make an app's failure
-visible in proportion to how badly it has failed, and no more: a wedged app should not
-be able to freeze **`gemd`**. The desktop is just another app, and *it* may freeze
-without taking anything else down — which is precisely the point of §3.
+A wedged app *looking* wedged is **right**. Failure should be visible in proportion to
+how badly something has failed, and no more — but no app may freeze **`gemd`**. The
+desktop is just another app, and it may freeze without taking anything else down. That is
+precisely the point of §4.
 
 ---
 
-## 9. The deliberate exceptions
+## 10. The one deliberate exception: the menu strip
 
-Every rule above has been kept clean except one, and it is written here so it is not
-discovered by accident.
+Every rule above is kept clean except one. It is written here so it is not discovered by
+accident.
 
-### The menu strip is server-owned pixels, painted by a client
+**The menu strip has no backing store** — it is never occluded (windows are kept out of
+it, and menu dropdowns hang *below* it), so it needs none. Which means the active app
+paints it **directly**, through a second VDI workstation on the framebuffer, clipped to
+the strip.
 
-The strip has no backing store (it is never occluded, so it needs none — see
-`AES-SERVER.md` §5). The active app therefore paints it **directly**, via a second VDI
-workstation on the framebuffer, clipped to the strip.
-
-This is the *only* place a client touches the framebuffer, and it is precisely the
-classic-GEM failure mode ("any app can scribble on the desktop") that the whole
+This is the **only** place a client touches the framebuffer, and it is precisely the
+classic-GEM failure mode ("any app can scribble anywhere on the screen") that the whole
 backing-store design exists to prevent. It is contained by three rules:
 
 1. `gemd` hands out a strip workstation **only to the active app**.
-2. It **revokes** it on switch.
-3. The **clip rect is the enforcement** — not the app's good manners.
+2. It **revokes** that workstation on an app switch.
+3. **The clip rect is the enforcement** — not the app's good manners.
 
-If we ever want the hole closed: **one** `gemd`-owned strip surface, *loaned* to
+Why the strip is delegated at all: `menu_bar(tree)` hands the AES an `OBJECT` tree **in
+the client's address space**, which `gemd` cannot reach (§3). So the app must draw its
+own menu. `gemd` clears the strip and tells the new owner; the owner draws it with the
+same `objc_draw` it uses for everything else.
+
+**If we ever want the hole closed:** *one* `gemd`-owned strip surface, **loaned** to
 whoever is active (not one per app). ~190 KB total, no protocol change, and the
 compositor then treats the strip like any other surface. It can wait.
 
 ---
 
-## 9a. Buffer lifetime: refcount, do not handshake
+## 11. Buffer lifetime: refcount, do not handshake
 
-A surface is **reference-counted**. `gemd` holds one ref; each client that has it
-mapped holds one. It is freed when the count reaches zero, and **not before** — no
-matter how dead, stale, or superseded it has been declared.
+A surface is **reference-counted**. `gemd` holds one ref; each client that has it mapped
+holds one. It is freed when the count reaches zero and **not before** — no matter how
+dead, stale or superseded it has been declared.
 
 This makes resize a non-event:
 
@@ -370,51 +399,53 @@ This makes resize a non-event:
 
     client:   may still be mid-draw into the old buffer.  That is fine.  It finishes,
               harmlessly, into memory nobody will composite.  Then it maps the new id
-              and drops its ref on the old.        refcount -> 0 -> freed.
+              and drops its ref on the old.          refcount -> 0 -> freed.
 ```
 
-**Nobody blocks and nobody waits.** The in-flight draw is merely *wasted*, not
-*unsafe* — and wasting one frame during a resize is not a cost worth a round-trip to
-avoid. `gemd` still carries a generation number on each surface, but only so it can
-**discard** damage posted against a stale one; it never has to *synchronise* on it.
+**Nobody blocks and nobody waits.** The in-flight draw is merely *wasted*, not *unsafe* —
+and wasting one frame during a resize is not worth a round-trip to avoid. `gemd` still
+carries a generation number per surface, but only so it can **discard** damage posted
+against a stale one; it never has to *synchronise* on it.
 
-And it is not a resize mechanism. It is the buffer lifetime rule, and the same
-refcount covers:
+And this is not a resize mechanism. It is the buffer lifetime rule, and the same counter
+covers three separate bugs:
 
 | | |
 |---|---|
 | **resize** | the old buffer outlives the client's in-flight draw |
 | **window closed while `gemd` is mid-composite** | `gemd`'s own ref keeps it alive until the composite ends |
-| **app died with `gemd` still holding its pixels** | the dead client's ref is dropped; `gemd`'s keeps it valid |
+| **app died while `gemd` still holds its pixels** | the dead client's ref is dropped; `gemd`'s keeps the memory valid |
 
-Three bugs, one counter.
-
-**What it does not fix, and is not pretending to: tearing.** A client can be painting
-frame N+1 into a buffer `gemd` is compositing frame N from. Refcounting is *lifetime*,
-not *exclusion*. The options are a per-window double-buffer, or accepting it; that is
-a separate decision and it is in §10.
+**What it does not fix, and does not pretend to: tearing.** A client can be painting frame
+N+1 into a buffer `gemd` is compositing frame N from. Refcounting is *lifetime*, not
+*exclusion*. That is a separate decision — §12.
 
 ---
 
-## 10. Not yet decided
+## 12. Not yet decided
 
-Honest list. These are the places where someone will have to make a call.
+The honest list. Someone will have to make a call on each.
 
-1. ~~Breaking a grab~~ — **closed.** It times out, on the liveness clock (§8). The
-   only remaining choice is the two constants (2s / 7s are a guess; `gemd` should make
-   them tunable and we should feel them on real hardware).
-2. ~~Who owns the menu bar when the desktop is active~~ — **closed by §3.** The
-   desktop is an app; when it is active, its menu is the menu.
-3. ~~Resize~~ — **closed: refcount the buffers** (§9a). No handshake, no round-trip.
-4. **Tearing.** Refcounting gives a buffer's *lifetime*, not *exclusive access*. A
-   client may paint frame N+1 while `gemd` composites frame N. Per-window
-   double-buffer, or accept it? Costs another surface per window if we care.
-5. **Whether `form_alert` is really system-modal or app-modal.** GEM says system.
-   With multiple apps, system-modal means one app can hold the machine hostage with a
-   dialog. Probably app-modal, which is a *semantic* change to a GEM call — the first
-   one we would be making, so it deserves an argument.
+1. **Tearing.** Refcounting (§11) gives a buffer's lifetime, not exclusive access — a
+   client may paint frame N+1 while `gemd` composites frame N. Per-window double-buffer,
+   or accept it? Costs one more surface per window if we care.
+2. **`form_alert`: system-modal or app-modal?** GEM says *system*. With multiple apps,
+   system-modal means one app can hold the whole machine hostage behind a dialog. It
+   probably has to become **app-modal** — which would be the first *semantic* change to a
+   GEM call rather than an implementation one, so it deserves an argument rather than a
+   quiet decision.
+3. **The liveness constants.** 2 s to the busy cursor and 7 s to grab revocation (§9) are
+   a guess. They should be tunable, and felt on real hardware.
 
-Note that **none of these can freeze the machine any more.** That property was won by
-§8's liveness clock and §3's separation of `gemd` from the desktop, and it should be
-defended: any future addition that lets one client stall another is a regression, not
-a feature.
+### Closed, and worth not reopening
+
+- ~~Breaking a grab held by a wedged app~~ — it times out, on the liveness clock (§9).
+- ~~Who owns the menu bar when the desktop is active~~ — the desktop is an app; when it is
+  active, its menu is the menu (§4).
+- ~~Resize racing the shm reallocation~~ — refcount the buffers (§11). No handshake, no
+  round-trip.
+
+> **None of the open items can freeze the machine.** That property was won by §9's
+> liveness clock and by §4's separation of `gemd` from the desktop, and it should be
+> **defended**: any future addition that lets one client stall another is a regression,
+> not a feature.

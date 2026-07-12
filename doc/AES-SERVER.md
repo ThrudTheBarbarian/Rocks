@@ -2,7 +2,7 @@
 
 **Problem.** `aes/window.c` keeps the window list in `static awin g_w[MAXW]`, and a
 `.so`'s writable data is per-process (COW). So every process linking `libGEM.so`
-gets its *own* window list, z-order, desktop and VDI workstation. Today only
+gets its *own* window list, z-order, desktop background and VDI workstation. Today only
 `aesdesk` calls `aes_init`, so nothing has noticed — but a second GEM app would get
 a **private AES** drawing to the same framebuffer: two window managers, unshared
 z-order, duelling menu bars.
