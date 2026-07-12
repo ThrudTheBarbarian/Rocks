@@ -62,9 +62,10 @@ memory. The input device. The syscall ABI, exported as real symbols from
 **Must never.** Care about windows. XTOS has no concept of a window, and should not
 grow one — that is `gemd`'s entire job, and `gemd` is an ordinary process.
 
-**Currently owed.** `libxtos.so` is built without `-g`, so it carries no DWARF and
-xtc cannot type it (see `spikes/RESULTS.md`). Adding `-g` — as `libGEM` already does
-— removes a hand-mirrored struct from every xtc program.
+**Settled.** `libxtos.so` is now built with `-g`, so xtc can type it through DWARF and
+no longer has to hand-mirror `os_fbinfo` (see `spikes/RESULTS.md` for why guessing a
+struct size is not survivable: a hand-guessed `sizeof(theme)` smashed the heap — it is
+19502 bytes).
 
 ---
 

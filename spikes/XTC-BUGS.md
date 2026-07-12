@@ -1,134 +1,292 @@
-# Two xtc bugs found while spiking the Xtg toolkit
+# xtc: findings from building Xtg
 
-Both block an AppKit-style framework. Both have minimal reproducers here. Neither is
-a `.so` bug — **the shared-library boundary itself works** (proved by `Spike4`).
+Everything found while building **Xtg** — an AppKit-style UI toolkit in xtc, over
+libGEM, running on XTOS/arm9. Xtg is a deliberately demanding client: it subclasses
+library classes across a `.so` boundary, is called *back* by C (the AES), leans on ARC
+and `weak:`, and holds hundreds of live objects. It is meant to find the sharp edges.
+
+**Status at a glance.**
+
+| | | |
+|---|---|---|
+| **A** | `--emit-lib` devirtualises exported methods | ✅ fixed (phase-586) |
+| **B** | implicit self-calls devirtualised | ✅ fixed (phase-585) |
+| **C** | unknown struct member = note, store dropped | ✅ fixed (phase-592) |
+| **E** | `&Class.staticMethod` unsupported, only a note | ✅ fixed (phase-590) |
+| **F** | non-weak `^` is a silent UAF | ✅ fixed (phase-594/595) |
+| **D** | anonymous enum constants | ✅ xtc side fixed (phase-593) — **remaining half is one flag on libGEM's build, see §1** |
+| **1** | **weak-reference table: capped, and O(N) on every store and every dealloc** | 🔴 **OPEN — the one that blocks Xtg at scale** |
+| **2** | `-L` absent from `xtc --help` | 🟡 open (doc) |
+| **3** | gcc temp object name leaks into the `.so` | 🟡 open (cosmetic; breaks reproducible builds) |
+| **4** | cross-`.so` trampoline identity for `^` | ❓ open, unexamined by me |
+| **5** | arrays of class instances go silent | ❓ open (yours) — I can reproduce it if useful |
+
+**Verified against xtc `69ec25d`:** all four Xtg programs pass on the real XTOS loader
+(`demo`, `nibdemo`, `test_spine` 14/14, `test_window`). A–F are confirmed fixed from
+this side.
 
 ---
 
-## Bug B — an implicit self-call is devirtualised  ⟵ the serious one
+---
 
-**Not a library bug. No `.so` involved. Affects every target.**
+# 1. 🔴 The weak-reference table
 
-`selfcall.xt`, run on arm64 (`xtc -A arm64 selfcall.xt -o selfcall && ./selfcall`):
+**This is the one I care about.** Not because it is wrong today — it *works* — but
+because Xtg is precisely the workload it cannot carry, and the current shape has three
+independent problems, only one of which is the cap.
+
+## What it does now
 
 ```c
-class A {
-    u16 f(void)       { return 1; }
-    u16 viaSelf(void) { return f() * 10; }        // implicit self-call
-    u16 viaThis(void) { return self.f() * 10; }   // explicit self
+static struct { void *obj; void **slot; } _xtc_weak_tbl[1024];   /* 64 on m68k */
+
+void _xtc_weak_register(void **slot, void *obj) {
+    for (int i=0;i<1024;i++) if (_xtc_weak_tbl[i].slot==slot) { ...clear... }  // scan 1
+    if (!obj) return;
+    for (int i=0;i<1024;i++) if (!_xtc_weak_tbl[i].slot) { ...store...; return; }  // scan 2
+    FATAL("weak-reference table full");
 }
-class B : A { u16 f(void) { return 42; } }
 ```
 
+and `_xtc_weak_zero_for(obj)` scans the whole table on **every dealloc**.
+
+## Three problems, not one
+
+### (a) The cap is a static check on a dynamic quantity
+
+The table is sized in **instances**: one `weak:` field on a class costs one entry *per
+object*. Sema's overflow check counts **declarations**. Those are different numbers and
+no amount of care will reconcile them — **a static check cannot bound a dynamic
+quantity.** Halting loudly beats corrupting silently, but the real answer is not to
+have a limit.
+
+### (b) O(N) on every weak store
+
+Two full scans per assignment. Wiring a Rocks-sized UI — ~300 controls, each with one
+action — costs **300 × 2 × 1024 ≈ 600,000 iterations** at start-up, to store 300
+pointers.
+
+### (c) O(N) on every dealloc — *including objects with no weak refs at all*  ⟵ the worst one
+
+`_xtc_weak_zero_for` is called for **every** object destroyed and scans the entire
+table. Closing one Rocks window (say 500 objects in the view tree) costs
+**500 × 1024 ≈ 512,000 comparisons** — and 499 of those objects were never weakly
+referenced by anything.
+
+**This is the defect that bites even when you are far under the cap.** Every object in
+the program pays for a feature it does not use.
+
+## What Xtg actually costs
+
+| | entries |
+|---|---|
+| each `XGControl` with an action (`weak: XGAction^`) | 1 **per instance** |
+| each window's delegate | 1 |
+| each view's `nextResponder`… if it were weak | 1 per view |
+
+A Rocks-scale app is **hundreds of live entries**. So:
+
+- **m68k's 64 is dead on arrival** — a *single* moderately complex dialog exceeds it.
+- **1024 survives, but only just**, and (b)/(c) still make it quadratic in practice.
+
+## The proposal: delete the table
+
+Do not pick a bigger number. **Remove the number**, by threading an intrusive list
+through the weak slots themselves.
+
+- Every object header gains one word: `weak_head`.
+- A weak slot becomes **two** words: `{ referent, next_slot }`.
+
 ```
-b.f()       = 42    OK
-a.f()       = 42    OK   (through a base-typed pointer)
-b.viaSelf() = 10    BUG  -- A.viaSelf hard-called A.f, ignoring B's override
-b.viaThis() = 420   OK   -- self.f() dispatches correctly
+    register(slot, o):     slot.referent = o;
+                           slot.next = o.weak_head;      // O(1)
+                           o.weak_head = &slot;
+
+    overwrite(slot, new):  unlink slot from old.weak_head chain    // O(refs to that
+                           register(slot, new);                    //  object) ~ 1
+
+    dealloc(o):            for (s = o.weak_head; s; s = s.next) s.referent = 0;
+                           // objects with NO weak refs: one null test.  Free.
 ```
 
-So a bare `f()` inside a method body compiles to a direct call to the *lexically
-enclosing class's* implementation, rather than a vtable dispatch on `self`.
+Which fixes all three at once:
 
-**Why it matters:** this breaks the template-method pattern, which is the spine of
-any UI toolkit — a base `display()` that calls `drawRect()`, a base `mouseDown()`
-that calls `hitTest()`. It is also a silent wrong-answer bug, not a compile error.
+| | now | proposed |
+|---|---|---|
+| cap | 1024 / 64, and unbounded-able | **none** |
+| weak store | O(table) | **O(1)** |
+| dealloc, object with no weak refs | **O(table)** | **O(1)** — one null test |
+| dealloc, object with *k* weak refs | O(table) | O(k) |
+| heap allocation | none | **none** (the nodes *are* the slots) |
+| global table | 1024 × 2 words, always | **gone** |
 
-**Expected:** a self-call to a method that has (or could have) an override must go
-through the vtable, exactly as `self.f()` already does.
+**Cost:** one word per object header, and one extra word per `weak:` field. On 32-bit
+that is 4 bytes; on 6502, 2. Note the table it replaces is *already* 8 KB of static RAM
+on a 32-bit target (1024 × 2 words), so on any target with more than ~2000 objects the
+intrusive form is also **smaller**.
 
-**Workaround:** write `self.f()` everywhere. Easy to forget; easy to get silently wrong.
+For a weak `^` the slot becomes 3 words — `(recv, code, next)` — which is fine; weak
+bound-pointers are rare compared with objects.
+
+**And the sema overflow check should then be deleted, not fixed.** With no cap there is
+nothing to check, and (a) says it could never have been sound anyway.
+
+## If the header word is unacceptable on 6502
+
+The fallback is a **growable hash side-table** keyed on the object pointer: no header
+cost, no cap, O(1) average register, O(1) average dealloc lookup. It needs a heap and a
+rehash, and it is strictly more machinery than the intrusive list — but it is still
+strictly better than a fixed array, and it fixes (a), (b) and (c) too.
+
+**What I would not do is raise 64 to 512 and move on.** That trades a hard failure for
+a rarer hard failure, and leaves (c) — the one that taxes every object in the
+program — completely untouched.
 
 ---
 
-## Bug A — `--emit-lib` devirtualises exported methods
+# 2. 🟡 `-L` is not in `xtc --help`
 
-Virtuality is inferred whole-program: *"methods that are never overridden keep a
-direct JSR"*. Under `--emit-lib` the program is **not** whole — the overrides live in
-a client that does not exist yet. So a library method nothing overrides *inside the
-library* gets no vtable slot, and an app's override can never be reached.
+`#import <GEM>` is a **library metadata import**: xtc resolves `libGEM.so` on a
+*library* path, reads its `.dynsym` ∩ DWARF, and hands back the real C types. It is the
+single most valuable thing xtc does for this project — it supplies `theme` at its true
+19502 bytes (a hand-guessed size smashed the heap; see `RESULTS.md`) and `OBJECT` laid
+out exactly as libGEM sees it.
 
-`Spike1.xt` (library) + `app1.xt` (app), run with
-`make xtcrun XTC_SO=app1.so` in `fpga-xt/loader`:
+The flag that drives it is **`-L`**, and it **does not appear in `xtc --help`**.
+
+The failure mode compounds it. Reaching for `-I` (the obvious guess) gives:
 
 ```
-direct   area()      = 42    OK   (app-side dispatch)
-lib      describe()  = 10    BUG  (library saw area() == 1, the base)
-lib      render()    = 11    BUG
+error: Cannot find include file 'GEM' (searched: '.', ..., '/opt/xtc/support/arm9/lib')
 ```
 
-Add an override *inside* the library and `area()` gains a slot — then the library's
-`v.area()` correctly reaches the app's `42`. That is the proof of the cause.
+which says *include file*, lists only the include paths, and gives no hint that a
+different flag with a different search path exists. I lost an hour, having already used
+the feature successfully once.
 
-**Expected:** under `--emit-lib`, every public method of an exported class must be
-given a vtable slot. Whole-program devirtualisation is unsound when the program is
-not whole. (A `final` keyword could restore the optimisation opt-in later.)
-
-**Workaround:** declare a dummy subclass inside the library that overrides every
-method a client might override, purely to force slot allocation. Grim.
+One line in `--help`. Ideally the error adds: *"`<GEM>` is a library import; set the
+library path with `-L`."*
 
 ---
 
-## Proof the boundary is fine
+# 3. 🟡 A gcc temp object name leaks into the `.so`
 
-`Spike4.xt` + `app4.xt` apply both workarounds — a forced slot **and** `self.` — and
-the library reaches the app's override across the `.so`:
+Two clean builds of identical source produce different binaries. They differ by
+**8 bytes** — a gcc temp object name (`ccTxhJ1j.o` vs `cchJQb8F.o`) in the symbol
+table. The **code is identical**.
 
-```
-lib render(app subclass) = 462  (expect 42+420=462)
-PASS: with a slot AND self., the .so boundary works
-```
-
-So: fix these two and an app can subclass a library class, override a method, and
-have the *library* call it back. That is all Xtg needs.
+Cosmetic, but it defeats reproducible builds and content-addressed caching, and it
+cost me real time: I spent a while believing codegen was non-deterministic, which is a
+very expensive thing to believe while debugging.
 
 ---
 
-## Bug C — assigning to a non-existent struct field is only a *note*
+# 4. ❓ Cross-`.so` trampoline identity for `^`
 
-Typo'd an imported C struct's field name and the compiler emitted:
+Raised when the `^` design was settled, never resolved: the `@`→`^` widening uses **one
+trampoline per signature**, with the function pointer carried in `recv`. If a client
+`.so` and `libXtg.so` each instantiate the trampoline for the same signature, do they
+agree on its identity — or does `-Wl,-Bsymbolic` (or its absence) give two distinct
+trampolines, so that comparing two `^` values for equality gives the wrong answer
+across the boundary?
 
-```
-gemobj.xt:16:62: note: ABANDON|lowering: struct '$anon_266581' has no field 'ob_width'
-```
-
-…and **still produced a .so**. A note, not an error. The store is silently dropped.
-
-For DWARF-imported C structs this is dangerous: a field-name change in the C header
-turns into silently-lost writes rather than a build failure. Should be an error.
+Xtg has not yet hit this because `libXtg.so` is not yet a real `--emit-lib` artefact —
+programs still `#import` its sources. **It will hit it the moment that changes**, which
+is the next structural step. Worth settling before then.
 
 ---
 
-## Gap D — anonymous enum constants  ✅ SOLVED (one flag, on libGEM's build)
+# 5. ❓ Arrays of class instances go silent
 
-`#import <GEM>` brings in structs and functions but **not** the enumerators of an
-unnamed enum — and `aes.h` declares *every* constant that way:
+Yours: `new B[1200]` + `bs[i].set(...)` → no output, no diagnostic. Unexamined.
+
+Flagging that **Xtg will hit this**: a view tree is a flat `OBJECT[]` with a parallel
+array of view objects, and a Rocks-scale resource is hundreds of entries. If it is a
+live bug, I am a natural place to reproduce it against real code — say the word.
+
+---
+
+---
+
+# Fixed — confirmed from this side
+
+Verified against xtc `69ec25d`; all four Xtg programs pass on the loader.
+
+- **A — `--emit-lib` devirtualisation.** Virtuality was inferred whole-program, but
+  under `--emit-lib` the program is not whole: the overrides live in a client that does
+  not exist yet. Fixed (phase-586). This was *the* structural blocker — the entire
+  toolkit rests on an app subclassing a library class and the **library** calling the
+  override back.
+- **B — implicit self-calls.** A bare `f()` in a method body hard-called the lexically
+  enclosing class's implementation, silently ignoring an override. It broke the
+  template-method pattern, which is the spine of any UI toolkit (a base `display()` that
+  calls `drawRect()`). Fixed (phase-585), plus a `final` keyword to opt back into the
+  direct call.
+- **C — unknown struct member was a *note***, and the store was silently dropped. For
+  DWARF-imported C structs that turned a header rename into lost writes rather than a
+  build failure. Fixed (phase-592).
+- **E — `&Class.staticMethod`** was a *note* and produced a bad pointer. Fixed
+  (phase-590), and superseded by `^` anyway.
+- **F — non-weak `^` was a silent use-after-free.** The sharp part was not the dangling
+  receiver but that **`if (action)` still tested true** afterwards — the truth test is
+  on `code`, and only `recv` was dead, so the one guard a programmer writes was the
+  guard that did not work. Fixed (phase-594/595): a stored `^` always auto-zeroes.
+
+## `^` bound methods: the headline result
+
+`^` did more than was asked. **`weak: act_t^`** turns out to satisfy two contracts that
+are really one contract:
+
+- **AppKit target/action** — a control must not own its controller, or
+  `window → viewtree → button → action → window` is a retain cycle. AppKit needs a
+  *separate* weak `target` field to break it. Here it is one field.
+- **The optional delegate** — `if (h)` reads as *"not implemented"* **and** *"the
+  delegate has died"*, same syntax, no extra machinery. Exactly the
+  `-windowShouldClose` question that started the whole thread.
+
+In Xtg it deleted a downcast preamble from every action:
 
 ```c
-enum { G_BOX=20, G_TEXT=21, ..., G_USERDEF=24, G_CICON=33 };
-enum { OF_NONE=0x00, OF_SELECTABLE=0x01, ..., OF_LASTOB=0x20 };
+-  b.setTarget(self, &onClick);                    // free fn + a typed pair
+-  void onClick(Object@ t, XGControl@ sender) {
+-      Controller@ me = (Controller@ ?)t;          // recover self by downcasting
+-      if (me == (Controller@)0) { return; }
+-      me.clicks = me.clicks + (u16)1;  ...
+
++  b.setAction(&self.onClick);                     // a bound method
++  void onClick(XGControl@ sender) {               // an ordinary method
++      clicks = clicks + (u16)1;  ...
 ```
 
-So `xtg/XGGem.xt` hand-mirrors 49 constants — a hand-copy that **silently drifts** when
-`aes.h` changes. A wrong `G_USERDEF` does not fail to build; it draws the wrong widget.
+**Non-obvious constraint, recorded so it stays true:** a widened plain function carries
+its code pointer in `recv`, so weak-zeroing cannot simply null the `recv` — it must zero
+the **pair**, or a dead weak bound-pointer would still test true and jump through null.
+The implementation gets this right today.
 
-**The xtc side is fixed (phase-593).** The remaining half was thought to be blocked on
-`aes.h` — *"the DWARF genuinely doesn't exist unless the enum type is used in an
-exported signature"*. **It is not blocked.** The DWARF is missing because of a **gcc
-default**, not because the enum is anonymous:
+## D — anonymous enum constants: the xtc half is done; the other half is a build flag
 
-> `-feliminate-unused-debug-types` — *"Normally, when producing DWARF output, GCC
-> avoids producing debug symbol output for types that are nowhere used in the source
-> file being compiled."* **On by default.**
+`#import <GEM>` brought in structs and functions but not the enumerators of an unnamed
+enum — and `aes.h` declares *every* constant that way. So `xtg/XGGem.xt` hand-mirrors
+**49 constants**, a hand-copy that silently **drifts**: a wrong `G_USERDEF` does not
+fail to build, it draws the wrong widget.
 
-`aes.h`'s enums are declared and never used *as a type*, so gcc drops them. The
-documented switch to keep them is one flag on **libGEM's build**:
+xtc is fixed (phase-593). The remaining half was believed blocked on `aes.h` — *"the
+DWARF genuinely doesn't exist unless the enum type is used in an exported signature"*.
+**It is not blocked, and `aes.h` does not change.** The DWARF is missing because of a
+**gcc default**:
+
+> `-feliminate-unused-debug-types` — *"GCC avoids producing debug symbol output for
+> types that are nowhere used in the source file being compiled."* **On by default.**
+
+`aes.h`'s enums are declared and never used *as a type*, so gcc drops them. Using an
+*enumerator* does not count as using the *type*, which is why the constants vanish even
+though `aes/*.c` reference them constantly. One flag on **libGEM's build**:
 
 ```make
 CFLAGS += -g -fno-eliminate-unused-debug-types
 ```
 
-### Measured, on the real `aes.h` (arm-none-eabi-gcc)
+Measured against the real `aes.h` with `arm-none-eabi-gcc`:
 
 | | plain `-g` | `+ -fno-eliminate-unused-debug-types` |
 |---|---|---|
@@ -136,222 +294,48 @@ CFLAGS += -g -fno-eliminate-unused-debug-types
 | `.text` / `.data` / `.rodata` / `.bss` | — | **byte-identical** |
 | `.debug_info` + `.debug_str` | — | ~+10 KB per TU (`.debug_str` dedups at link) |
 
-**All 49/49** of the constants `XGGem.xt` mirrors are recovered — `G_USERDEF`,
-`OF_LASTOB`, `OS_DISABLED`, `W_NAME`, `WM_REDRAW`, `MN_SELECTED`, `WF_WORKXYWH`, every
-one. Nothing needs naming, nothing needs to appear in an exported signature, and
-`aes.h` does not change.
+**All 49/49** constants Xtg mirrors come back — `G_USERDEF`, `OF_LASTOB`, `OS_DISABLED`,
+`W_NAME`, `WM_REDRAW`, `MN_SELECTED`, `WF_WORKXYWH`, every one. Zero runtime cost: the
+ALLOC sections are identical and only debug sections grow, and debug sections are not
+loaded.
 
-Zero runtime cost: the ALLOC sections are identical, only debug sections grow — and
-debug sections are not loaded.
-
-**Action:** add the flag to libGEM's build, then delete `xtg/XGGem.xt`.
-
-(Same question applies to `libxtos.so`, which still needs `-g` at all — see the
-standing ask. If its constants are also anonymous enums, it wants the same flag.)
-
----
-
-## Gap E — `&Class.staticMethod` is not supported (and is only a *note*)
-
-```c
-b.setTarget(self, &Controller.onClick);
-// note: ABANDON|lowering: & on member-access requires a struct-typed base
-```
-
-A **note**, and the build succeeds with a bad pointer. Same silent-wrong-code family
-as Gap C. Target/action must therefore use a free function today:
-
-```c
-void onClick(Object@ t, XGControl@ sender) { ... }   // free fn: works
-b.setTarget(self, &onClick);
-```
-
-The `^` bound-method work supersedes this entirely (`&controller.onClick`), which is
-exactly why it is the highest-value language ask. Until then, `&` on a member should
-at least be an **error**, not a note.
-
-> **LANDED** (`ef5837e`, Task #590). `^` works, and so does `@`→`^` widening. See the
-> next section — it delivers more than was asked for, and carries one sharp edge.
-
----
-
-## `^` bound methods: landed, and better than the ask
-
-`spikes/bound_weak.xt`, `spikes/bound_unowned.xt` (arm64):
-
-| | |
-|---|---|
-| `act_t^ h = &t.onClick;` | **works** — receiver captured, virtual dispatch |
-| `act_t^ p = &plainFn;` | **works** — `@`→`^` widening, a plain fn fills a bound slot |
-| `if (h)` on a null bound ptr | **works** — tests false |
-| `sizeof(act_t^)` | 16 on arm64 — two words, `(recv, code)`, as designed |
-
-### The prize: `weak: act_t^`
-
-It parses **and it auto-zeroes**:
-
-```
-bound, target alive:
-  waction tests TRUE  -> calling
-    ping tag=7
-    Callee(7) dealloc          <- last strong ref released
-target released:
-  waction tests FALSE -> target is gone, correctly skipped
-```
-
-One feature, two contracts, and they turn out to be the same contract:
-
-- **AppKit target/action.** A control must not keep its target alive, or
-  `window → viewtree → button → action → window` is a retain cycle. AppKit needs a
-  separate weak `target` field to break it. Here it is one field.
-- **The optional delegate.** `if (h)` reads as *"not implemented"* **and** *"the
-  delegate has died"* with the same syntax and no extra machinery — exactly the
-  `windowShouldClose` question that started this.
-
-`XGControl` can drop its hand-rolled `(target, action)` pair for a single
-`weak: XGAction^`.
-
-### Gap F — a **non**-weak `^` is a silent use-after-free
-
-`spikes/bound_unowned.xt`:
-
-```c
-Holder@ h = new Holder();
-{
-    Callee@ c = new Callee((i32)1);
-    h.action = &c.ping;         // plain (non-weak) act_t^ field
-}                               // c's last strong ref dies here
-h.fire();                       // <- calls through a dangling receiver
-```
-
-```
-  Callee(1) DEALLOC
-   scope exited. firing:
-  ping from tag 0               <- read freed memory, printed garbage, did not crash
-```
-
-So a bare `^` field is **unowned and non-zeroing**: it neither retains its receiver
-nor notices when the receiver dies. It is not a dangling *pointer* in the usual sense
-either — `if (action)` still tests **true**, because the truth test is on `code`, and
-`code` is fine. Only `recv` is dead.
-
-That last detail is the sharp part. The one guard a programmer would reach for is the
-guard that does not work.
-
-**The fix is NOT "make `^` retain by default".** That was my first suggestion and it
-is wrong. Almost every `^` in UI code is a **back-reference** — a control calling into
-its controller, a window calling into its delegate — and those are precisely the edges
-that close a cycle:
-
-```
-    window -> viewtree -> button -> action^ -> controller -> window
-    window -> delegate^ -> controller -> window
-```
-
-Retain-by-default would mean *every* realistic use needs `weak:`, so the default would
-be wrong for the dominant case. Leak-by-default is not obviously better than
-UAF-by-default; it is just a different wrong.
-
-**The defensible complaint is narrower and sharper: the truth test lies.**
-
-```c
-XGAction^ a = &c.onClick;    // non-weak
-// ... c is deallocated ...
-if (a) { a(sender); }        // tests TRUE.  Calls through a dead receiver.
-```
-
-`if (a)` is *the one guard a programmer writes*, and it passes — because the test is on
-`code`, and `code` is fine; only `recv` is dead. The failure is invisible at exactly
-the point where someone was being careful. And it **cannot** be fixed for an unowned
-pointer, because an unowned pointer has no way to learn its receiver died.
-
-So the ask is not about ownership defaults. It is that **`^` should never be silently
-unowned**:
-
-1. **Require the ownership to be spelled on a `^` field** — `weak:` or `unowned:` —
-   so nobody acquires a dangling receiver by omission. A local `^` can keep the
-   current behaviour; it is fields that outlive their targets.
-2. Failing that, **warn** when a non-`weak` `^` field is assigned a bound method whose
-   receiver is an ARC object.
-
-`weak:` is the right default *for a UI toolkit* regardless, and `XGControl` uses it.
-The problem is only that today the safe form is the one you have to know to ask for,
-and the unsafe form fails silently past its own guard.
-
-Note the interaction with widening: a widened plain function carries its code pointer
-in `recv`, so "zero the recv" cannot be the weak-zeroing implementation — it must zero
-the **pair** (or at least `code`), or a zeroed weak bound-pointer would still test true
-and jump through null. The implementation evidently already gets this right; it is
-recorded here because it is the non-obvious constraint on any future change.
+**Action:** add the flag to libGEM's build; then delete `xtg/XGGem.xt`.
+(`libxtos.so` now has `-g`; if its constants are anonymous enums too, it wants the same
+flag.)
 
 ---
 
 ---
 
-## Gap G — `-L` is not in `xtc --help`
+# Cleared — things I suspected and disproved
 
-`#import <GEM>` is a **library metadata import**: xtc resolves `libGEM.so` on a
-*library* path, reads its `.dynsym` ∩ DWARF, and gives you the real C types. It is the
-single most valuable thing xtc does for this project — it is what supplies `theme` at
-its true 19502 bytes and `OBJECT` laid out exactly as libGEM sees it.
+Recorded because I nearly reported all of them, and two of them turned out to be my own
+bugs. Kept as a record of what the compiler was **not** guilty of.
 
-The path it searches is set by **`-L`**, and `-L` **does not appear in `xtc --help`**.
-
-The failure mode is also misleading: reaching for `-I` (the obvious guess) produces
-
-```
-error: Cannot find include file 'GEM' (searched: '.', ..., '/opt/xtc/support/arm9/lib')
-```
-
-— which says *include file*, names only the include paths, and gives no hint that a
-different flag and a different search path exist. I lost an hour to it, and I had
-already used the feature successfully once.
-
-One line in `--help` fixes it. Ideally the error would add: *"`<GEM>` is a library
-import; set the library path with `-L`."*
-
-While chasing an Xtg DATA-ABORT I suspected three compiler causes and **disproved all
-three** on the loader (`spikes/weakglobal.xt`, `spikes/addrfn.xt`):
-
-- reading a `weak:` global from a callback entered from C — **works**
-- writing a `weak:` global from a callback entered from C — **works**
-- `&freeFunction` taken inside a class method — **works**
-
-The fault was almost certainly mine: `objc_set_userdraw` is a single global hook, so
-it fires for *any* `objc_draw` — including AES-internal trees — and a hook keyed off
-"the window currently drawing" can be handed an object index that is not its own.
-Passing the window through the hook's own `ud`, re-registered per draw, is exact and
-removes the class of bug entirely.
-
-### Cleared #2: "the AES never calls our content callback"
-
-A second, longer hunt — through PIC relocations, the `.so` symbol table, `--emit-lib`
-devirtualisation and (briefly, and wrongly) a suspected non-deterministic codegen —
-that ended at **my own bug**, again.
-
-`XGApplication.boot()` declared the back-buffer surface as a **stack local** and passed
-its address to `vdi_init`, which **stores the pointer** rather than copying the struct
-(`gem/vdi/core.c`: `ws_tab[0].target = default_target`). When `boot()` returned, the
-VDI was holding dead stack.
-
-It presented as a *callback* problem because `wind_redraw_area()` opens with
-
-```c
-    gfx_surface *d = vdi_screen_target(); if(!d) return;
-```
-
-so the redraw bailed out before it ever reached `draw_one() -> W->draw`. Every argument
-to `wind_content()` was correct — I verified the relocated function pointer, the handle
-and the `ud` on hardware — and none of that mattered.
-
-Two lessons worth keeping:
-
-1. **`test_window.xt` could not catch it**, because its surface lives in `main()`, which
-   never returns. A test that keeps everything alive cannot detect a lifetime bug. The
-   toolkit was broken in exactly the shape the test was blind to.
-2. **Trust the build.** Much of the confusion was a `.so` that had silently failed to
-   rebuild (Gap H) while the loader kept running the previous binary, so edits appeared
-   to do nothing — and "appears to do nothing" is indistinguishable from a codegen bug
-   if you are not checking exit codes.
-
-No compiler bug. Recorded here because I nearly reported one.
+- **`weak:` global read/written from a C-entered callback** — works
+  (`spikes/weakglobal.xt`).
+- **`&freeFunction` taken inside a class method** — works (`spikes/addrfn.xt`).
+- **"The AES never calls our content callback."** Chased through PIC relocations, the
+  `.so` symbol table, and (briefly, wrongly) suspected non-deterministic codegen. It was
+  **my bug**: `XGApplication.boot()` declared the VDI back-buffer as a **stack local**
+  and passed its address to `vdi_init`, which *stores the pointer* rather than copying
+  the struct. `boot()` returned; the VDI held dead stack. It presented as a *callback*
+  failure only because `wind_redraw_area()` opens with
+  `gfx_surface *d = vdi_screen_target(); if (!d) return;` — so the redraw bailed out
+  before ever reaching `W->draw`. Every argument to `wind_content()` was correct.
+  > Two lessons kept: **`test_window.xt` structurally could not catch it**, because its
+  > surface lives in `main()`, which never returns — a test that keeps everything alive
+  > cannot detect a lifetime bug. And **trust the build**: much of the confusion was a
+  > `.so` that had silently failed to rebuild while the loader kept running the previous
+  > binary, and "my edit had no effect" is indistinguishable from a codegen bug if you
+  > are not checking exit codes.
+- **"Non-deterministic codegen."** Two clean builds, different MD5s — but they differ by
+  8 bytes of gcc temp filename. Code identical. (Now filed as the cosmetic §3.)
+- **`<stdio.h>` missing from the arm9/m68k PIC stub**, so `weak:` would not compile.
+  Real at `279faa2`, which is what I had built; **fixed upstream concurrently** — HEAD
+  includes `<stdio.h>` at all three sites. Not a live bug. Mentioned only because the
+  *compounding* failure is worth knowing: `xtc` exits non-zero, but a build script that
+  swallows that leaves the loader running the **previous** `.so`, so the symptom is "my
+  change had no effect" rather than "my build failed".
+- **A 68030 codegen bug.** There wasn't one. I was running a 68030 binary on a 68000
+  core.
