@@ -123,6 +123,33 @@ they should not be taken on trust:
 | **`plv_alloc` does not exist.** | It is specified in `docs/Zynq/memory-map.md` (`0x3800_0000`, 128 MB, *"GEM window surfaces"*) and implemented **nowhere** — not in the live kernel, and not even in the dead `vitis` tree. §12 and §13 both assume it. |
 | **`NSHM = 16`** surfaces, machine-wide. | One per window, plus one menu strip per app (§10), plus resize churn. |
 | **No `/dev/blitter`, and no blitter driver at all.** | The live kernel has **zero** blitter code. The only driver is `vitis/xtos/src/blitter.c` — the dead tree. §13 is entirely unbuilt. |
+| **`MAXSEC = 12`** — per-space L2 slots, **statically** allocated (`space_l2pool[NSPACE][MAXSEC][256]`), and already consumed by libc + each shared lib's data + the program's own data. | **A ~2–3 window cap.** An 8.5 MB surface needs **9 sections** of VA on its own. And it strangles **`gemd` first**: a client maps *its own* one or two surfaces, while **`gemd` maps every surface in the system** — so `gemd`'s L2 slots are the scarce resource, and `gemd` is the process that must not run out. |
+
+#### Three hard caps, and all of them had to fall before window #4
+
+| | cap | bites |
+|---|---|---|
+| `SHM_MAXPG` | **1 MB per surface** | every window — a 640×400 is already 1.02 MiB |
+| `NSHM` + no unmap | **16 surfaces, *ever*** (ids are never reclaimed — below) | after 16 window *opens*, for the whole uptime of `gemd` |
+| `MAXSEC = 12` | **~2–3 windows** of VA per space | **`gemd` first** — it maps *every* surface |
+
+#### Why `MAXSEC` cannot simply be raised
+
+`NSPACE = 64`, and one L2 table is 1 KB:
+
+```
+    MAXSEC = 12  ->    768 KB static      <- what dynamic L2 recovers
+    MAXSEC = 32  ->  2,048 KB  (+1.3 MB)
+    MAXSEC = 64  ->  4,096 KB  (+3.3 MB)
+```
+
+**The cost is paid ×64 — by every space — while the need is concentrated in one process.**
+`gemd` alone may want 30+ sections; the other 63 spaces want a handful. A static array is the
+wrong shape for a distribution that skewed, and **no value of `MAXSEC` is both cheap and
+sufficient.** Dynamic L2 charges each space what it actually uses, and `gemd` is the only one
+that grows.
+
+That is why dynamic L2 is a **prerequisite**, not an optimisation.
 
 #### The `sys_shm_unmap` gap is a hard stop, not a leak
 
@@ -146,7 +173,21 @@ That is not a leak that degrades gracefully; it is a hard stop after sixteen win
 `sys_shm_unmap` an **absolute phase-1 blocker**, not a refcounting nicety.
 
 None of this is a design problem — §12 and §13 are right, and the memory map already
-reserves the region. It is **unbuilt kernel**.
+reserves the region. It is **unbuilt kernel**, and it is being built:
+
+#### The kernel plan (agreed, in order)
+
+| | | unblocks |
+|---|---|---|
+| **0** | **flags on `shm_create`** — take the ABI headroom now | everything after this, without an ABI break |
+| **1** | **dynamic L2 tables** — kills `MAXSEC`, recovers 768 KB | **prerequisite.** Without it `gemd` stops at 2–3 windows |
+| **2** | **variable-size shm** — VA allocated at create, window moved out of the pool's identity range, dynamic page list, `NSHM = 256` | the 1 MB cap, the 16-surface cap |
+| **3** | **`sys_shm_unmap`** | §11 refcount, §12 resize/settle, §13 in-flight blit. **`gemd` phase 1 is unblocked here.** |
+| **4** | **`plv_alloc` + `XT_SHM_CONTIG`**, section-mapped | §13 — phase 2 |
+| **5** | **`/dev/blitter`** — handles, FIFO headroom, retire counter, per-process fairness | §13 — phase 2 |
+| **6** | reclaim ~31 MB of dead DDR (`POOL_FLOOR` drops once shm's VA window moves) | — |
+
+**Phase 1 (§14) needs 0–3. Phase 2 needs 4–5.** Item 6 is a bonus.
 
 **But do not file it all under phase 2.** Phase 1 keeps backing stores in ordinary *cached*
 OS-heap memory, so it genuinely escapes `plv`, contiguity, uncached discipline and
