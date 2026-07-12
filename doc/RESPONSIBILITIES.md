@@ -125,13 +125,26 @@ they should not be taken on trust:
 | **No `/dev/blitter`, and no blitter driver at all.** | The live kernel has **zero** blitter code. The only driver is `vitis/xtos/src/blitter.c` — the dead tree. §13 is entirely unbuilt. |
 | **`MAXSEC = 12`** — per-space L2 slots, **statically** allocated (`space_l2pool[NSPACE][MAXSEC][256]`), and already consumed by libc + each shared lib's data + the program's own data. | **A ~2–3 window cap.** An 8.5 MB surface needs **9 sections** of VA on its own. And it strangles **`gemd` first**: a client maps *its own* one or two surfaces, while **`gemd` maps every surface in the system** — so `gemd`'s L2 slots are the scarce resource, and `gemd` is the process that must not run out. |
 
-#### Three hard caps, and all of them had to fall before window #4
+#### Three hard caps — and they bite in an order that matters
 
-| | cap | bites |
+| order | cap | when it stops you |
 |---|---|---|
-| `SHM_MAXPG` | **1 MB per surface** | every window — a 640×400 is already 1.02 MiB |
-| `NSHM` + no unmap | **16 surfaces, *ever*** (ids are never reclaimed — below) | after 16 window *opens*, for the whole uptime of `gemd` |
-| `MAXSEC = 12` | **~2–3 windows** of VA per space | **`gemd` first** — it maps *every* surface |
+| **1st** | **`MAXSEC = 12`** — per-space L2 slots | **`gemd` dies at its third window.** |
+| 2nd | **1 MB per surface** (`SHM_MAXPG`) | every window — a 640×400 is already 1.02 MiB |
+| 3rd | **16 surfaces, *ever*** (`NSHM`, ids never reclaimed) | after 16 window *opens*, for `gemd`'s whole uptime |
+
+**`MAXSEC` is first, and that is the trap.** You would never *reach* `NSHM = 16`, and you would
+never see the unmap leak. So fixing them in the obvious order — raise `NSHM`, lift the 1 MB
+cap — produces a system that **looks fixed and then fails at window three**, with:
+
+```c
+    perproc_l2():   if (space_l2n[idx] >= MAXSEC) return 0;    /* exhausted */
+    vm_shm_map():   uint32_t *l2 = perproc_l2(...);
+                    if (!l2) return 0;                          /* the map simply FAILS */
+```
+
+— a `shm_map` returning VA 0, with **nothing in the shm code to blame.** Finding this before
+anyone started is worth more than the fix.
 
 #### Why `MAXSEC` cannot simply be raised
 
@@ -144,12 +157,17 @@ they should not be taken on trust:
 ```
 
 **The cost is paid ×64 — by every space — while the need is concentrated in one process.**
-`gemd` alone may want 30+ sections; the other 63 spaces want a handful. A static array is the
-wrong shape for a distribution that skewed, and **no value of `MAXSEC` is both cheap and
-sufficient.** Dynamic L2 charges each space what it actually uses, and `gemd` is the only one
-that grows.
+`gemd` maps *every* surface (ten 2 MiB windows ≈ 30 sections); the other 63 spaces want a
+handful. Paying 4 MB so that 63 processes can each have 64 slots they will never use is the
+wrong trade, and **no value of `MAXSEC` is both cheap and sufficient.**
 
-That is why dynamic L2 is a **prerequisite**, not an optimisation.
+**So the fix is neither knob — it is to make L2 tables dynamic.** Allocate them from the page
+pool on demand (each L2 is 1 KB; **four fit in a page**). Then the cost is proportional to
+*actual mappings* rather than `NSPACE × MAXSEC`: `gemd` maps forty surfaces, an idle process
+costs **zero**, the 768 KB static array is recovered, and `NSHM = 256` becomes genuinely free.
+
+That is why dynamic L2 is a **prerequisite for phase 1**, not an optimisation. Without it
+`gemd` cannot map its windows at all.
 
 #### The `sys_shm_unmap` gap is a hard stop, not a leak
 
