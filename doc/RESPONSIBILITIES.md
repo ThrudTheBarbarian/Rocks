@@ -88,9 +88,43 @@ non-C language can reach it.
 - Input events arrive in order, and only to the process that asked for them.
 - A dead process's shm mappings are reclaimed.
 
+**Verified present** (`nm -D libxtos.so`), because the whole architecture rests on these and
+they should not be taken on trust:
+
+```
+    sys_shm_create   sys_shm_map                     the backing store (§3) is buildable
+    sys_pipe   sys_socket   sys_read   sys_write     the control channel exists
+    sys_waitpid  _nb  _peek                          client death is observable
+    sys_input                                        input
+    sys_fb_info  sys_fb_wallpaper  sys_fb_present    the plane
+    sys_xtos_recv                                    a non-blocking message receive
+```
+
 **Must never.** Care about windows. XTOS has no concept of a window and should not grow
 one — that is `gemd`'s entire job, and `gemd` is an ordinary user process with no
 privileges XTOS knows about.
+
+### 🔴 The one thing XTOS does not provide: waiting on more than one source
+
+`gemd` must wait on **three** things at once — `sys_input`, **N client pipes**, and **child
+deaths**. XTOS has **no `select`, no `poll`, no `epoll`** (checked against the full export
+list), and there is no signal *delivery* either, so there is no `SIGCHLD`.
+
+`gemd` can be built anyway, because the AES's event source is already timeout-driven
+(`aes_wait(ev, timeout_ms)`) and `sys_xtos_recv` is a non-blocking drain. But that makes
+`gemd` a **poll loop**, and the poll interval then becomes **added latency on every damage
+rect**: a client posts damage and `gemd` does not notice until the next tick. At 10 ms that
+is most of a 60 Hz frame spent doing nothing; shorten it and `gemd` burns CPU spinning.
+
+**The ask, in XTOS's own idiom rather than POSIX's.** `sys_xtos_recv` is *already* a unified
+message channel. If XTOS delivered
+
+- *"this client pipe became readable"*, and
+- *"a child died"*
+
+as `xtos` messages, then `gemd` would have exactly **one** thing to wait on — which is
+precisely the shape `aes_set_events` is built for. No `select`, no new concept, and `gemd`
+**blocks** properly instead of spinning. Tracked in §12.
 
 **Settled.** `libxtos.so` is now built with `-g`, so xtc can read its DWARF and type it
 directly instead of hand-mirroring structs. (Why that matters: a hand-guessed
@@ -410,7 +444,7 @@ The interesting half of any contract.
 
 | | what happens | whose job |
 |---|---|---|
-| **an app crashes** | `gemd` reaps its windows on `waitpid`. No ghost windows, no leaked shm. | `gemd` |
+| **an app crashes** | `gemd` reaps its windows and surfaces. No ghost windows, no leaked shm. Note: **there is no `SIGCHLD`** — XTOS has no signal delivery — so the reap is `sys_waitpid_peek`/`_nb` from `gemd`'s loop. Which is right anyway: `gemd` must never block (§3), and plain `sys_waitpid` does. | `gemd` |
 | **an app wedges** (never returns to `evnt_multi`) | its **windows still composite**, and so does **its menu bar** — `gemd` holds both, and needs nothing from the app (§10). It gets a **busy cursor**. It simply stops *responding*; it does not stop *appearing*. | `gemd` |
 | **an app wedges while holding a grab** | **the grab times out** (below). `gemd` discards its overlay, recomposites from the backing stores, and injects a *cancel* so the app runs its own dismissal path when it wakes. It may not re-grab until the user tops it again. | `gemd` |
 | **an app posts damage outside its window** | clamped. A client's damage rect is a *request*, not an instruction. | `gemd` |
@@ -595,7 +629,13 @@ The honest list. Someone will have to make a call on each.
    quiet decision.
 3. **The liveness constants.** 2 s to the busy cursor and 7 s to grab revocation (§9) are
    a guess. They should be tunable, and felt on real hardware.
-4. **Xtg: dirty rects, not a dirty flag.** `setNeedsDisplay()` currently repaints the whole
+4. **XTOS: `gemd` cannot wait on more than one source.** No `select`/`poll`, no signal
+   delivery. `gemd` must watch `sys_input`, N client pipes and child deaths, so today it can
+   only *poll* — and the poll interval becomes latency on every damage rect. **Proposed:**
+   deliver "client pipe readable" and "child died" as `sys_xtos_recv` messages, so `gemd` has
+   one thing to wait on and can block instead of spin (§2). **This is the one open item that
+   is a genuine blocker for `gemd`** — everything else has a workable answer.
+5. **Xtg: dirty rects, not a dirty flag.** `setNeedsDisplay()` currently repaints the whole
    window (§6). It must accumulate a union of dirty rects and pass it to `objc_draw` as the
    clip and to `gemd` as the damage. Purely an Xtg change; no protocol impact. Needed
    before any real text editing is usable.
