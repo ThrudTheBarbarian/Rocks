@@ -112,7 +112,7 @@ holds the grab must never be able to block*. §4 is where that constraint comes 
 
 | | |
 |---|---|
-| the window list, z-order, geometry | `awin g_w[MAXW]` lives here and nowhere else |
+| the window list, z-order, geometry | `awin g_w[MAXW]` lives here and nowhere else. Honours `W_BOTTOM` at insertion (§4) |
 | window **chrome** | title bar, closer, mover, sizer, sliders — all themed |
 | **compositing** and `fb_present` | it alone decides what pixel is on screen |
 | a fallback background **colour** | *only* a colour. The wallpaper belongs to `desktop.so` (§4) |
@@ -223,24 +223,46 @@ So the desktop draws its wallpaper and icons into **its own backing store**, wit
 `objc_draw`, exactly like every other client. `gemd` keeps a fallback background
 *colour* for when no desktop is running (or one is restarting), and nothing more.
 
-### It needs no new mechanism — it is just the first app launched
+### It needs almost no new mechanism — one flag
 
 There is no "root window", no window level, no special case in the compositor. The
-desktop is started first and calls:
+desktop is an ordinary client that calls:
 
 ```c
-    wind_create(0 /* no W_NAME, no W_CLOSER, no W_MOVER */,
+    wind_create(W_BOTTOM /* and no W_NAME, no W_CLOSER, no W_MOVER */,
                 0, strip_h, screen_w, screen_h - strip_h);
 ```
 
 - **No chrome**, because it passed none of the chrome bits. `wind_create`'s kind mask
   already expresses this.
-- **Bottom of the z-order**, because it was created *first*, and new windows go on top.
-  Nobody has to declare it the bottom; it just is.
+- **Bottom of the z-order, and not toppable** — because of `W_BOTTOM`, one new bit in a
+  mask that already holds `W_CLOSER` and `W_MOVER`.
 
-**One bit is genuinely new: it must not be toppable.** A screen-sized window that came
-to the front when clicked would swallow every other app. That bit sits beside `W_CLOSER`
-and `W_MOVER` in a mask that already exists — call it `W_BOTTOM`.
+### `W_BOTTOM` means two things, and it needs both
+
+```
+    1. INSERT AT THE BOTTOM of the z-order — whenever the window is created.
+    2. NEVER TOPPED by a click.
+```
+
+**(2) alone is not enough, and (1) is not free.** It is tempting to say the desktop is
+simply *the first app launched*, so it is at the bottom because new windows go on top —
+no flag needed for (1). **That is true at boot and false ever after.**
+
+Restart the desktop while apps are running — which §4 explicitly promises works, and
+which is exactly the path you take *when something has already gone wrong* — and its new
+screen-sized window is created **last**. Without (1) it lands on **top** and swallows the
+entire session: every app invisible, the machine apparently dead. Creation order is luck,
+not design.
+
+So `W_BOTTOM` is a real z-order rule that `gemd` honours at insertion, not merely a
+"don't top me" hint.
+
+**Why `W_BOTTOM` and not `W_ROOT`:** it names a *z-order position*, which is the only
+thing `gemd` should understand. `W_ROOT` would smuggle a *role* into the server — and the
+whole argument of this section is that **`gemd` must not know what a desktop is.** Nothing
+stops two clients setting `W_BOTTOM`; they simply stack at the bottom among themselves,
+and `gemd` neither knows nor cares which of them is "the desktop".
 
 That is the entire cost. **One flag, and the desktop is an ordinary app.**
 
@@ -250,7 +272,8 @@ That is the entire cost. **One flag, and the desktop is an ordinary app.**
   the desktop is sometimes the active app.
 - **The desktop can crash and be restarted** without taking the window system with it.
   Other apps keep running and stay clickable; the background falls back to `gemd`'s
-  colour until the desktop returns.
+  colour until the desktop returns — and when it returns, `W_BOTTOM` puts it back
+  *underneath* the apps that outlived it, rather than on top of them.
 - **`gemd` starts first** and launches the desktop. Not the other way round.
 
 ---

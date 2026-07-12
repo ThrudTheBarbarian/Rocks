@@ -50,9 +50,23 @@ calls `wind_create` with none of the chrome bits (no `W_NAME`, no `W_CLOSER`, no
 `W_MOVER`) at screen size minus the strip. Being created first puts it at the bottom
 of the z-order — nobody has to declare it the bottom, it just *is*.
 
-**One bit is genuinely new: it must not be toppable** (`W_BOTTOM`), because a
-screen-sized window that came to the front when clicked would swallow every other app.
-That bit lives beside `W_CLOSER` and `W_MOVER` in a mask that already exists.
+**One bit is genuinely new — `W_BOTTOM`** — and it means *two* things:
+
+```
+    1. INSERT AT THE BOTTOM of the z-order — whenever the window is created.
+    2. NEVER TOPPED by a click.
+```
+
+(2) is obvious: a screen-sized window that came forward when clicked would swallow every
+other app. **(1) is the one that is easy to miss.** "The desktop is the first app
+launched, so it is at the bottom for free" is true at boot and **false ever after** —
+restart the desktop while apps are running (the very thing this design promises works,
+and the path you take when something has *already* gone wrong) and its new window is
+created *last*, landing on **top** of everything. Creation order is luck, not design.
+
+`W_BOTTOM` lives beside `W_CLOSER` and `W_MOVER` in a mask that already exists. It names
+a **z-order position**, deliberately, and not a role: `W_ROOT` would smuggle "what a
+desktop is" into `gemd`, and `gemd` must not know.
 
 One flag, and the desktop is an ordinary app. The dropdown needs nothing either — it
 lives inside a grab and never enters the z-order at all (§5).
