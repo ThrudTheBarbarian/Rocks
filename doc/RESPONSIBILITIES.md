@@ -34,6 +34,10 @@ nothing below assumes you know the GEM vocabulary.
 | **backing store** | the off-screen buffer a client draws its window into. `gemd` composites from it. See §3. |
 | **the grab** | "all input comes to me, and nothing may be topped, until I release it." What a menu or a modal dialog holds. GEM spells it `wind_update(BEG_MCTRL)`. |
 | **xtc** | the language Xtg and Rocks are written in. Classes, protocols, ARC, `weak:`. **No closures, no selectors, no reflection** — which shapes several decisions below. |
+| **the blitter** | `xt-blitter`, a command-queued 2D engine in the FPGA fabric. Fills, blits, **scaled** blits, and **alpha blending**, writing DDR3 over AXI. A ~1024-deep command FIFO. **It is a DMA engine with no MMU** — it takes *physical* addresses. See §12. |
+| **PL** | the FPGA fabric ("programmable logic"), as opposed to the CPU ("PS"). The blitter and the compositor planes live here. |
+| **`plv_alloc`** | the PL-visible heap (`0x3800_0000`, ~128 MB). Physically contiguous, uncached, readable by the PL by physical address. Where window backing stores live. Shared with glyph atlases and DMA buffers, so it is a **budget**, not a free lunch. |
+| **surface handle** | an integer id naming a surface. **Clients name surfaces by handle, never by address** — that is what stops a client blitting into someone else's memory (§12). |
 
 ---
 
@@ -160,7 +164,7 @@ holds the grab must never be able to block*. §4 is where that constraint comes 
 |---|---|
 | the window list, z-order, geometry | `awin g_w[MAXW]` lives here and nowhere else. Honours `W_BOTTOM` at insertion (§4) |
 | window **chrome** | title bar, closer, mover, sizer, sliders — all themed |
-| **compositing** and `fb_present` | it alone decides what pixel is on screen |
+| **compositing** and `fb_present` | it alone decides what pixel is on screen. Composites **with the blitter**, in hardware (§12) |
 | a fallback background **colour** | *only* a colour. The wallpaper belongs to `desktop.so` (§4) |
 | **input** (`sys_input`) | it does the top-level hit-test and routes |
 | the **menu strip** | it reserves the region (`g_top_reserve`) and owns one strip surface **per app**. It composites the active app's. It does not *draw* the menu — it cannot (§10) |
@@ -330,8 +334,10 @@ in server mode; `appl_init` puts it in client mode.
 ### It owns
 
 - **The client's VDI.** `v_opnvwk` on the client's *own* surface. Every drawing
-  primitive — `vr_recfl`, `v_gtext`, `vr_transfer_bits` — runs client-side, at full
-  speed, against local memory. **Zero IPC while drawing.**
+  primitive — `vr_recfl`, `v_gtext`, `vr_transfer_bits` — is issued client-side, with **zero
+  IPC to `gemd`**. Note this does *not* mean "the CPU writes pixels": the VDI submits
+  **blitter** commands through its own `/dev/blitter` fd, and `theme_draw`, text and fills
+  are hardware (§12).
 - **`objc_*`.** The tree walk (`objc_draw`), hit-testing (`objc_find`), coordinate
   resolution (`objc_offset`), editing (`objc_edit`), and the `G_USERDEF` callback
   (`objc_set_userdraw`). All client-side; `gemd` never sees a tree.
@@ -405,7 +411,7 @@ the entire window for one line.
 This is a defect in **Xtg**, not in the architecture — the AES's `objc_draw` already takes
 a clip rect, so the mechanism is there and Xtg simply is not using it. The fix is to
 accumulate a **union of dirty rects** per window and pass it both to `objc_draw` (as the
-clip) and to `gemd` (as the damage rect). Tracked in §12.
+clip) and to `gemd` (as the damage rect). Tracked in §13.
 
 ---
 
@@ -620,14 +626,151 @@ covers three separate bugs:
 | **resize** | the old buffer outlives the client's in-flight draw |
 | **window closed while `gemd` is mid-composite** | `gemd`'s own ref keeps it alive until the composite ends |
 | **app died while `gemd` still holds its pixels** | the dead client's ref is dropped; `gemd`'s keeps the memory valid |
+| **a blit is in flight into a dead process's surface** | the surface outlives the process until the blit retires (§12) |
 
 **What it does not fix, and does not pretend to: tearing.** A client can be painting frame
 N+1 into a buffer `gemd` is compositing frame N from. Refcounting is *lifetime*, not
-*exclusion*. That is a separate decision — §12.
+*exclusion*. That is a separate decision — §13.
 
 ---
 
-## 12. Not yet decided
+## 12. The blitter: how pixels actually get drawn
+
+Everything above talks about "drawing" as if it were the CPU writing pixels. It is not.
+**Drawing is hardware**, and that changes three things: where surfaces live, how a client
+reaches the engine, and what "I have drawn" actually means.
+
+### The blitter does the work — including alpha
+
+The `xt-blitter` is a command-queued 2D engine in fabric, reading source pixels and writing
+DDR3 directly over AXI:
+
+- rectangle fill and **pattern fill** (RGBA-8888, **per-pixel alpha**)
+- **block blit**, and **scaled blit** (nearest / bilinear)
+- **alpha blending** over the destination
+- line draw, rotate / affine
+
+Which means **`theme_draw` is not CPU work.** A 9-slice is nine alpha blits, two of them
+stretched — squarely inside the engine's capabilities. The same goes for text (a glyph atlas
+is an alpha-coverage blit), icons, and every fill. **The CPU never touches those pixels.**
+
+That is what makes the next fact affordable.
+
+### Surfaces are PL-visible, contiguous — and uncached
+
+The blitter is a DMA engine reading **physical** addresses, so anything it touches must be
+physically contiguous and inside the PL-shared region (`0x2000_0000..0x3FFF_FFFF`). The MMU
+maps that region **Normal non-cacheable** — the *"PL-visible ⇒ wired/uncached"* invariant
+(`mmu.c`).
+
+Window backing stores therefore come from `plv_alloc` (the PL-visible heap at `0x3800_0000`,
+whose documented purpose is literally *"GEM window backing surfaces"*), and they are
+**uncached**.
+
+**This is fine precisely because the CPU is not the renderer.** Uncached memory would be a
+disaster for software alpha blending — read-modify-write per pixel, straight to DRAM — but
+nothing does that here. The blitter does not go through the CPU cache at all.
+
+**What is still CPU**, and what it costs:
+
+| | |
+|---|---|
+| stock widgets, text, icons, fills, theme | **blitter.** The CPU never sees the pixels. |
+| a custom `drawRect` (a canvas, a waveform, an image editor) | **CPU**, and it would be slow writing straight to an uncached surface |
+| polygon scan conversion | CPU |
+
+So an app doing genuine raw pixel work draws into a **private cached buffer** and lands it
+with **one blit**. The staging cost falls on the handful of apps that pixel-push — *not* on
+every button in the system.
+
+> **⚠ Not true yet.** The VDI is `gfx_soft.c` today, so `theme_draw` *is* currently CPU.
+> Giving the VDI a blitter backend is the work that makes uncached surfaces acceptable, and
+> it is the highest-value item outstanding on the GEM track. Until it lands, uncached backing
+> stores would make every themed widget slow — the two changes must arrive together.
+
+### `/dev/blitter`: a client may never touch the engine directly
+
+**The blitter has no MMU.** It takes physical addresses. A process with raw access to its
+registers can blit to **any physical address** — another app's backing store, the
+framebuffer, the kernel. Raw blitter access *is* arbitrary physical write, and it would
+silently annihilate every isolation property in this document.
+
+So it is a **device**, and the kernel mediates:
+
+```
+    v_opnvwk(surface)  ->  the VDI opens a /dev/blitter fd, bound to that surface
+    drawing            ->  write(fd, cmds, n)      one batch per objc_draw, not per primitive
+    gemd               ->  ioctl(fd, PRIORITY)     privileged; only the aes_init process
+```
+
+The fd is the capability. The kernel already knows which process owns it; it closes on
+process death, so queue cleanup is free.
+
+**Four rules the driver must hold.**
+
+**(1) Commands name surfaces by *handle*, never by address.**
+
+```c
+    { op, dst_id, dst_rect, src_id, src_rect, flags }      /* ids — NOT addresses */
+```
+
+The driver resolves `id → physical` and clips the rects to the surface bounds. **A client
+cannot even express an out-of-bounds blit.** If commands carried physical addresses instead,
+the driver would have to validate every rect × stride range against the caller's surface
+set — possible, but it only needs to be got wrong once. Sources need this as much as
+destinations (the theme atlas, the glyph atlas, and the client's own surface — a scroll is
+`src == dst`).
+
+**(2) Arbitrate at the hardware FIFO, not at accept.**
+
+The engine has a single **~1024-deep** command FIFO. If the driver accepts round-robin but
+then pushes client work straight into it, **the FIFO becomes the unarbitrated resource** and
+`gemd`'s priority commands simply wait behind 1024 already-committed client blits. The driver
+must hold its own software queues and feed the hardware a few commands at a time, keeping
+headroom so the priority fd can always get in.
+
+**(3) 🔴 Damage carries a blit sequence number — or priority causes half-drawn windows.**
+
+This hazard is *created* by giving `gemd` priority; it cannot happen in a plain FIFO.
+
+```
+    client:  enqueues its draw blits         (round-robin queue — waits)
+    client:  posts damage
+    gemd:    enqueues a composite blit        (PRIORITY — jumps the queue)
+    gemd:    composites a window whose own draws HAVE NOT RETIRED.
+```
+
+The fix is a counter. **The driver returns a sequence number on submit; the damage message
+carries it; `gemd` does not composite until that seq has retired.**
+
+This also makes the damage contract *honest*. §3 says "the client draws, then posts damage",
+which quietly assumed drawing was synchronous. **With a queued engine it never was** —
+priority merely exposes an assumption that was already false. "Posted damage" must mean *"my
+pixels are in memory"*, and only a fence can say that.
+
+**(4) Fairness is per-*process*, not per-fd.**
+
+The VDI opens a blitter fd per **workstation**, so an app with six windows and a menu strip
+has seven fds. Round-robin over *fds* rewards opening windows; an app would get a bigger
+share of the engine by having more surfaces. Round-robin over **processes**, with an app's
+fds sharing one slot, is what fairness means.
+
+### It falls out that
+
+- **A client that floods the queue cannot stall the screen.** Priority + FIFO headroom means
+  `gemd` always composites. This matters: the blitter is a *hardware* path, and none of the
+  software rules in §9 would have protected it. It is exactly the regression §13 tells us to
+  defend against, arriving by a route the rest of the document does not cover.
+- **`gemd` never blocks on a full queue** (§3 forbids it). It gets `EAGAIN` and retries; a
+  *client* may block.
+- **An in-flight blit into a dead process's surface is already safe.** `shm_t.nref` keeps the
+  surface alive until the blit retires — which is precisely the refcount rule in §11. The
+  lifetime rule designed for *resize* covers *DMA-in-flight* for free, which is a good sign
+  the model is right.
+
+---
+
+## 13. Not yet decided
 
 The honest list. Someone will have to make a call on each.
 
@@ -641,7 +784,14 @@ The honest list. Someone will have to make a call on each.
    quiet decision.
 3. **The liveness constants.** 2 s to the busy cursor and 7 s to grab revocation (§9) are
    a guess. They should be tunable, and felt on real hardware.
-4. **Xtg: dirty rects, not a dirty flag.** `setNeedsDisplay()` currently repaints the whole
+4. **The VDI needs a blitter backend.** It is `gfx_soft.c` today, so `theme_draw` is CPU —
+   and CPU rendering into an *uncached* PL-visible surface would make every themed widget
+   slow. The blitter backend and the move to PL-visible backing stores **must land together**
+   (§12). Highest-value item on the GEM track.
+5. **`/dev/blitter` does not exist yet** — no blitter syscall of any kind. The driver, the
+   handle-based command format, the priority ioctl and the retire-sequence counter are all
+   still to be built (§12).
+6. **Xtg: dirty rects, not a dirty flag.** `setNeedsDisplay()` currently repaints the whole
    window (§6). It must accumulate a union of dirty rects and pass it to `objc_draw` as the
    clip and to `gemd` as the damage. Purely an Xtg change; no protocol impact. Needed
    before any real text editing is usable.
