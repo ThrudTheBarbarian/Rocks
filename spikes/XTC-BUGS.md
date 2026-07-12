@@ -99,28 +99,55 @@ turns into silently-lost writes rather than a build failure. Should be an error.
 
 ---
 
-## Gap D — DWARF import does not surface anonymous enum constants
+## Gap D — anonymous enum constants  ✅ SOLVED (one flag, on libGEM's build)
 
-`#import <GEM>` brings in structs (verbatim — proven) and functions, but **not the
-enumerators of an unnamed enum**. `aes.h` declares *every* constant that way:
+`#import <GEM>` brings in structs and functions but **not** the enumerators of an
+unnamed enum — and `aes.h` declares *every* constant that way:
 
 ```c
-enum { G_BOX=20, G_TEXT=21, ..., G_USERDEF=24, ... };
-enum { OF_NONE=0x00, OF_SELECTABLE=0x01, ..., OF_HIDETREE=0x80 };
-enum { OS_NORMAL=0x00, ..., OS_DISABLED=0x08 };
+enum { G_BOX=20, G_TEXT=21, ..., G_USERDEF=24, G_CICON=33 };
+enum { OF_NONE=0x00, OF_SELECTABLE=0x01, ..., OF_LASTOB=0x20 };
 ```
 
-So `G_USERDEF`, `OF_HIDETREE`, `OS_DISABLED`, `W_NAME` … are all invisible to xtc,
-and every binding has to hand-mirror them (`xtg/XGGem.xt` does this today) —
-duplication that silently drifts when the C header changes.
+So `xtg/XGGem.xt` hand-mirrors 49 constants — a hand-copy that **silently drifts** when
+`aes.h` changes. A wrong `G_USERDEF` does not fail to build; it draws the wrong widget.
 
-Two possible fixes; the first is better because it costs GEM nothing and helps every
-future binding, in any language:
+**The xtc side is fixed (phase-593).** The remaining half was thought to be blocked on
+`aes.h` — *"the DWARF genuinely doesn't exist unless the enum type is used in an
+exported signature"*. **It is not blocked.** The DWARF is missing because of a **gcc
+default**, not because the enum is anonymous:
 
-- **(a) xtc: import the enumerators of anonymous enums** as constants.
-- (b) GEM: name its enums (`enum ObType { ... }`).
+> `-feliminate-unused-debug-types` — *"Normally, when producing DWARF output, GCC
+> avoids producing debug symbol output for types that are nowhere used in the source
+> file being compiled."* **On by default.**
 
-Not a blocker — just a papercut that will bite whoever forgets to re-sync.
+`aes.h`'s enums are declared and never used *as a type*, so gcc drops them. The
+documented switch to keep them is one flag on **libGEM's build**:
+
+```make
+CFLAGS += -g -fno-eliminate-unused-debug-types
+```
+
+### Measured, on the real `aes.h` (arm-none-eabi-gcc)
+
+| | plain `-g` | `+ -fno-eliminate-unused-debug-types` |
+|---|---|---|
+| enumerators in DWARF | **0** | **287** |
+| `.text` / `.data` / `.rodata` / `.bss` | — | **byte-identical** |
+| `.debug_info` + `.debug_str` | — | ~+10 KB per TU (`.debug_str` dedups at link) |
+
+**All 49/49** of the constants `XGGem.xt` mirrors are recovered — `G_USERDEF`,
+`OF_LASTOB`, `OS_DISABLED`, `W_NAME`, `WM_REDRAW`, `MN_SELECTED`, `WF_WORKXYWH`, every
+one. Nothing needs naming, nothing needs to appear in an exported signature, and
+`aes.h` does not change.
+
+Zero runtime cost: the ALLOC sections are identical, only debug sections grow — and
+debug sections are not loaded.
+
+**Action:** add the flag to libGEM's build, then delete `xtg/XGGem.xt`.
+
+(Same question applies to `libxtos.so`, which still needs `-g` at all — see the
+standing ask. If its constants are also anonymous enums, it wants the same flag.)
 
 ---
 
