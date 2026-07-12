@@ -411,7 +411,7 @@ the entire window for one line.
 This is a defect in **Xtg**, not in the architecture — the AES's `objc_draw` already takes
 a clip rect, so the mechanism is there and Xtg simply is not using it. The fix is to
 accumulate a **union of dirty rects** per window and pass it both to `objc_draw` (as the
-clip) and to `gemd` (as the damage rect). Tracked in §13.
+clip) and to `gemd` (as the damage rect). Tracked in §14.
 
 ---
 
@@ -630,7 +630,7 @@ covers three separate bugs:
 
 **What it does not fix, and does not pretend to: tearing.** A client can be painting frame
 N+1 into a buffer `gemd` is compositing frame N from. Refcounting is *lifetime*, not
-*exclusion*. That is a separate decision — §13.
+*exclusion*. That is a separate decision — §14.
 
 ---
 
@@ -683,10 +683,11 @@ So an app doing genuine raw pixel work draws into a **private cached buffer** an
 with **one blit**. The staging cost falls on the handful of apps that pixel-push — *not* on
 every button in the system.
 
-> **⚠ Not true yet.** The VDI is `gfx_soft.c` today, so `theme_draw` *is* currently CPU.
-> Giving the VDI a blitter backend is the work that makes uncached surfaces acceptable, and
-> it is the highest-value item outstanding on the GEM track. Until it lands, uncached backing
-> stores would make every themed widget slow — the two changes must arrive together.
+> **⚠ Not true yet — and deliberately deferred.** The VDI is `gfx_soft.c` today, so
+> `theme_draw` *is* currently CPU. Giving the VDI a blitter backend is what makes uncached
+> surfaces acceptable, so **the blitter backend and the move to PL-visible backing stores must
+> land together** — either alone is worse than neither. All of this section is **phase 2**;
+> see §13.
 
 ### `/dev/blitter`: a client may never touch the engine directly
 
@@ -770,7 +771,71 @@ fds sharing one slot, is what fairness means.
 
 ---
 
-## 13. Not yet decided
+## 13. Staging: what lands when
+
+Standing up `gemd`, splitting the client libraries, rewriting the toolkit **and** bringing up
+hardware blitting at once is too much in flight. It is staged. This section exists so the
+staging does not quietly bake in an assumption that phase 2 has to unpick.
+
+### Phase 1 — `gemd`, with **software** compositing
+
+Everything in §3–§11. **No blitter.**
+
+| | |
+|---|---|
+| **backing stores** | **ordinary cached memory**, scattered pages, from the 480 MB OS heap. **Not `plv`.** |
+| **client drawing** | the software VDI, as now (`gfx_soft.c`) — into *cached* memory, so it is fast |
+| **`gemd` compositing** | **CPU**: a copy of the damaged rect into the framebuffer plane. That write is to uncached PL memory, but a sequential streaming write is the one thing uncached memory is good at, and it is only the damaged bytes. |
+| **kernel needs** | **one thing only: variable-size shm.** Drop the 1 MB per-object cap and the fixed VA slot partition. (We never used the same-VA guarantee — only *pixels* cross, and a pixel buffer holds no pointers.) |
+| **Xtg needs** | **one method.** `XGApplication.boot()` → `.attach()`. |
+
+> **⚠ Do not put backing stores in `plv` "to be ready for the blitter".** `plv` is **uncached**
+> (§12), and a *software* VDI writing to uncached memory is the worst of both worlds: the full
+> uncached penalty, none of the hardware speed. Backing stores move to `plv` **when the VDI's
+> blitter backend moves**, and not one commit before. The two are a single change.
+
+### Phase 2 — hardware blitting
+
+| | |
+|---|---|
+| **kernel** | `/dev/blitter`: handle-based commands, priority ioctl, per-process fairness, retire counter (§12). Plus `plv` surface allocation. |
+| **GEM** | a **blitter backend for the VDI**; backing stores move to `plv` (contiguous, uncached); `gemd` composites with the blitter |
+| **Xtg** | `XGGraphics` stages a custom `drawRect` through a private *cached* buffer and lands it with one blit — so raw pixel-pushing apps still draw fast against an uncached surface |
+
+### 🔴 What phase 1 must get right, even though it does nothing there
+
+**The damage message carries a retire-sequence number.** From day one.
+
+In phase 1 drawing is **synchronous**, so *"I posted damage"* genuinely does mean *"my pixels
+are in memory"*. The fence is unnecessary and the field sits unused, always comparing
+"retired".
+
+In phase 2 that is **false** (§12.3): a queued blitter means the client's draws may still be
+in flight when `gemd`'s priority composite jumps ahead. If the seq field is not in the wire
+protocol from the start, phase 2 becomes a **protocol change across every client**.
+
+> It is a dead `u32` now, and it saves a migration later. And it is the general shape of the
+> risk in any staging: **phase 1 makes a false assumption look true for a year.** The
+> assumption "drawing is synchronous" is false the moment the engine is queued — the staging
+> merely hides it.
+
+**Two more, cheaper:**
+
+- **Surfaces are named by *handle* everywhere**, never by address — so phase 2 changes only the
+  allocator behind the id, not the protocol (§12.1).
+- **The VDI keeps a backend interface** (fill / blit / scaled-blit / blend), even while the only
+  implementation is software. If the VDI's internals assume direct pixel access to the target,
+  a command-queue backend is a rewrite rather than a backend.
+
+### What phase 1 deliberately does *not* do
+
+No `plv` pressure, no contiguity requirement, no cache-maintenance discipline, no
+`/dev/blitter`, no FIFO fairness, no fence. Every one of those is a phase-2 concern, and phase
+1 is better for not pretending otherwise.
+
+---
+
+## 14. Not yet decided
 
 The honest list. Someone will have to make a call on each.
 
@@ -784,14 +849,7 @@ The honest list. Someone will have to make a call on each.
    quiet decision.
 3. **The liveness constants.** 2 s to the busy cursor and 7 s to grab revocation (§9) are
    a guess. They should be tunable, and felt on real hardware.
-4. **The VDI needs a blitter backend.** It is `gfx_soft.c` today, so `theme_draw` is CPU —
-   and CPU rendering into an *uncached* PL-visible surface would make every themed widget
-   slow. The blitter backend and the move to PL-visible backing stores **must land together**
-   (§12). Highest-value item on the GEM track.
-5. **`/dev/blitter` does not exist yet** — no blitter syscall of any kind. The driver, the
-   handle-based command format, the priority ioctl and the retire-sequence counter are all
-   still to be built (§12).
-6. **Xtg: dirty rects, not a dirty flag.** `setNeedsDisplay()` currently repaints the whole
+4. **Xtg: dirty rects, not a dirty flag.** `setNeedsDisplay()` currently repaints the whole
    window (§6). It must accumulate a union of dirty rects and pass it to `objc_draw` as the
    clip and to `gemd` as the damage. Purely an Xtg change; no protocol impact. Needed
    before any real text editing is usable.
