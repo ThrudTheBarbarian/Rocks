@@ -15,15 +15,21 @@ and `weak:`, and holds hundreds of live objects. It is meant to find the sharp e
 | **E** | `&Class.staticMethod` unsupported, only a note | ✅ fixed (phase-590) |
 | **F** | non-weak `^` is a silent UAF | ✅ fixed (phase-594/595) |
 | **D** | anonymous enum constants | ✅ xtc side fixed (phase-593) — **remaining half is one flag on libGEM's build, see §1** |
+| **G** | `-L` absent from `xtc --help` | ✅ fixed (in by `69ec25d`) |
 | **1** | **weak-reference table: capped, and O(N) on every store and every dealloc** | 🔴 **OPEN — the one that blocks Xtg at scale** |
-| **2** | `-L` absent from `xtc --help` | 🟡 open (doc) |
-| **3** | gcc temp object name leaks into the `.so` | 🟡 open (cosmetic; breaks reproducible builds) |
-| **4** | cross-`.so` trampoline identity for `^` | ❓ open, unexamined by me |
-| **5** | arrays of class instances go silent | ❓ open (yours) — I can reproduce it if useful |
+| **2** | gcc temp object name leaks into the `.so` | 🟡 open (cosmetic; breaks reproducible builds) |
+| **3** | cross-`.so` trampoline identity for `^` | ❓ open, unexamined by me |
+| **4** | arrays of class instances go silent | ❓ open (yours) — I can reproduce it if useful |
 
 **Verified against xtc `69ec25d`:** all four Xtg programs pass on the real XTOS loader
-(`demo`, `nibdemo`, `test_spine` 14/14, `test_window`). A–F are confirmed fixed from
+(`demo`, `nibdemo`, `test_spine` 14/14, `test_window`). A–G are confirmed fixed from
 this side.
+
+> **A note on the lag.** Two of my reports (Gap G, and the missing `<stdio.h>` in the
+> arm9 PIC stub) were **already fixed upstream by the time I filed them** — I was
+> testing a binary built from an older commit. Please check HEAD before acting on
+> anything here; the only items I have re-verified against `69ec25d` are the ones marked
+> open below.
 
 ---
 
@@ -144,32 +150,7 @@ program — completely untouched.
 
 ---
 
-# 2. 🟡 `-L` is not in `xtc --help`
-
-`#import <GEM>` is a **library metadata import**: xtc resolves `libGEM.so` on a
-*library* path, reads its `.dynsym` ∩ DWARF, and hands back the real C types. It is the
-single most valuable thing xtc does for this project — it supplies `theme` at its true
-19502 bytes (a hand-guessed size smashed the heap; see `RESULTS.md`) and `OBJECT` laid
-out exactly as libGEM sees it.
-
-The flag that drives it is **`-L`**, and it **does not appear in `xtc --help`**.
-
-The failure mode compounds it. Reaching for `-I` (the obvious guess) gives:
-
-```
-error: Cannot find include file 'GEM' (searched: '.', ..., '/opt/xtc/support/arm9/lib')
-```
-
-which says *include file*, lists only the include paths, and gives no hint that a
-different flag with a different search path exists. I lost an hour, having already used
-the feature successfully once.
-
-One line in `--help`. Ideally the error adds: *"`<GEM>` is a library import; set the
-library path with `-L`."*
-
----
-
-# 3. 🟡 A gcc temp object name leaks into the `.so`
+# 2. 🟡 A gcc temp object name leaks into the `.so`
 
 Two clean builds of identical source produce different binaries. They differ by
 **8 bytes** — a gcc temp object name (`ccTxhJ1j.o` vs `cchJQb8F.o`) in the symbol
@@ -181,7 +162,7 @@ very expensive thing to believe while debugging.
 
 ---
 
-# 4. ❓ Cross-`.so` trampoline identity for `^`
+# 3. ❓ Cross-`.so` trampoline identity for `^`
 
 Raised when the `^` design was settled, never resolved: the `@`→`^` widening uses **one
 trampoline per signature**, with the function pointer carried in `recv`. If a client
@@ -196,7 +177,7 @@ is the next structural step. Worth settling before then.
 
 ---
 
-# 5. ❓ Arrays of class instances go silent
+# 4. ❓ Arrays of class instances go silent
 
 Yours: `new B[1200]` + `bs[i].set(...)` → no output, no diagnostic. Unexamined.
 
@@ -231,6 +212,21 @@ Verified against xtc `69ec25d`; all four Xtg programs pass on the loader.
   receiver but that **`if (action)` still tested true** afterwards — the truth test is
   on `code`, and only `recv` was dead, so the one guard a programmer writes was the
   guard that did not work. Fixed (phase-594/595): a stored `^` always auto-zeroes.
+
+- **G — `-L` was absent from `xtc --help`.** `#import <GEM>` is a *library metadata*
+  import — xtc resolves `libGEM.so` on a **library** path and reads its `.dynsym` ∩
+  DWARF — and it is the single most valuable thing xtc does for this project: it
+  supplies `theme` at its true 19502 bytes (a hand-guessed size smashed the heap) and
+  `OBJECT` laid out exactly as libGEM sees it. The flag driving it was undiscoverable,
+  and reaching for `-I` gave *"Cannot find **include file** 'GEM'"*, which names only
+  the include paths. Now documented, and the entry even advertises the phase-593 enum
+  import:
+
+  ```
+  -L, --library-path <path>  Add library search path (for `#import <Lib>`,
+                             which resolves to lib<Lib>.so and reads its
+                             DWARF for types, functions and enum constants)
+  ```
 
 ## `^` bound methods: the headline result
 
