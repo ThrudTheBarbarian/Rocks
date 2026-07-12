@@ -670,6 +670,11 @@ Dragging a window edge fires a resize **on every mouse move** — dozens per sec
 realloc-per-resize would reallocate, copy and remap an 8 MB surface **sixty times a second**.
 *That* is what falls over, not the steady state.
 
+And the case that makes it look worse than it is: **a tiling grid of small windows, any one of
+which could be dragged out to fill the screen.** Sizing every window for its worst case would
+be ruinous. The answer (below) is that it never happens — only *one* window is ever growing at
+a time, because resize is a grab.
+
 ### The rule: a surface has a **capacity** and an **extent**
 
 - **capacity** — what is allocated
@@ -687,36 +692,87 @@ handle, no protocol traffic. Only growth *past* capacity reallocates.
 >
 > Small decision, very expensive to retrofit.
 
-### Quantise capacity; do not multiply it
+### Interactive resize: one scratch surface, no allocations
 
-An over-allocation *multiplier* is the obvious policy and it is the wrong one. **1.5× on both
-axes is 2.25× the memory** — and for a full-screen window it asks for 2880×1620 = **18.7 MB**
-of capacity that **no window can ever use**, because nothing can be bigger than the screen.
+The hot case is solved by not allocating at all during the gesture.
 
-Rounding capacity up to a **64-pixel grid** does the same job for a fraction of the cost:
+> **Resize is a grab. Only one can be in flight, system-wide.**
+
+That is the property that makes this cheap: **one** scratch surface suffices — not one per app,
+not one per window. Ten tiled windows, any of which *could* be grown to full screen, cost
+nothing extra, because only one is ever *growing* at a time.
+
+```
+    sizer grabbed:     gemd maps THE scratch (screen-sized) into the resizing app.
+                       the app retargets its VDI at it and draws there.
+    during the drag:   every mouse move changes w/h.  NO ALLOCATION.  NO REALLOC.  NO REMAP.
+                       gemd composites the window from the scratch.
+    button-up:         gemd allocates the real surface at the final size, rounded up to 64px,
+                       BLITS scratch -> new surface, hands the app the new id, unmaps the
+                       scratch.
+```
+
+**And it is the same buffer as the drag overlay.** You cannot move and resize a window at once
+— both start from a click on chrome (mover vs sizer), both take the grab, both are exclusive.
+So the move overlay and the resize scratch are **never live simultaneously** and share one
+allocation:
+
+```
+    DRAG_BASE  0x3200_0000  drag-overlay surface (16 MB)   <- screen-size is 8.5 MB. It fits.
+```
+
+**Zero new memory.**
+
+#### The wrinkle: the app's workstation retargets
+
+During the drag the app draws into the scratch, not its own backing store — yet §10 insists a
+workstation is **opened once and never re-opened**.
+
+That survives, because this is a **retarget, not a re-open**. The VDI holds a *pointer* to a
+`gfx_surface`; mutate that struct's `px` / `stride` / `w` / `h` in place and the workstation
+now targets the scratch. No `v_opnvwk`, no fd churn.
+
+And §10's objection to "loan/revoke" does not apply:
+
+| §10 — the menu strip | here — the resize scratch |
+|---|---|
+| loan/revoke on **every app switch** | map once per **gesture** |
+| **every** app would have it mapped → cross-app write hazard | **exactly one** app has it mapped — resize is a grab |
+
+#### Settle is a blit, not a redraw
+
+On button-up `gemd` blits scratch → the new surface. The blitter handles the differing strides
+(screen stride in the scratch, capacity stride in the new surface), so **the app never repaints
+at settle**. The old surface stays alive until the handover completes — §11's refcount already
+guarantees that.
+
+### Capacity, quantised — for everything the scratch does not cover
+
+The scratch handles the *interactive* case completely. Capacity/extent still earns its keep for
+the rest:
+
+- **programmatic resizes** (an app setting its own size) — rare, un-gestured, no grab
+- **fine adjustments after settle**, absorbed by the 64 px headroom
+
+**Quantise; do not multiply.** An over-allocation *multiplier* is the obvious policy and it is
+the wrong one. **1.5× on both axes is 2.25× the memory** — and for a full-screen window it asks
+for 2880×1620 = **18.7 MB** of capacity **no window can ever use**:
 
 | | exact | 1.5× on both axes | **64 px grid** |
 |---|---|---|---|
 | 800 × 600 | 1.92 MB | 4.32 MB (**+125%**) | 832 × 640 = **2.13 MB (+11%)** |
 | full screen | 8.5 MB | 18.7 MB (**unusable**) | **8.5 MB (+0%)** |
 
-And it still solves the resize problem: a realloc happens only every **64 px of drag** — a
-handful of times per gesture, not sixty times a second.
-
-**Capacity is capped at screen size**, always. No window can exceed it.
+**Capacity is capped at screen size**, always.
 
 ### Shrink when the gesture settles — never during it
 
 "Never shrink" is tempting and wrong: **maximise a window once and it holds 8.5 MB forever.**
-Do that to three windows and `plv` is gone.
+Do that to three windows and `plv` is gone. With the scratch, shrinking is not even a special
+case — the surface is *allocated fresh at settle*, to the final size. There is nothing to shrink.
 
-```
-    resize in progress:   never shrink capacity.   (grow by 64px steps if needed)
-    button-up / settle:   shrink capacity to fit the final extent.
-```
-
-`gemd` knows when the drag ends, so "settle" is a well-defined moment. This keeps the
-cheap-resize property *and* gives the memory back.
+For programmatic resizes, which have no gesture: shrink capacity when the new extent has been
+smaller than half the capacity for some settling period. Cheap, and it is not the hot path.
 
 ### The pressure valve
 
