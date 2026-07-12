@@ -117,7 +117,7 @@ holds the grab must never be able to block*. §4 is where that constraint comes 
 | **compositing** and `fb_present` | it alone decides what pixel is on screen |
 | a fallback background **colour** | *only* a colour. The wallpaper belongs to `desktop.so` (§4) |
 | **input** (`sys_input`) | it does the top-level hit-test and routes |
-| the **menu strip** | it reserves the region (`g_top_reserve`), owns the surface, and clears it. It does not *draw* the menu — it cannot (§10) |
+| the **menu strip** | it reserves the region (`g_top_reserve`) and owns one strip surface **per app**. It composites the active app's. It does not *draw* the menu — it cannot (§10) |
 | the **grab** | it decides who receives input, and honours `wind_update(BEG_MCTRL)` |
 | **lifecycle** | it reaps a dead client's windows |
 
@@ -134,8 +134,6 @@ holds the grab must never be able to block*. §4 is where that constraint comes 
 - **A grab is absolute.** While `BEG_MCTRL` is held, *all* input goes to the holder and
   **nothing is topped**. This is what makes menus, `menu_popup` and `form_alert` safe,
   and it is the only ordering guarantee they need.
-- **The menu strip is cleared before it is handed over.** A new menu owner gets clean
-  space; it never has to erase the previous app's menu.
 
 ### How a repaint starts — two triggers, and they must not be confused
 
@@ -307,7 +305,7 @@ in server mode; `appl_init` puts it in client mode.
 ### It must never
 
 - **Touch the framebuffer.** Ever. There are **no exceptions** — not even the menu strip,
-  which is a surface `gemd` loans out, not a mapping of the screen (§10).
+  which is a surface `gemd` owns and hands the app, not a mapping of the screen (§10).
 - **Assume it owns the screen.** A client does not know where its window is on screen,
   what is above it, or whether it is visible at all. It draws into its buffer and posts
   damage. That is all.
@@ -413,7 +411,7 @@ The interesting half of any contract.
 | | what happens | whose job |
 |---|---|---|
 | **an app crashes** | `gemd` reaps its windows on `waitpid`. No ghost windows, no leaked shm. | `gemd` |
-| **an app wedges** (never returns to `evnt_multi`) | its **windows still composite** — the backing store means `gemd` needs nothing from it. It gets a **busy cursor**. Its **menu bar goes blank** on the next app switch, because the strip is cleared before the new owner draws. | `gemd` |
+| **an app wedges** (never returns to `evnt_multi`) | its **windows still composite**, and so does **its menu bar** — `gemd` holds both, and needs nothing from the app (§10). It gets a **busy cursor**. It simply stops *responding*; it does not stop *appearing*. | `gemd` |
 | **an app wedges while holding a grab** | **the grab times out** (below). `gemd` discards its overlay, recomposites from the backing stores, and injects a *cancel* so the app runs its own dismissal path when it wakes. It may not re-grab until the user tops it again. | `gemd` |
 | **an app posts damage outside its window** | clamped. A client's damage rect is a *request*, not an instruction. | `gemd` |
 | **an app never draws** | its window composites as whatever its buffer contains — i.e. blank. Correct. | — |
@@ -446,7 +444,7 @@ precisely the point of §4.
 
 ---
 
-## 10. The menu strip: a loaned surface, not a hole in the framebuffer
+## 10. The menu strip: a surface per app, not a hole in the framebuffer
 
 The strip is the one place where it is tempting to let a client draw straight to the
 screen. **Resist it.** This section records why, because the tempting version looks
@@ -496,43 +494,47 @@ scanned out.)
 It is also **cheaper**: zero copies. `objc_draw` writes the final pixels straight into the
 plane.
 
-### The decision: `gemd` loans the active app an shm strip surface
+### The decision: one strip surface **per app**, opened once
 
-### The decision: `gemd` loans the active app an shm strip surface
+Not a shared buffer loaned around — **`gemd` gives each app that calls `menu_bar()` its own
+strip-sized surface**, and composites whichever app's is active.
 
-`gemd` owns **one** strip-sized surface (24 rows × 8192 = **192 KB**, total — not per app),
-loans it to whichever app is active, and composites it exactly like any other surface. The
-client opens a workstation on *that*, draws its menu tree into it, and posts damage.
+```
+    menu_bar(tree):        ONCE, in the client's lifetime
+        surface = my own strip surface        (gemd allocates it, maps it, keeps it)
+        vh = v_opnvwk(&surface)               // ONCE.  Never re-opened.
+        objc_draw(tree, ...)                  // and again only when the MENU changes
+        post damage
 
-**The client never sees the desktop plane at all.**
+    app switch:            gemd composites a DIFFERENT BUFFER.
+                           No remap.  No workstation.  No message.  No repaint.
+```
 
-We take this **not because mapping is unsafe** — as shown above, it is provably safe here —
-but for two narrower reasons:
+**Why not one shared buffer, loaned to the active app?** Because "loan" and "revoke" imply
+the memory can move, and every way of arranging that is bad:
 
-| | map the strip | **loan a surface** |
-|---|---|---|
-| copies | **zero** | one sub-rect blit per menu repaint |
-| memory | **none** | 192 KB (one, not per app) |
-| enforcement | the MMU, page-exact — sound | total; the client never sees the plane |
-| **`gemd` can repaint the strip with no help from the app** | **no** — it holds no copy | **yes** |
-| **compositor path** | a special case | **just another surface** |
+| | |
+|---|---|
+| **remap on each switch** | the address may differ, so the client must rebuild its `gfx_surface` and **re-open its workstation** — on every single app switch |
+| **keep it mapped in everyone** | any backgrounded app can **write** to the strip the active app is using. Ignoring their *damage* is not enough; they would corrupt the *pixels*, and `gemd` would blit the corruption |
+| **keep it mapped, flip page protections on switch** | the address is stable and the workstation survives — but an inactive app then cannot draw its menu, so it **must repaint on becoming active**: a round-trip on every switch, and a wedged app shows a blank strip |
 
-The two rows in bold are the whole argument.
+A surface per app costs **192 KB each** instead of 192 KB total (24 rows × 8192). Eight apps
+with menus is ~1.5 MB — nothing on a DDR machine — and it buys four things at once:
 
-1. **`gemd` holds the pixels.** It can recomposite the strip on a full-plane repaint, or
-   while the owning app is **wedged**, without asking anybody. With a mapping, the only copy
-   of the menu lives in a process that may never respond again.
-2. **The strip is not a special case.** It rides the surface/damage/composite path that
-   already exists, so there is no second way to get pixels onto the screen — and therefore
-   no second way to get it wrong.
+1. **The workstation is opened once** and stays valid for the app's lifetime. The strip is
+   not a thing an app re-negotiates.
+2. **No cross-app write hazard.** Nobody shares a buffer, so nobody can scribble on anybody.
+3. **An app switch costs zero IPC.** It is a compositing decision, not a conversation.
+4. **`gemd` holds every app's menu pixels** — so a **wedged app's menu bar still composites
+   correctly** rather than going blank.
 
-The price is 192 KB and a blit on an operation that happens on **app switch** and
-**menu-state change** — never in a loop. On a machine with DDR that is a rounding error.
+(4) deletes a failure mode this document previously accepted. It also removes two mechanisms
+outright: `gemd` no longer needs to **clear the strip** before an ownership change, and there
+is no *"tell the new owner to draw its menu"* step at all. **Ownership of the strip is not an
+event.** It is just which buffer gets composited.
 
-**And note the argument this section does *not* make.** An earlier draft rejected mapping
-on the grounds that page alignment would constrain the menu-bar height. That was derived
-from a stride of 7680 (1920 × 4) — **the real stride is 8192**, and the hazard does not
-exist. A fabricated constraint is worse than none, so it is recorded here as retracted.
+An app that never calls `menu_bar()` never gets a strip surface, and costs nothing.
 
 ### Which means Rule 1 has no exceptions
 

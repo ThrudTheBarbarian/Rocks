@@ -82,7 +82,7 @@ lives inside a grab and never enters the z-order at all (§5).
 | Compositing + `fb_present` | **owns** | never touches |
 | Input (`sys_input`) | **owns**, routes | receives events |
 | The grab (`BEG_MCTRL`) | **honours it** | requests it |
-| Menu bar (global strip) | **reserves and clears the strip** | **paints it** while active (see §5) |
+| Menu bar (global strip) | **reserves the region; owns one strip surface per app; composites the active one** | **paints its own**, once, into its own surface (see §5) |
 | Background **colour** (fallback) | **owns** | — |
 | **Wallpaper, icons, drag-and-drop** | — | **the desktop client**, in a root-level window |
 | VDI (`v_bar`, `v_gtext`, `vr_transfer_bits`…) | for chrome | **for its own content** |
@@ -176,20 +176,19 @@ change** — and an ownership change is already a message to the new owner. A ba
 store would buy nothing.
 
 ```
-    menu_bar(tree):                     (client)  remember the tree; if I am active, draw it
+    menu_bar(tree):                     (client, ONCE)
+        objc_draw(tree, ...)            into MY OWN strip surface (see below)
+        post damage
 
-    WM_TOPPED, new window's owner != $currentApp:      (server)
-        clear the strip                 (clean space — the AES owns the strip, it can)
-        send the new owner "draw your menu bar, here is the rect"
-                                        (client)
-        objc_draw(myMenuTree, ...)      clipped to the strip.  The same call as ever.
+    WM_TOPPED, new window's owner != $currentApp:      (gemd)
+        composite THAT app's strip surface.
+        No clear.  No message.  No repaint.  No round-trip.
 ```
 
-So the menu bar is not a window and not a surface: it is a **region `gemd` clears
-and the active app paints**. Ownership follows the top window, which is exactly TOS's
-rule.
+Ownership of the strip follows the top window — exactly TOS's rule — but it is **not an
+event**: it is simply which buffer gets composited.
 
-### What it draws into: a surface `gemd` loans it — NOT the framebuffer
+### What it draws into: a surface `gemd` gives it — NOT the framebuffer
 
 A VDI workstation does not cross a process boundary. `v_opnvwk(&surface)` is entirely
 client-side — the client builds a `gfx_surface` and opens a workstation on it locally. So
@@ -207,36 +206,43 @@ no leak into the row below. It is also cheaper: zero copies.
 > 7680 (= 1920 × 4). **The real stride is 8192 and that hazard does not exist.** Retracted —
 > a fabricated constraint is worse than none.
 
-**Decided: `gemd` owns one strip-sized shm surface** (24 × 8192 = 192 KB, *total*, not per
-app), loans it to whichever app is active, and composites it like any other surface. The
-client opens a workstation on **that**, draws its menu tree with `objc_draw`, and posts
-damage.
+**Decided: one strip surface PER APP, opened once.** Not a shared buffer loaned around.
+`gemd` gives each app that calls `menu_bar()` its own strip-sized surface and composites
+whichever app's is active.
 
-Two reasons, and *safety is not one of them* — mapping would be safe:
+```
+    menu_bar(tree):     ONCE in the client's lifetime — map my surface, v_opnvwk it,
+                        objc_draw my menu tree into it, post damage.
+                        Redraw only when the MENU itself changes.
 
-1. **`gemd` holds the pixels.** It can recomposite the strip on a full-plane repaint, or
-   while the owning app is **wedged**, without asking anybody. Under a mapping, the only
-   copy of the menu lives in a process that may never respond again.
-2. **The strip is not a special case.** It rides the surface/damage/composite path that
-   already exists — so there is no second way to get pixels onto the screen, and therefore
-   no second way to get it wrong.
+    app switch:         gemd composites a DIFFERENT BUFFER.
+                        No remap.  No workstation.  No message.  No repaint.
+```
 
-The price is 192 KB and a sub-rect blit on **app switch** and **menu-state change** — never
-in a loop. On a machine with DDR that is a rounding error, and it buys the invariant
-outright:
+**Why not one buffer, loaned to the active app?** "Loan" and "revoke" imply the memory can
+move, and every arrangement of that is bad: *remap on switch* forces the client to rebuild
+its surface and **re-open its workstation every time**; *keep it mapped in everyone* lets a
+backgrounded app **write** to the active app's strip (ignoring its damage is not enough — it
+would corrupt the pixels); *flip page protections on switch* keeps the address stable but
+means an inactive app cannot draw, so it **must repaint on becoming active** — a round-trip
+on every switch, and a blank strip whenever the app is slow.
 
-> **Only `gemd` touches the screen. No exceptions.**
+192 KB per app (24 × 8192) instead of 192 KB total. Eight apps ≈ 1.5 MB — nothing — and it
+buys four things:
 
-The strip still needs no backing store *for occlusion* — that observation was right, and
-irrelevant. The surface is there for **isolation and uniformity**, not occlusion.
+1. **The workstation is opened once** and stays valid for the app's lifetime.
+2. **No cross-app write hazard** — nobody shares a buffer.
+3. **An app switch costs zero IPC.** It is a compositing decision, not a conversation.
+4. **`gemd` holds every app's menu pixels**, so a **wedged app's menu bar still composites**.
 
-### The residual: a wedged app shows a blank menu bar
+(4) removes the residual this section used to carry, and two mechanisms with it: `gemd` no
+longer clears the strip on an ownership change, and there is **no "tell the new owner to draw
+its menu" step at all**. Ownership of the strip is not an event — it is just which buffer gets
+composited.
 
-Because the strip is cleared before the new owner has drawn, an app that is wedged or
-blocked shows an empty menu bar. **That is correct.** With backing stores a wedged
-app's *windows* still composite fine, so the menu is the one place its wedged-ness
-shows — and it should show. If it ever grates, defer the clear until the new owner's
-paint lands.
+> Safety is **not** among the reasons. Mapping the plane's top strip would be safe here (it is
+> a contiguous prefix, and at an 8192-byte stride it is page-aligned at any height). This is
+> about workstation stability, write isolation, and a wedged app still having a menu.
 
 ### The dropdown: a grab, and a scratch overlay
 
