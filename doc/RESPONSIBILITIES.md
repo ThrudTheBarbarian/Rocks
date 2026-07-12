@@ -96,17 +96,101 @@ non-C language can reach it.
 they should not be taken on trust:
 
 ```
-    sys_shm_create   sys_shm_map                     the backing store (§3) is buildable
     sys_pipe   sys_socket   sys_read   sys_write     the control channel exists
     sys_waitpid  _nb  _peek                          client death is observable
     sys_input                                        input
     sys_fb_info  sys_fb_wallpaper  sys_fb_present    the plane
     sys_xtos_recv                                    a non-blocking message receive
+    sys_shm_create   sys_shm_map                     shared memory exists — but see below
 ```
 
-**Must never.** Care about windows. XTOS has no concept of a window and should not grow
-one — that is `gemd`'s entire job, and `gemd` is an ordinary user process with no
-privileges XTOS knows about.
+### ⚠ Verified ABSENT — the backing store is **not** buildable today
+
+> **Recorded because this document made the opposite mistake to the one below.** An earlier
+> draft listed `sys_shm_create` + `sys_shm_map` under "verified present" and concluded from
+> their existence that *"the backing store (§3) is buildable"*. That is the exact **mirror**
+> of the `SIGCHLD` error recorded at the end of this section. There the lesson was *absence
+> of a symbol is not absence of a feature*; here the converse bites just as hard:
+> **presence of a symbol is not sufficiency of the feature.** The two symbols are real. The
+> semantics behind them do not meet §3, §11, §12 or §13. Checked against the **live** kernel
+> (`loader/kernel` + `loader/test/freertos`), not `vitis/xtos`:
+
+| what is missing | why it matters |
+|---|---|
+| **`sys_shm_unmap` does not exist.** The only `nref--` is `vm_shm_drop_space`, called solely from `vm_space_destroy` — i.e. **process death**. A *live* process cannot drop a ref. | **This is the load-bearing one, and it is worse than a leak — see below.** §11 ("gemd drops its ref on the old; the client drops its ref on the old → refcount 0 → freed"), §12's settle-and-hand-over, and §13's "the surface outlives an in-flight blit" **all** require dropping a ref while both processes are alive. |
+| **1 MB per surface.** `SHM_MAXPG = SHM_SLOT>>12`, `SHM_SLOT = XTOS_SHM_SIZE/NSHM` = 16 MB/16. | Not a corner case — **every window**. A 640×400 window is already 1.02 MiB. |
+| **shm is pool-backed, so physically SCATTERED** — `dpage_raw()`, one 4 KB frame at a time. | §13 requires surfaces to be **contiguous, PL-visible and uncached**. The blitter accumulates `base + stride` and cannot walk a page list. Pool-backed shm is structurally unusable for it. |
+| **`plv_alloc` does not exist.** | It is specified in `docs/Zynq/memory-map.md` (`0x3800_0000`, 128 MB, *"GEM window surfaces"*) and implemented **nowhere** — not in the live kernel, and not even in the dead `vitis` tree. §12 and §13 both assume it. |
+| **`NSHM = 16`** surfaces, machine-wide. | One per window, plus one menu strip per app (§10), plus resize churn. |
+| **No `/dev/blitter`, and no blitter driver at all.** | The live kernel has **zero** blitter code. The only driver is `vitis/xtos/src/blitter.c` — the dead tree. §13 is entirely unbuilt. |
+
+#### The `sys_shm_unmap` gap is a hard stop, not a leak
+
+`gemd` is **long-lived**, and it holds a ref on every surface it creates. So:
+
+```
+    gemd creates a surface, maps it                nref = 1
+    the client maps it                             nref = 2
+    the client dies      -> drop_space          -> nref = 1     <- never reaches 0
+    gemd cannot drop its ref (there is no unmap) -> nref = 1     forever
+```
+
+The surface is never freed, so `used` is never cleared, so **the id is never reclaimed**. With
+`NSHM = 16`:
+
+> ### The machine can create sixteen surfaces. **Ever.**
+> Not sixteen *concurrent* — sixteen for the entire uptime of `gemd`. Open and close a window
+> sixteen times and **no window can ever be created again.**
+
+That is not a leak that degrades gracefully; it is a hard stop after sixteen windows. It makes
+`sys_shm_unmap` an **absolute phase-1 blocker**, not a refcounting nicety.
+
+None of this is a design problem — §12 and §13 are right, and the memory map already
+reserves the region. It is **unbuilt kernel**.
+
+**But do not file it all under phase 2.** Phase 1 keeps backing stores in ordinary *cached*
+OS-heap memory, so it genuinely escapes `plv`, contiguity, uncached discipline and
+`/dev/blitter` (§14). It does **not** escape the other two: those buffers are still **shm**
+(the client draws, `gemd` copies out), so they still hit the **1 MB cap**, and §11's refcount
+still needs a **live process to drop a ref** on resize and on window close — which is exactly
+what `sys_shm_unmap` would do, and exactly what XTOS cannot do. §14 lists phase 1's kernel
+need as *"one thing only"*; it is **two**.
+
+**Must never.** Care about windows. XTOS has no concept of a window and must not grow one —
+that is `gemd`'s entire job.
+
+### `gemd` **is** privileged — and the sentence that said otherwise was about the desktop
+
+An earlier draft of this section ended *"…and `gemd` is an ordinary user process with no
+privileges XTOS knows about."* **That claim is false of `gemd`** — and it is worth recording
+*why*, because the mistake is instructive rather than careless.
+
+It was written when there **was** no `gemd`: there was only `desktop.app`, which was both the
+desktop and the server. When the two were split (§4), the sentence stayed attached to the
+server. But the property it names — *an ordinary process, no special privileges* — is a
+statement about the **desktop**, and it is **load-bearing there**: §4's entire argument is
+that `desktop.so` is a client `gemd` cannot tell apart from `Rocks.so`, which is what lets it
+crash, be restarted, and be replaced. The sentence was true. It was simply left on the wrong
+noun.
+
+`gemd` is **special**, and deliberately so:
+
+| | |
+|---|---|
+| it is the **only** process that presents to the framebuffer | Rule 1 |
+| it holds the blitter's `PRIORITY` `ioctl` | §13 — *"privileged; only the `aes_init` process"* |
+| it holds **the grab**, and arbitrates input for everyone | §3, §9 |
+| it reaps dead clients' windows and surfaces | §9 |
+
+What *is* true — and is the invariant actually worth defending — is narrower:
+
+> **`gemd`'s privileges are ordinary OS capabilities** — a device fd, an ioctl, a mapping.
+> XTOS knows it as *a process holding a capability*. It must never know it as **a window
+> server**.
+
+That is what keeps §2's "must never care about windows" honest. The kernel mediates the
+blitter because the blitter is a **DMA engine with no MMU** (§13), not because the process
+holding the fd happens to manage windows.
 
 ### How `gemd` waits: signals, not polling
 
@@ -937,7 +1021,7 @@ Everything in §3–§11. **No blitter.**
 | **backing stores** | **ordinary cached memory**, scattered pages, from the 480 MB OS heap. **Not `plv`.** |
 | **client drawing** | the software VDI, as now (`gfx_soft.c`) — into *cached* memory, so it is fast |
 | **`gemd` compositing** | **CPU**: a copy of the damaged rect into the framebuffer plane. That write is to uncached PL memory, but a sequential streaming write is the one thing uncached memory is good at, and it is only the damaged bytes. |
-| **kernel needs** | **one thing only: variable-size shm.** Drop the 1 MB per-object cap and the fixed VA slot partition. (We never used the same-VA guarantee — only *pixels* cross, and a pixel buffer holds no pointers.) |
+| **kernel needs** | **two things.** (1) **Variable-size shm** — drop the 1 MB per-object cap and the fixed VA slot partition. (We never used the same-VA guarantee — only *pixels* cross, and a pixel buffer holds no pointers.) (2) **`sys_shm_unmap`** — §11's refcount requires a **live** process to drop a ref, and XTOS's only `nref--` runs on process *death* (`vm_space_destroy` → `vm_shm_drop_space`). Without it, every resize (§12) and every window close leaks its surface **and** its id — in phase 1 exactly as in phase 2. See §2. |
 | **Xtg needs** | **one method.** `XGApplication.boot()` → `.attach()`. |
 
 > **⚠ Do not put backing stores in `plv` "to be ready for the blitter".** `plv` is **uncached**
