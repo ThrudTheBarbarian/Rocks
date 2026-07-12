@@ -196,32 +196,39 @@ client-side — the client builds a `gfx_surface` and opens a workstation on it 
 nothing "hands a workstation to an app": what must cross is **memory** and **geometry**.
 Whose memory is then the whole question.
 
-**Rejected: mapping the framebuffer's top strip into the client.** The strip *is* a
-contiguous prefix of the framebuffer (rows 0..strip_h-1), so it could be mapped exactly —
-with the MMU as enforcement. But page alignment then constrains the menu-bar height:
-`stride = 1920×4 = 7680`, so `strip_h × 7680 ≡ 0 (mod 4096)` requires **`strip_h` to be a
-multiple of 8**. At 24px it is exact; at 25px the client also gets 512 bytes of row 25 —
-128 corruptible pixels of the desktop. A load-bearing constraint wired to a theme metric.
-No.
+**Mapping the plane's top strip into the client is SAFE here — and we still do not do it.**
+The strip is a contiguous prefix of the desktop plane (rows 0..strip_h-1), so `gemd` could
+map exactly those bytes with the MMU as enforcement. And the stride is hardwired at **8192
+bytes** (2048 words/row; 1920 visible, padded) — and 8192 is a multiple of the 4 KB page, so
+`strip_h × 8192` is page-aligned for **any** strip height. No constraint, no partial page,
+no leak into the row below. It is also cheaper: zero copies.
 
-> This also kills the argument an earlier draft made — that the hole was contained because
-> *"the clip rect is the enforcement"*. **It is not.** A clip rect is client-side VDI state;
-> a buggy client simply ignores it. It *is* the app's good manners. Only a mapping enforces
-> anything across a process boundary.
+> An earlier draft rejected this on page-alignment grounds, computing from a stride of
+> 7680 (= 1920 × 4). **The real stride is 8192 and that hazard does not exist.** Retracted —
+> a fabricated constraint is worse than none.
 
-**Decided: `gemd` owns one strip-sized shm surface** (1920 × 24 × 4 ≈ 184 KB, *total*, not
-per app), loans it to whichever app is active, and composites it like any other surface. The
+**Decided: `gemd` owns one strip-sized shm surface** (24 × 8192 = 192 KB, *total*, not per
+app), loans it to whichever app is active, and composites it like any other surface. The
 client opens a workstation on **that**, draws its menu tree with `objc_draw`, and posts
-damage. **The client never sees the framebuffer.**
+damage.
 
-Menu repaints are rare — app switch, an item checked or disabled, a title highlighting
-during tracking — and only the damaged sub-rect is blitted. It is not a cost anyone will
-measure, and it buys the invariant outright:
+Two reasons, and *safety is not one of them* — mapping would be safe:
+
+1. **`gemd` holds the pixels.** It can recomposite the strip on a full-plane repaint, or
+   while the owning app is **wedged**, without asking anybody. Under a mapping, the only
+   copy of the menu lives in a process that may never respond again.
+2. **The strip is not a special case.** It rides the surface/damage/composite path that
+   already exists — so there is no second way to get pixels onto the screen, and therefore
+   no second way to get it wrong.
+
+The price is 192 KB and a sub-rect blit on **app switch** and **menu-state change** — never
+in a loop. On a machine with DDR that is a rounding error, and it buys the invariant
+outright:
 
 > **Only `gemd` touches the screen. No exceptions.**
 
-The strip still needs no backing store *for occlusion* — that observation was right. It was
-simply irrelevant: the surface is there for **isolation**, not occlusion.
+The strip still needs no backing store *for occlusion* — that observation was right, and
+irrelevant. The surface is there for **isolation and uniformity**, not occlusion.
 
 ### The residual: a wedged app shows a blank menu bar
 
