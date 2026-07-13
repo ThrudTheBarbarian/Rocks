@@ -56,6 +56,23 @@ void    menu_icheck(pointer tree, i32 title_ord, i32 item_ord, i32 on);
 void    menu_ienable(pointer tree, i32 title_ord, i32 item_ord, i32 on);
 i32     menu_item_ord(pointer tree, i32 title_ord, i32 item_obj);
 
+// ---- alerts / modality --------------------------------------------------------
+// form_alert builds, centres, runs and tears down the whole dialog.  XGAlert's job is
+// to describe it: "[icon][line|line][button|button]".
+i32     form_alert(i32 default_button, u8@ alert);
+
+// The AES's input source is PLUGGABLE.  This is the seam gemd relies on (a client
+// reads the server's channel instead of sys_input) — and it is what lets a test drive
+// a MODAL dialog headlessly, which is otherwise impossible.
+void    aes_set_events(pointer fn);         // int (*)(aes_event *ev, int timeout_ms)
+
+#define AES_NONE      0
+#define AES_BTN_DOWN  1
+#define AES_BTN_UP    2
+#define AES_KEY       3
+#define AES_QUIT      4
+#define AES_TIMER     6
+
 // ---- events -----------------------------------------------------------------
 i32     evnt_multi(i32 flags, i32 bclk, i32 bmask, i32 bstate,
                    i32 m1f, i32 m1x, i32 m1y, i32 m1w, i32 m1h,
