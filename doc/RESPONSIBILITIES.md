@@ -251,6 +251,73 @@ That is what keeps §2's "must never care about windows" honest. The kernel medi
 blitter because the blitter is a **DMA engine with no MMU** (§13), not because the process
 holding the fd happens to manage windows.
 
+### 🔴 The memory path is not isolated — `SEC_PLANE` is PL0-RW in every space
+
+`/dev/blitter` (§13) mediates the **blitter** path: a client names surfaces by handle, so it
+cannot express a blit outside the surfaces it owns. That is necessary and **not sufficient**,
+because the **memory** path is wide open.
+
+`mmu.c:121`:
+
+```c
+    else if (i < 1024)  l1[i] = base | SEC_PLANE;   /* SALLY/planes: PL0-RW, non-cacheable */
+    #define SEC_PLANE 0x1C12u   /* AP=11 (PL0 RW) */
+```
+
+`i` runs from `0x200` to `1024` — so **the whole `0x2000_0000..0x3FFF_FFFF` range, 512 MB, is
+PL0-RW in the master table and inherited by every space.** Every process can write:
+
+- the **framebuffer** (`0x3000_0000`)
+- the **wallpaper** plane, the **drag overlay**, the **sprite arena**, the SALLY banks
+- **`plv` at `0x3800_0000` — where phase-2 backing stores live**
+
+Which means that in phase 2 **a client could `memcpy` another client's backing store**, bypassing
+`/dev/blitter` entirely. We would have locked the front door and left the wall down.
+
+**It is deliberate, and correct today.** `mmu.c:101` says so: *"the PL-shared planes stay PL0-RW
+(programs draw the framebuffer)"*. There is no `gemd`, so programs genuinely do draw the
+framebuffer. **The hole cannot close until `gemd` exists** — it is `gemd` that makes direct
+framebuffer access unnecessary.
+
+#### Close it in phase 1 — it is the cheapest moment, not the hardest
+
+The instinct is to defer this to phase 2, alongside `plv`. **Do the opposite.**
+
+In phase 1 a client needs **zero** access to `SEC_PLANE`. Backing stores are ordinary *cached*
+OS-heap memory (§14) — deliberately not `plv`. The only process that needs the framebuffer plane
+is `gemd`, which composites into it with the CPU.
+
+```
+    phase 1:   SEC_PLANE -> PL0-none for everyone.
+               gemd gets the framebuffer plane mapped explicitly.   Clients get NOTHING.
+               <- the hole closes, and there is nothing to build.
+
+    phase 2:   surfaces come BACK, individually, via shm (kernel items 2-4)
+               — machinery that is being built anyway.
+```
+
+Defer it and phase 2 must build the per-surface mapping **and** flip the blanket at once, with
+more moving parts and a live system to keep working. Do it in phase 1 and the blanket comes down
+while **nobody is standing under it.**
+
+#### It is a one-way door, so it is a *completion criterion*
+
+The moment `SEC_PLANE` goes PL0-none, **any app still drawing direct to the framebuffer breaks.**
+So this is not a task *inside* phase 1 — it is the **last commit of phase 1**, gated on *"no app
+draws direct any more"*.
+
+That makes it a good gate to have: it is a hard, mechanical proof that the client/server split is
+complete. **If flipping it breaks something, the split is not done.**
+
+#### And one plane may simply disappear
+
+`WALLPAPER_BASE` (16 MB, PL0-RW **cacheable**) is a dedicated plane every process can write. But
+§4 says the desktop is an ordinary app and its wallpaper is **content**, drawn into its own
+backing store like any other client's. In the `gemd` world that plane is both a hole *and*
+redundant.
+
+---
+
 ### How `gemd` waits: signals, not polling
 
 `gemd` must watch **three** things at once — `sys_input`, **N client pipes**, and **client
@@ -1082,6 +1149,7 @@ Everything in §3–§11. **No blitter.**
 | **`gemd` compositing** | **CPU**: a copy of the damaged rect into the framebuffer plane. That write is to uncached PL memory, but a sequential streaming write is the one thing uncached memory is good at, and it is only the damaged bytes. |
 | **kernel needs** | **two things.** (1) **Variable-size shm** — drop the 1 MB per-object cap and the fixed VA slot partition. (We never used the same-VA guarantee — only *pixels* cross, and a pixel buffer holds no pointers.) (2) **`sys_shm_unmap`** — §11's refcount requires a **live** process to drop a ref, and XTOS's only `nref--` runs on process *death* (`vm_space_destroy` → `vm_shm_drop_space`). Without it, every resize (§12) and every window close leaks its surface **and** its id — in phase 1 exactly as in phase 2. See §2. |
 | **Xtg needs** | **one method.** `XGApplication.boot()` → `.attach()`. |
+| **the last commit of phase 1** | **`SEC_PLANE` → PL0-none** (§2). Clients need *nothing* from it in phase 1, so this is the cheapest moment to close the hole — and it doubles as a mechanical proof that the split is complete: **if flipping it breaks something, the split is not done.** |
 
 > **⚠ Do not put backing stores in `plv` "to be ready for the blitter".** `plv` is **uncached**
 > (§13), and a *software* VDI writing to uncached memory is the worst of both worlds: the full
