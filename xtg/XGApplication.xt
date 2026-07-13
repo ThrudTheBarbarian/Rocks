@@ -6,6 +6,7 @@
 #import "XGGem.h.xt"
 #import "XGWindow.xt"
 #import "XGEvent.xt"
+#import "XGMenu.xt"
 
 protocol XGApplicationDelegate {
     i32 applicationDidStart(XGApplication@ app);
@@ -33,6 +34,7 @@ class XGApplication : XGResponder
     XGApplicationDelegate@ delegate;
     Array@                 windows;
     weak:XGWindow@         keyWindow;      // the window the keyboard is talking to
+    XGMenuBar@             menuBar;
     bool                   running;
     i32                    vh;
     i32                    screenW;
@@ -44,6 +46,14 @@ class XGApplication : XGResponder
         windows  = new Array();
         running  = false;
         vh = (i32)0; screenW = (i32)0; screenH = (i32)0;
+        menuBar = (XGMenuBar@)0;
+    }
+
+    // Install a menu bar.  From here on GEM owns the bar: it draws it, tracks the
+    // pull-down, intercepts the click inside evnt_multi, and posts MN_SELECTED.
+    void setMenuBar(XGMenuBar@ mb) {
+        menuBar = mb;
+        mb.install(screenW);
     }
 
     void setDelegate(XGApplicationDelegate@ d) { delegate = d; }
@@ -172,7 +182,13 @@ class XGApplication : XGResponder
 
     void handleMessage(i16@ msg) {
         i16 kind = msg[0];
-        if (kind == (i16)WM_CLOSED) {
+        if (kind == (i16)MN_SELECTED) {
+            // GEM already ran the whole pull-down.  All that is left is to turn
+            // "title object N, item object M" back into a bound method call.
+            if (menuBar != (XGMenuBar@)0) {
+                menuBar.handleSelection((i32)msg[3], (i32)msg[4]);
+            }
+        } else if (kind == (i16)WM_CLOSED) {
             self.stop();
         } else if (kind == (i16)WM_REDRAW || kind == (i16)WM_SIZED || kind == (i16)WM_MOVED) {
             // The AES did not tell us WHAT changed, so we must assume all of it.

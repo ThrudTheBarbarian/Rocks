@@ -47,6 +47,15 @@ void    objc_draw(pointer tree, i32 start, i32 depth, i32 clx, i32 cly, i32 clw,
 void    objc_set_userdraw(pointer fn, pointer ud);
 void    objc_change(pointer tree, i32 obj, i32 state, i32 redraw);
 
+// ---- menus --------------------------------------------------------------------
+// GEM builds the tree, draws the bar, tracks the pull-down, and intercepts the click
+// INSIDE evnt_multi — the app just receives MN_SELECTED.  XGMenu writes none of that.
+pointer menu_build(pointer menus, i32 nmenus, i32 screen_w);   // -> OBJECT* (malloc'd)
+void    menu_bar(pointer tree, i32 show);
+void    menu_icheck(pointer tree, i32 title_ord, i32 item_ord, i32 on);
+void    menu_ienable(pointer tree, i32 title_ord, i32 item_ord, i32 on);
+i32     menu_item_ord(pointer tree, i32 title_ord, i32 item_obj);
+
 // ---- events -----------------------------------------------------------------
 i32     evnt_multi(i32 flags, i32 bclk, i32 bmask, i32 bstate,
                    i32 m1f, i32 m1x, i32 m1y, i32 m1w, i32 m1h,

@@ -29,7 +29,7 @@ XTCFLAGS = -A $(ARCH) -I . -L $(GEMLIB)
 # real --emit-lib artefact, this list is what goes into it.
 SRCS = XGGeometry.xt XGResponder.xt XGViewTree.xt XGView.xt XGControl.xt \
        XGWindow.xt XGApplication.xt XGEvent.xt XGGraphics.xt XGNib.xt \
-       XGGem.xt XGGem.h.xt
+       XGMenu.xt XGGem.xt XGGem.h.xt
 
 PROGS = demo.so nibdemo.so test_spine.so test_window.so
 

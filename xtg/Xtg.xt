@@ -12,4 +12,5 @@
 #import "XGEvent.xt"
 #import "XGWindow.xt"
 #import "XGApplication.xt"
+#import "XGMenu.xt"
 #import "XGNib.xt"
