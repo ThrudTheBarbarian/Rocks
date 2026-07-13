@@ -18,7 +18,7 @@ nothing below assumes you know the GEM vocabulary.
 
 | | |
 |---|---|
-| **XTOS** | the operating system. FreeRTOS on a Zynq-7020 (Cortex-A9). Processes, shared memory, the framebuffer, the input device. Knows nothing about windows. |
+| **XTOS** | the operating system. FreeRTOS on a Zynq-7020 (Cortex-A9). Processes, shared memory, the framebuffer, the input device. Knows nothing about windows. **The live kernel is `loader/kernel` + `loader/test/freertos`.** `vitis/` still generates bitstreams, but its **OS side is vestigial** and signposted as such — read it and you will get wrong answers with a straight face (it cost this document two retracted findings: see §2 and §13). |
 | **GEM** | the graphics stack, in two halves. Historically Atari's; here, ours. |
 | **VDI** | GEM's *drawing* half. `v_gtext`, `vr_recfl`, `vr_transfer_bits` — pixels, lines, text, blits. Draws onto a **surface**. |
 | **AES** | GEM's *windowing* half. Windows, events, menus, dialogs. `wind_*`, `evnt_*`, `objc_*`, `form_*`. |
