@@ -23,8 +23,8 @@ and `weak:`, and holds hundreds of live objects. It is meant to find the sharp e
 | **5** | imported `struct` types: parse-fail / silent miscompile | ✅ **fixed (phase-613/614).** Verified: a library instance method returning a struct by value works across the `.so`. |
 | **6** | `--emit-lib` cannot export a class with a `weak:` field | ✅ fixed (phase-616) |
 | **7** | `--emit-lib` cannot export a class exposing a C type from another library | ✅ fixed (phase-616) |
-| **8** | **`weak: T^` — a weak BOUND-METHOD field cannot cross the interface** | 🔴 **OPEN** (`$wbound_void`). `weak: T@` and plain `T^` each work; the *combination* does not. It is Xtg's `XGControl.action` — i.e. target/action. |
-| **9** | **a library's virtual SELF-call on a client-allocated object aborts** | 🔴 **OPEN — the last runtime blocker.** Reproduced minimally. |
+| **8** | `weak: T^` — a weak bound-method field cannot cross the interface | ✅ **fixed (phase-617).** I filed it against a **stale binary** — #617 had already landed. All four field shapes now build. |
+| **9** | **a library's virtual SELF-call on a client-allocated object aborts** | 🟠 **OPEN — but unverified since `d5628af`.** Runtime-only, and the loader does not currently build (XTOS shm work in flight), so it cannot be re-run. |
 
 **Verified against xtc `cbbe3bc`:** all four Xtg programs pass on the real XTOS loader
 (`demo`, `nibdemo`, `test_spine` 14/14, `test_window`). A–G, and open items 1/2/4 plus
@@ -366,18 +366,25 @@ is a gap worth knowing about.
 
 ---
 
-# 8. 🔴 `weak: T^` — a weak bound-method field cannot cross the interface
+# 8. ✅ `weak: T^` — fixed (phase-617)
 
-Isolated exactly. Each half works; the **combination** does not:
+Re-verified against HEAD. All four field shapes on an exported class now build:
 
 | field on an exported class | |
 |---|---|
 | `act_t@` — a plain function pointer | **OK** |
 | `act_t^` — a bound method, *not* weak | **OK** |
-| `weak: Object@` — a weak object | **OK** (fixed by #616) |
-| **`weak: act_t^`** — a **weak bound method** | 🔴 **`error: imported library names the type '$wbound_void'`** |
+| `weak: Object@` — a weak object | **OK** |
+| **`weak: act_t^`** — a **weak bound method** (Xtg's `XGControl.action`) | ✅ **OK** |
 
-The mangled names tell the story: `$bound_void` serialises, `$wbound_void` does not.
+> **I filed this against a stale binary.** #617 had already landed when I reported it — the *third*
+> time in this project I have reported something that was already fixed. The lesson is not "pull
+> more often", it is: **`git pull && make` in the compiler tree is part of writing the report, not
+> part of preparing to write it.** Recorded in the lag note at the top.
+
+The original report is kept below, because the isolation is still the useful part — it was the
+**combination** that failed, not either half, and that is what pointed at the mangled name
+(`$bound_void` serialises, `$wbound_void` did not).
 
 **This is Xtg's `XGControl.action`** — i.e. **target/action itself**, and the reason `weak:` is on it
 is the one that matters: without it, `window → viewtree → button → action → controller → window` is
@@ -387,7 +394,13 @@ Reproducer: `spikes/structret/{blib,bapp}.xt`.
 
 ---
 
-# 9. 🔴 A library's virtual SELF-call on a client-allocated object aborts  ⟵ the last runtime blocker
+# 9. 🟠 A library's virtual SELF-call on a client-allocated object aborts
+
+> **Status: last verified against `d5628af`. NOT re-verified since.** It is a *runtime* bug, and
+> `--emit-lib` is arm9-only, so it can only be exercised through the loader — which does not
+> currently build (`vm_shm_create` gained a parameter; the XTOS shm work is in flight). I will
+> re-run it the moment the loader compiles. Given my record above, **assume nothing until it is
+> re-run.**
 
 Minimal, standalone, no Xtg:
 
