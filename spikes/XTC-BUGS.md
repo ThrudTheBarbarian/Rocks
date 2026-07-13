@@ -20,6 +20,7 @@ and `weak:`, and holds hundreds of live objects. It is meant to find the sharp e
 | **2** | gcc temp object name leaks into the `.so` | ✅ fixed (phase-610) — two sources, not one; `.so` builds are byte-identical now |
 | **3** | cross-`.so` trampoline identity for `^` | ✅ **fixed (phase-611) — and it was FOUR bugs, one of them a wild write into `.text`** |
 | **4** | arrays of class instances go silent | ✅ fixed (phase-609) — reproduced, real, and worse than silent |
+| **5** | **imported `struct` types: parse-fail in half the positions, SILENT MISCOMPILE in the other half** | 🔴 **OPEN (compiler thread on it).** `libXtg.so` links but does **not work**. |
 
 **Verified against xtc `cbbe3bc`:** all four Xtg programs pass on the real XTOS loader
 (`demo`, `nibdemo`, `test_spine` 14/14, `test_window`). A–G, and open items 1/2/4 plus
@@ -27,11 +28,11 @@ and `weak:`, and holds hundreds of live objects. It is meant to find the sharp e
 
 **#611 unblocked the library path**, and I took it as far as it goes: **`libXtg.so` now builds
 as a real `--emit-lib` artefact** (110 KB, with a 39 KB `.xtc.iface`) — the first time that has
-ever worked — and a client `#import <Xtg>` links against it, subclasses `XGView`, and overrides
-`drawRect`.
+ever worked — and a client `#import <Xtg>` **links** against it.
 
-Which surfaced the **one remaining blocker**, below: an imported `struct` type cannot be named
-in a declaration.
+**It does not yet *work*, and I first reported that it did.** See §5: an imported `struct` is a
+parse error in half the positions and a **silent miscompile** in the other half — including
+`drawRect`'s own signature, which is the one seam the whole toolkit turns on.
 
 > **A note on the lag.** Two of my reports (Gap G, and the missing `<stdio.h>` in the
 > arm9 PIC stub) were **already fixed upstream by the time I filed them** — I was
@@ -358,6 +359,72 @@ No need to reproduce against Rocks; but if you do hit a shape this fixture misse
 is a gap worth knowing about.
 
 ---
+
+---
+
+# 5. 🔴 Imported `struct` types — half parse-fail, half **silently miscompile**
+
+**`libXtg.so` links but does not work.** The last thing between Xtg and a real library, and it
+is nastier than it first looked.
+
+Classes cross the `.xtc.iface` boundary perfectly. **Structs do not** — in two ways, whose
+danger runs *opposite* to what you would guess:
+
+| imported `XGRect` used as… | | |
+|---|---|---|
+| a **local variable** | parse **error** | 🟢 **safe** — it stops you |
+| a **return** type | parse **error** | 🟢 **safe** |
+| a **pointer local** | parse **error** | 🟢 **safe** |
+| a **parameter** type | **compiles** | 🔴 **lowers the struct to `u8`** |
+| a **class field** | **compiles** | 🔴 **lowers the struct to `u8`** |
+
+```c
+    u16 f(XGRect r) { return r.w; }     // compiles clean.
+                                        // lowers to:   function f(U8) -> U16
+```
+
+### The parse errors are the *safe* half
+
+`XGRect r;` fails with *"Expected `;` but found `r`"* — the parser did not recognise `XGRect` as
+a type, so it parsed the line as an expression statement. **Imported struct names are not entered
+into the type-name table that disambiguates a declaration from an expression.** Class names are.
+And it is specifically the *imported* case: the identical source compiles as one TU.
+
+### The compiling half is a silent ABI break — at the one seam that matters
+
+```c
+    void drawRect(XGGraphics@ g, XGRect dirty)      // compiles.  MISCOMPILED.
+```
+
+**The library passes a real `XGRect`; the client's override reads a byte.** An app subclassing
+`XGView` and overriding `drawRect` — *the entire thesis of this toolkit* — produces an ABI
+mismatch that nothing diagnoses, at the exact point the library calls back through.
+
+> **I got this wrong, and how I got it wrong is the point.** I reported "a client subclasses
+> `XGView`, overrides `drawRect`, and the library calls it back" **on the evidence that it
+> compiled.** It does compile. It is broken. I would have found out on hardware and gone hunting
+> in `XGWindow` — which is precisely the debugging session this whole document exists to prevent.
+
+### The pattern worth naming
+
+This is the **fourth** time xtc has answered *"yes"* when it meant *"no"*:
+
+| | |
+|---|---|
+| **Gap C** | a store to a non-existent struct field was a **note** — and the store was **dropped** |
+| **Gap E** | `&Class.staticMethod` was a **note** — and produced a **bad pointer** |
+| **Gap F** | a non-weak `^` still **tested true** after its receiver died |
+| **§5** | an imported struct parameter **compiles** — and lowers to `u8` |
+
+Different subsystems, one habit: **degrade silently rather than refuse.** Each cost a debugging
+session a hard error would have cost thirty seconds.
+
+If there is one systemic ask in this document, it is this: **xtc should fail loudly on anything
+it cannot lower correctly.** A note that produces wrong code is worse than an unimplemented
+feature, because an unimplemented feature costs you an hour and a wrong one costs you your trust
+in the compiler — and then you stop believing the *true* answers too.
+
+Reproducer: `spikes/importstruct.xt`.
 
 ---
 
