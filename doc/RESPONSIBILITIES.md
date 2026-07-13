@@ -1247,10 +1247,18 @@ The gate is closer than it looks: today only **two** programs draw direct — `a
 
 **Two things fall out of it:**
 
-- **`WALLPAPER_BASE` (16 MB, PL0-RW cacheable) may not be needed at all.** §4 makes the desktop
-  an ordinary app, and its wallpaper is *content*, drawn into its own backing store. A dedicated
-  wallpaper plane that every process can write is both a hole and, by then, **redundant**. Delete
-  it rather than protect it.
+- **`WALLPAPER_BASE` (16 MB, PL0-RW cacheable) is not what its name says.** I previously called it
+  "probably redundant". **That was wrong, and the correction matters:** the desktop no longer uses
+  it as a wallpaper backdrop at all — it uses it as its **entire cacheable compositing
+  back-buffer**, drawing everything there and pushing only dirty rects to the scanned plane. It is
+  *repurposed*, and it is load-bearing today.
+
+  So it cannot simply be deleted. What §4 *does* imply is that its **original** purpose is
+  redundant — the desktop is an ordinary app and its wallpaper is *content*, in its own backing
+  store, not a privileged plane every process can write. Under gemd the back-buffer becomes an
+  ordinary surface too. **The region goes away by being made unnecessary, not by being removed
+  from under a live user.** (Wallpaper image support was lost in the desktop rename and is tracked
+  separately: `docs/OS/wallpaper-restore.md` in fpga-xt.)
 - **The math-cop chunk stack: DECIDED — it stays PL0-RW, for now.** It is the third door
   (`0x2080_0000`, 2 MB, cacheable), and it is not about drawing at all — it is a DMA buffer
   shared with the PL math coprocessor. It is *deliberately* being left generally accessible: the
