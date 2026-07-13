@@ -5,6 +5,23 @@ libGEM, running on XTOS/arm9. Xtg is a deliberately demanding client: it subclas
 library classes across a `.so` boundary, is called *back* by C (the AES), leans on ARC
 and `weak:`, and holds hundreds of live objects. It is meant to find the sharp edges.
 
+> ## ✅ §10 and §11 are fixed — and the *family* is being closed
+>
+> Both verified against HEAD, and **both workarounds have been removed from Xtg** — the natural
+> code now compiles and runs, which is the only way to actually test a fix:
+>
+> - `XGViewTree.markDirty` uses the **ternary** again.
+> - `XGTextField` holds a plain `TEDINFO` and `i32 caret` and takes `&ted` / `&caret` — **no more
+>   `malloc` per text field.**
+>
+> **And the compiler thread migrated 87 other `ABANDON` sites from *notes* to *errors*.** That is
+> the systemic ask from §5 being answered wholesale: *"xtc should fail loudly on anything it
+> cannot lower correctly."* Rebuilding the whole of Xtg under the stricter compiler lit up
+> **nothing** — so there was no other silently-wrong code hiding in the toolkit. Which is the
+> answer you want from that experiment, and the only way to have got it.
+>
+> ---
+>
 > # 11. 🔴 `&` on a class field is a *note*, and produces nothing
 >
 > `spikes/structret/addrfield.xt` — **arm64 host backend:**
@@ -88,8 +105,8 @@ and `weak:`, and holds hundreds of live objects. It is meant to find the sharp e
 
 | | | |
 |---|---|---|
-| **10** | **a struct-valued ternary loses half the struct** | 🔴 **OPEN.** Reproduces on the **host** backend. |
-| **11** | **`&` on a class FIELD is a *note*, and produces nothing** | 🔴 **OPEN.** Silent wrong code. Reproduces on the **host**. |
+| **10** | a struct-valued ternary loses half the struct | ✅ **fixed (phase-620)** — "an aggregate through a phi copied only its first four bytes" |
+| **11** | `&` on a class FIELD is a *note*, and produces nothing | ✅ **fixed.** And **87 other ABANDON sites became errors, not notes.** |
 
 
 | | | |

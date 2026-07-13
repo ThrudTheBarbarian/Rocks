@@ -74,11 +74,7 @@ class XGViewTree
     // ---- damage -------------------------------------------------------------
     void markDirty(XGRect abs) {
         if (XGGeom.isEmpty(abs)) { return; }
-        // NOT a ternary.  `dirty = hasDirty ? unite(dirty,abs) : abs;` corrupts the
-        // struct: x and y survive, w and h come back as garbage (xtc: struct-valued
-        // ternary — reproducer in spikes/structret/tern.xt).
-        if (hasDirty) { dirty = XGGeom.unite(dirty, abs); }
-        else          { dirty = abs; }
+        dirty    = hasDirty ? XGGeom.unite(dirty, abs) : abs;
         hasDirty = true;
     }
     bool   isDirty(void) { return hasDirty; }
