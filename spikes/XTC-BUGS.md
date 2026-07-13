@@ -17,18 +17,21 @@ and `weak:`, and holds hundreds of live objects. It is meant to find the sharp e
 | **D** | anonymous enum constants | ✅ xtc side fixed (phase-593) — **remaining half is one flag on libGEM's build, see §1** |
 | **G** | `-L` absent from `xtc --help` | ✅ fixed (in by `69ec25d`) |
 | **1** | **weak-reference table: capped, and O(N) on every store and every dealloc** | ✅ **fixed (phases 599–608) — the table is GONE on all five backends** |
-| **2** | gcc temp object name leaks into the `.so` | 🟡 open (cosmetic; breaks reproducible builds) |
-| **3** | cross-`.so` trampoline identity for `^` | ❓ open, unexamined by me |
+| **2** | gcc temp object name leaks into the `.so` | ✅ fixed (phase-610) — two sources, not one; `.so` builds are byte-identical now |
+| **3** | cross-`.so` trampoline identity for `^` | ✅ **fixed (phase-611) — and it was FOUR bugs, one of them a wild write into `.text`** |
 | **4** | arrays of class instances go silent | ✅ fixed (phase-609) — reproduced, real, and worse than silent |
 
 **Verified against xtc `cbbe3bc`:** all four Xtg programs pass on the real XTOS loader
 (`demo`, `nibdemo`, `test_spine` 14/14, `test_window`). A–G, and open items 1/2/4 plus
 `weak:`-in-a-struct, are all confirmed fixed from this side.
 
-**Only one thing is still open: §3, cross-`.so` trampoline identity.** And it is the right one
-to still be working on — it is exactly what will bite the moment `libXtg.so` becomes a real
-`--emit-lib` artefact instead of a pile of `#import`ed sources, which is the next structural
-step on this side.
+**#611 unblocked the library path**, and I took it as far as it goes: **`libXtg.so` now builds
+as a real `--emit-lib` artefact** (110 KB, with a 39 KB `.xtc.iface`) — the first time that has
+ever worked — and a client `#import <Xtg>` links against it, subclasses `XGView`, and overrides
+`drawRect`.
+
+Which surfaced the **one remaining blocker**, below: an imported `struct` type cannot be named
+in a declaration.
 
 > **A note on the lag.** Two of my reports (Gap G, and the missing `<stdio.h>` in the
 > arm9 PIC stub) were **already fixed upstream by the time I filed them** — I was
@@ -193,7 +196,24 @@ program — completely untouched.
 
 ---
 
-# 2. 🟡 A gcc temp object name leaks into the `.so`
+# 2. ✅ A gcc temp object name leaks into the `.so` — fixed (phase-610)
+
+**Two sources, not one.** Yours (`ccTxhJ1j.o`) is gcc's temp object: our generated `.s`
+carried no `.file` directive, so gas had no file symbol to emit and fell back to the
+name of the temporary object gcc handed it. It now emits `.file "<module>.xt"` —
+deterministic, and more useful than a temp path.
+
+The second was **ours**: `xtc-arm9-pic-stub-<pid>.c`, which gcc records as an `STT_FILE`
+too. Uniqueness has to live *somewhere*, but it belongs in the **directory** (which
+nothing records), not the **filename** (which does). One temp dir per invocation now,
+with stable basenames inside — applied to the arm9 PIC stub, the `.xtc.iface` json/asm,
+and the arm64 and x86_64 stubs, which had the same latent shape.
+
+Two consecutive `--emit-lib` builds of the same source are now **byte-identical**.
+
+<details>
+<summary>Original report</summary>
+
 
 Two clean builds of identical source produce different binaries. They differ by
 **8 bytes** — a gcc temp object name (`ccTxhJ1j.o` vs `cchJQb8F.o`) in the symbol
@@ -205,7 +225,88 @@ very expensive thing to believe while debugging.
 
 ---
 
-# 3. ❓ Cross-`.so` trampoline identity for `^`
+</details>
+
+---
+
+# 3. ✅ Cross-`.so` trampoline identity for `^` — fixed (phase-611)
+
+**You were right to flag it, and it was worse than you thought: not a wrong answer, a
+wild write into `.text`.** Reproduced on the real XTOS loader under qemu, fixed, and
+re-verified there. Four separate bugs were hiding behind it.
+
+**The fact that decides everything** — `xtld.c`:
+
+```c
+if (s->st_shndx != SHN_UNDEF) { S = bias + s->st_value; /* defined here */ }
+```
+
+The loader binds a symbol to the module's **own** definition whenever that module defines
+it; global lookup happens only for *undefined* symbols. **There is no interposition.** So
+the textbook fix — make `__bm_tramp_<sig>` preemptible so all modules agree on one
+address — cannot work. (Nor could it anyway: `ldr r0, =sym` puts the address in a literal
+pool *inside `.text`*, so a symbolic dynamic reloc there would demand `DT_TEXTREL` —
+which is exactly why the arm9 build uses `-Bsymbolic` + `.hidden`.) Every module gets its
+own trampoline. **Any guard comparing trampoline addresses is unsound across a `.so`, and
+no linker flag rescues it.**
+
+### 3a — the weak-`^` guard wrote into `.text`
+
+The guard asked *"is this code word MY `__bm_tramp_<sig>`?"* to decide whether `recv` is
+an object. When `libXtg` stores a `^` the **app** widened, that compare fails, the library
+takes the app's **function pointer** for an object, and writes the weak chain head to
+`*(void***)(fn - N)`:
+
+```
+*** DATA-ABORT in task 'client.so'   DFAR=0xeafffff7
+```
+
+`DFAR` — the faulting *data* address — is an **ARM branch encoding**. It read an
+instruction out of `.text` and wrote through it. (This got *worse* when the weak table
+became an intrusive list: registering a code address used to merely burn a table slot
+forever; now it is a wild write.)
+
+Fixed with a **magic in the object header** — `_xtc_weak_register` asks the object instead
+of trusting the caller. Value-based, so a foreign trampoline, a stale `^`, or any other
+non-object all fail it alike. The header grew 4 bytes *at the front*, so every
+obj-relative offset — and the whole inline ARC — is untouched.
+
+### 3b — every client of every xtc library failed to compile
+
+`--emit-lib` serialised the library's synthesised `$imported_constants` enum (its private
+record of what *it* imported — on arm9, libc is auto-imported, so every module has one)
+into its **public** interface. The client rebuilds it *and* synthesises its own:
+`Duplicate enum name`. Skipped at serialisation now.
+
+### 3c — `^` types didn't survive `.xtc.iface`
+
+The importer had no case for `$bound_<sig>` and returned **void**. So an imported
+`void setAction(act_t^ a)` looked like it took a `void` parameter — the caller had no
+signature to widen `&fn` against, emitted **no trampoline**, and the `^` crossed with a
+**zero code word**. → `PREFETCH-ABORT at PC=0`.
+
+### 3d — cross-module weak refs were never zeroed
+
+The weak runtime was lazy-linked on *"does **my** module use weak?"* — the wrong question.
+A library registers a weak ref to an **app** object; the app, using no weak refs itself,
+freed it without zeroing the library's slot. Silent dangle. Every dealloc now asks the
+object's header, which is the only thing that knows.
+
+### On identity itself
+
+Two `^`s widened **in the same module** always compare equal — which is the pattern that
+matters: an app registers *and* unregisters its own callbacks, so `removeAction(&f)` finds
+what `addAction(&f)` stored, even though the *library* holding them has a different
+trampoline. The residual (the same function widened in **two** modules, compared against
+each other) is exotic, is no longer a safety issue, and closing it would need a canonical
+trampoline this loader cannot give. Recorded, not papered over.
+
+**Test:** `tests/crossmod/run.sh` — the only test exercising a `^` across a module
+boundary. All four of its lines were a crash or a dangle before this. Write-up:
+`fpga-xtc/docs/Design/bound-methods-across-modules.md`.
+
+<details>
+<summary>Original report</summary>
 
 Raised when the `^` design was settled, never resolved: the `@`→`^` widening uses **one
 trampoline per signature**, with the function pointer carried in `recv`. If a client
@@ -217,6 +318,8 @@ across the boundary?
 Xtg has not yet hit this because `libXtg.so` is not yet a real `--emit-lib` artefact —
 programs still `#import` its sources. **It will hit it the moment that changes**, which
 is the next structural step. Worth settling before then.
+
+</details>
 
 ---
 

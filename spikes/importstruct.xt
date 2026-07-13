@@ -1,0 +1,22 @@
+// An imported STRUCT type is not registered as a type name for declarations.
+// Build libXtg.so with `xtc --emit-lib`, then compile this against it.
+//
+//   xtc -A arm9 --emit-lib -I xtg -L <gem> xtg/Xtg.xt -o libXtg.so
+//   xtc -A arm9 -I xtg -L . -L <gem> spikes/importstruct.xt -o importstruct.so
+//
+// Classes cross the .xtc.iface boundary fine.  Structs cross it only where the
+// parser is ALREADY expecting a type.
+#import <Xtg>
+
+void asParam(XGRect r) { }                 // OK   — parser expects a type here
+class AsField : Object { XGRect r;         // OK   — parser expects a type here
+                         void init(void) { } }
+
+XGRect asReturn(void) { XGRect@ p; return p[0]; }   // FAIL — must DECIDE if XGRect is a type
+
+void main(void)
+{
+    XGRect  r;                             // FAIL — "Expected ';' but found 'r'"
+    XGRect@ p;                             // FAIL
+    XGView@ v = new XGView();              // OK   — a CLASS imports fine
+}
