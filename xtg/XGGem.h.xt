@@ -72,3 +72,4 @@ void    v_gtext(i32 h, i32 x, i32 y, u8@ s);
 #define W_MOVER     $0008
 
 #define WF_WORKXYWH 4
+

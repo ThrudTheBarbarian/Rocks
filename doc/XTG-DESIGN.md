@@ -644,3 +644,57 @@ declared in a header is invisible to it — even with `-fno-eliminate-unused-deb
 puts it in the DWARF but does not make xtc walk to it. So a type the toolkit must *construct*
 needs at least one exported function that names it. `objc_scrollbar()` is that function (and is
 useful anyway).
+
+---
+
+# 11. How it scales — measured, not assumed
+
+`xtg/test_scale.xt` builds a 117-object tree (16 nested levels + 100 siblings), marks **one**
+small view dirty, and counts.
+
+| | before | after |
+|---|---|---|
+| **depth** — deepest level that drew, of 16 | **8** 🔴 | **16** |
+| **breadth** — `drawRect`s run for 1 dirty view of 100 | 1 | 1 |
+| **walk** — objects the AES *visited* to deliver those draws | **109** 🔴 | **2** |
+
+## The depth limit was a silent truncation
+
+`objc_draw(tree, 0, 8, ...)` — classic GEM's `depth = 8`, inherited without thinking. **A GEM
+dialog is a box with widgets in it. A view hierarchy is not:**
+
+```
+    window -> content -> scroll -> clip -> table -> row -> cell -> field    = eight already
+```
+
+Past depth 8 the AES simply stops descending. Those views are **never drawn and never
+hit-tested** — no error, no clue, they are just not there. Every AppKit-shaped tree we are about
+to build would have hit it. It is a recursion bound and nothing more, so `XG_DEPTH = 64` costs a
+little stack.
+
+## The walk was the real cost — and Xtg could not have fixed it
+
+109 visits to deliver 2 draws. Xtg *already* skipped its own `G_USERDEF` views inside the
+userdraw hook, so the waste was **entirely in the stock widgets**: those go through GEM's own
+`draw_obj` → `theme_draw` and get drawn, *then* clipped by the VDI. A 40-cell table with one
+dirty row was theme-drawing 40 cells.
+
+**And the toolkit's own instrumentation was blind to it**, because every probe in the test was a
+`G_USERDEF` — the one kind Xtg was already skipping. The fix had to be in GEM's `draw_rec`, and
+it is: an object outside the clip is not drawn, and an out-of-clip **`OF_CLIPCHILDREN` container
+prunes its entire subtree in one test** — its children are confined to it by definition, so it is
+*proof* that nothing beneath it can be visible.
+
+Which is what makes a long list cheap: **the rows you cannot see are never visited at all.**
+
+## What is still O(N), deliberately
+
+- **The recursion.** `draw_rec` still walks every node to perform that one rect test. A few
+  hundred integer comparisons is noise beside a single blit, and `OF_CLIPCHILDREN` makes it
+  sublinear wherever containers exist. If it ever matters, the answer is a per-subtree bounding
+  box — not a different tree.
+- **The damage rect is a single union.** Two dirty rects at opposite corners take the whole
+  window. A rect *list* costs bookkeeping on every mark to save work only when damage is genuinely
+  disjoint.
+
+Both are the right trade until proven otherwise. **Revisit on a profile, not a hunch.**

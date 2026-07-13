@@ -181,6 +181,6 @@ class XGViewTree
     // Hit-test.  Deepest object containing the point, or -1.  This is objc_find —
     // we do not write a hit-test at all.
     i32 hitTest(i16 px, i16 py) {
-        return objc_find(tree, (i32)0, (i32)8, (i32)px, (i32)py);
+        return objc_find(tree, (i32)0, (i32)XG_DEPTH, (i32)px, (i32)py);
     }
 }

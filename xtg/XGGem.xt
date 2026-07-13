@@ -53,3 +53,15 @@
 #define OS_DISABLED    $0008
 #define OS_OUTLINED    $0010
 #define OS_SHADOWED    $0020
+
+// How deep objc_draw / objc_find will descend.
+//
+// Classic GEM used 8, because a GEM dialog is a box with widgets in it.  A VIEW
+// HIERARCHY IS NOT: window -> content -> scroll -> clip -> table -> row -> cell ->
+// field is ALREADY eight, and AppKit-shaped trees routinely go deeper.  At depth 8 the
+// AES silently stops descending — those views are never drawn and never hit-tested,
+// with no error and no clue.  Measured: test_scale.xt saw exactly 8 of 16 levels draw.
+//
+// It is only a recursion bound in draw_rec / find_rec, so raising it costs nothing but
+// stack, and 64 frames of a handful of words is noise.
+#define XG_DEPTH    64

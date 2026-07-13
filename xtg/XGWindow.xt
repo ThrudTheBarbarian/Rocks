@@ -19,10 +19,18 @@
 XGGraphics@ gGraphics;
 pointer     gTheme;
 
+// Diagnostics: how many objects the AES VISITED (called us for), vs how many we
+// actually drew.  The gap is the cost of the tree walk itself — GEM's draw_rec
+// recurses every node regardless of the damage rect, and we can only decline to
+// DRAW, not decline to be visited.  See test_scale.xt.
+u32 gUserDrawVisits;
+u32 gUserDrawDraws;
+
 // ---- THE SEAM ---------------------------------------------------------------
 // The AES invokes this for every G_USERDEF inside objc_draw.  It is drawRect.
 i32 xtg_userdraw(pointer tree, i32 obj, pointer ud)
 {
+    gUserDrawVisits = gUserDrawVisits + (u32)1;
     XGWindow@ w = (XGWindow@)ud;             // the window, straight from the AES
     if (w == (XGWindow@)0) { return (i32)0; }
 
@@ -38,6 +46,7 @@ i32 xtg_userdraw(pointer tree, i32 obj, pointer ud)
     // runs every drawRect in the window and throws the pixels away".
     if (w.hasDamage && !XGGeom.intersects(abs, w.damage)) { return (i32)0; }
 
+    gUserDrawDraws = gUserDrawDraws + (u32)1;
     gGraphics.bind(aes_handle(), gTheme, abs);
 
     // Virtual dispatch into app code, from inside the AES's own traversal.
@@ -63,7 +72,7 @@ void xtg_window_draw(i32 handle, i32 wx, i32 wy, i32 ww, i32 wh, pointer ud)
 
     // Point the seam at THIS window for the duration of the walk.
     objc_set_userdraw((pointer)&xtg_userdraw, (pointer)w);
-    objc_draw((pointer)w.tree.objects(), (i32)0, (i32)8, cx, cy, cw, ch);
+    objc_draw((pointer)w.tree.objects(), (i32)0, (i32)XG_DEPTH, cx, cy, cw, ch);
 }
 
 class XGWindow : XGResponder
