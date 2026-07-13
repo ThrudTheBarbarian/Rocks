@@ -32,6 +32,7 @@ class XGApplication : XGResponder
 {
     XGApplicationDelegate@ delegate;
     Array@                 windows;
+    weak:XGWindow@         keyWindow;      // the window the keyboard is talking to
     bool                   running;
     i32                    vh;
     i32                    screenW;
@@ -100,6 +101,7 @@ class XGApplication : XGResponder
     void addWindow(XGWindow@ w) {
         windows.add(w);
         w.setNextResponder(self);                // window -> application
+        if (keyWindow == (XGWindow@)0) { keyWindow = w; }
     }
 
     void stop(void) { running = false; }
@@ -137,7 +139,10 @@ class XGApplication : XGResponder
                 ev.kind = (u8)XGEventMouseDown;
                 ev.x = (i16)mx; ev.y = (i16)my; ev.buttons = (u16)mb;
                 XGWindow@ w = self.windowAt(mx, my);
-                if (w != (XGWindow@)0) { w.dispatchMouse(ev); }
+                if (w != (XGWindow@)0) {
+                    keyWindow = w;                    // clicking a window gives it the keyboard
+                    w.dispatchMouse(ev);
+                }
             }
 
             if (gNeedsDisplay) { self.displayIfNeeded(); }
@@ -145,10 +150,9 @@ class XGApplication : XGResponder
             if ((what & MU_KEYBD) != (i32)0) {
                 ev.kind = (u8)XGEventKeyDown;
                 ev.key = (u16)key; ev.modifiers = (u16)ks;
-                XGWindow@ w = (XGWindow@ ?)windows.first();
-                if (w != (XGWindow@)0 && w.firstResponder != (XGResponder@)0) {
-                    w.firstResponder.keyDown(ev);
-                }
+                // The KEY WINDOW routes it — not "the first window", which was what this
+                // did before and is only ever right by accident.
+                if (keyWindow != (XGWindow@)0) { keyWindow.dispatchKey(ev); }
             }
         }
         return (i32)0;

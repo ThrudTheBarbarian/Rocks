@@ -5,6 +5,40 @@ libGEM, running on XTOS/arm9. Xtg is a deliberately demanding client: it subclas
 library classes across a `.so` boundary, is called *back* by C (the AES), leans on ARC
 and `weak:`, and holds hundreds of live objects. It is meant to find the sharp edges.
 
+> # 11. 🔴 `&` on a class field is a *note*, and produces nothing
+>
+> `spikes/structret/addrfield.xt` — **arm64 host backend:**
+>
+> ```c
+>     class Holder : Object {
+>         T   ted;                       // a struct field
+>         i32 caret;                     // a scalar field
+>         void viaField(void) {
+>             fill((pointer)&ted);       // note: ABANDON|lowering: & on 'ted' not pinned
+>             bump((pointer)&caret);     // note: ABANDON|lowering: & on 'caret' not pinned
+>         }
+>     }
+> ```
+> ```
+>     &field  : ted=0,0 caret=0     <- produced NOTHING
+>     &local  : ted=7,9 caret=1     <- the identical call through a LOCAL works
+> ```
+>
+> **A note. The build succeeds. The code is wrong.** This is the *fifth* member of the family
+> (Gap C, Gap E, Gap F, §5, and now this) — and it is the one that most directly blocks the
+> toolkit, because **handing a C library the address of something you own is what a binding
+> library IS.**
+>
+> `XGTextField` must give GEM the address of its `TEDINFO` (that *is* `ob_spec`) and of its caret
+> (`objc_edit`'s in/out parameter). Both are natural class fields. With `&field` silently lowering
+> to nothing, `ob_spec` is garbage and `objc_edit` writes through a null — which is exactly the
+> DATA-ABORT I got.
+>
+> **Workaround in Xtg:** heap-allocate them (`TEDINFO@`, `i32@`), so there is a real address to
+> pass. It works, but it puts a `malloc` in every text field for no reason but this.
+>
+> ---
+>
 > # 10. 🔴 A struct-valued ternary loses half the struct
 >
 > `spikes/structret/tern.xt` — **arm64 host backend, no library, no loader:**
@@ -55,6 +89,7 @@ and `weak:`, and holds hundreds of live objects. It is meant to find the sharp e
 | | | |
 |---|---|---|
 | **10** | **a struct-valued ternary loses half the struct** | 🔴 **OPEN.** Reproduces on the **host** backend. |
+| **11** | **`&` on a class FIELD is a *note*, and produces nothing** | 🔴 **OPEN.** Silent wrong code. Reproduces on the **host**. |
 
 
 | | | |

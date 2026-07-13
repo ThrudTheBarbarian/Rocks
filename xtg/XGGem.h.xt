@@ -30,6 +30,18 @@ void    wind_redraw_area(i32 x, i32 y, i32 w, i32 h);   // repaint ONE RECT, not
 i32     wind_find(i32 x, i32 y);
 void    wind_get(i32 h, i32 what, pointer a, pointer b, pointer c, pointer d);
 
+// ---- text editing -------------------------------------------------------------
+// GEM's edit engine, explicitly meant for "a bare evnt_multi client that hosts editable
+// objects itself" — which is exactly Xtg.  It does insert / Backspace / Del / arrows /
+// Ctrl-U, moves and draws the caret, redraws the field, and validates per character
+// (te_pvalid).  XGTextField writes NONE of that.
+i32     objc_edit(pointer tree, i32 obj, i32 key, pointer idx, i32 kind);
+
+#define ED_START  0
+#define ED_INIT   1      /* focus the field + show the caret (idx = pos, -1 = end) */
+#define ED_CHAR   2      /* process one key; returns 1 if consumed */
+#define ED_END    3      /* drop focus */
+
 // ---- objects ----------------------------------------------------------------
 void    objc_draw(pointer tree, i32 start, i32 depth, i32 clx, i32 cly, i32 clw, i32 clh);
 void    objc_set_userdraw(pointer fn, pointer ud);

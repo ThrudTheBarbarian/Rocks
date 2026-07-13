@@ -167,6 +167,31 @@ class XGWindow : XGResponder
         wind_redraw_win(handle);
     }
 
+    // ---- the first responder -------------------------------------------------
+    // The window owns it, not the view — a view must not know what a window is (that
+    // import would be a cycle), and "who has the keyboard" is a per-window fact.
+    //
+    // The old responder may REFUSE to resign (a field with invalid contents), in which
+    // case focus does not move.  That is the whole reason resignFirstResponder returns
+    // a bool rather than being a notification.
+    bool makeFirstResponder(XGResponder@ r) {
+        if (firstResponder == r) { return true; }
+        if (firstResponder != (XGResponder@)0) {
+            if (!firstResponder.resignFirstResponder()) { return false; }
+        }
+        firstResponder = r;
+        if (r != (XGResponder@)0) { return r.becomeFirstResponder(); }
+        return true;
+    }
+
+    // A key arrived for this window.  The first responder gets first refusal; if there
+    // is none, or it does not consume it, the chain carries it up to the window and
+    // then the application.
+    void dispatchKey(XGEvent@ e) {
+        if (firstResponder != (XGResponder@)0) { firstResponder.keyDown(e); return; }
+        self.keyDown(e);
+    }
+
     // A click landed in this window: let the AES find what was hit, then send it
     // into the responder chain.
     void dispatchMouse(XGEvent@ e) {
@@ -175,6 +200,11 @@ class XGWindow : XGResponder
         Object@ o = tree.viewAt((u16)hit);
         XGView@ v = (XGView@ ?)o;
         if (v == (XGView@)0) { return; }
+
+        // Clicking something that wants the keyboard gives it the keyboard.  The WINDOW
+        // does this, not the view, so XGView stays ignorant of windows.
+        if (v.acceptsFirstResponder()) { self.makeFirstResponder(v); }
+
         v.mouseDown(e);                         // climbs the chain if unhandled
     }
 }

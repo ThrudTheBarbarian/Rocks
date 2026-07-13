@@ -38,10 +38,16 @@ class XGResponder
     void mouseDragged(XGEvent@ e) {
         if (nextResponder != (XGResponder@)0) { nextResponder.mouseDragged(e); }
     }
+    // ---- first responder ---------------------------------------------------
+    // Can I take the keyboard?  A view says yes by overriding this (XGTextField does).
+    bool acceptsFirstResponder(void) { return false; }
+
+    // Told that I now have / no longer have the keyboard.  Returning false REFUSES —
+    // which is how a text field with invalid contents can decline to give up focus.
+    bool becomeFirstResponder(void) { return true; }
+    bool resignFirstResponder(void) { return true; }
+
     void keyDown(XGEvent@ e) {
         if (nextResponder != (XGResponder@)0) { nextResponder.keyDown(e); }
     }
-
-    // Can this responder take keyboard focus?  Controls and text fields say yes.
-    bool acceptsFirstResponder(void) { return false; }
 }

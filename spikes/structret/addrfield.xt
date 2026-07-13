@@ -1,0 +1,38 @@
+// & on a CLASS FIELD is only a `note`, and produces nothing.
+//   xtc -A arm64 addrfield.xt -o addrfield && ./addrfield
+#import <Stdio.xt>
+
+struct T { i16 a; i16 b; }
+
+void fill(pointer p) { T@ t = (T@)p; t.a = (i16)7; t.b = (i16)9; }
+void bump(pointer p) { i32@ n = (i32@)p; n[0] = n[0] + (i32)1; }
+
+class Holder : Object
+{
+    T   ted;         // a struct FIELD
+    i32 caret;       // a scalar FIELD
+    void init(void) { ted.a = (i16)0; ted.b = (i16)0; caret = (i32)0; }
+
+    void viaField(void) {
+        fill((pointer)&ted);        // note: ABANDON|lowering: & on 'ted' not pinned
+        bump((pointer)&caret);      // note: ABANDON|lowering: & on 'caret' not pinned
+    }
+}
+
+void main(void)
+{
+    Holder@ h = new Holder();
+    h.viaField();
+    Stdio.printf("&field  : ted=%d,%d caret=%d   (expect 7,9 and 1)\n",
+                 h.ted.a, h.ted.b, h.caret);
+
+    // the same thing through a LOCAL works, for contrast
+    T   lt; lt.a = (i16)0; lt.b = (i16)0;
+    i32 lc = (i32)0;
+    fill((pointer)&lt);
+    bump((pointer)&lc);
+    Stdio.printf("&local  : ted=%d,%d caret=%d   (expect 7,9 and 1)\n", lt.a, lt.b, lc);
+
+    bool ok = h.ted.a == (i16)7 && h.ted.b == (i16)9 && h.caret == (i32)1;
+    Stdio.printf("%s\n", ok ? "PASS" : "FAIL: & on a class field produced nothing");
+}
