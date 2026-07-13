@@ -601,3 +601,46 @@ Then `XGScrollBar` is exactly `XGButton`: a class whose `gemType()` returns `G_S
 >
 > Everything else is Xtg code. Neither is large, and both make the toolkit *smaller* rather than
 > bigger — which is the sign they are in the right place.
+
+## ✅ DONE — both landed in libGEM (`fpga-xt` `1e4efbc`)
+
+Verified on the loader by reading back real pixels (`xtg/test_clip.xt`):
+
+```
+    clip:    inside drew, outside untouched      -> the child is cut at the parent's edge
+    G_SCROLL 1472/1600 px, thumb = B2B2B2FF      -> a scrollbar fills its column
+    G_SLIDER  569/2160 px  (26%)                 -> a slider does NOT fill its box: track + knob
+```
+
+**It turned out to be *three* things, not two**, because the theme already knew something the
+design did not: a **scrollbar** and a **value slider** are different widgets. A scrollbar's thumb
+has a **size** (how much of the content is visible — `vscroll.`/`hscroll.` art, plus arrows); a
+slider's knob does not (`slider.knob`, `slider.knob.hi`). Cramming them into one type would have
+been wrong, and the art told us so.
+
+| | |
+|---|---|
+| **`OF_CLIPCHILDREN`** = `0x1000` | clears every classic-GEM flag (`OF_INDIRECT`=0x100 … `OF_SUBMENU`=0x800), because Rocks imports real `.rsc` files |
+| **`G_SCROLL`** = 45 | themed scrollbar. `ob_spec` → `SCROLLBAR { vert, value, page, arrows }` |
+| **`G_SLIDER`** = 46 | themed value slider. Same struct; `page` unused |
+| `value` / `page` | **permille** (0..1000) — resolution-independent, and the AES needs no floating point |
+| **`objc_scroll_value()`** | pixel → value, centring the thumb on the cursor, using the *same* geometry the draw code uses — so a drag tracks exactly what is painted |
+| **`objc_scrollbar()`** | the `SCROLLBAR` behind an object |
+
+**The AES only draws them; dragging is the toolkit's job.** That is what keeps the AES dumb and
+the toolkit smart — and it is why `XGScrollBar`, like `XGButton`, will contain **zero drawing
+code**.
+
+### Two things worth knowing, dug out the hard way
+
+**`vs_clip` mode 1 is PUSH-AND-INTERSECT, not "set"** (`vdi/clip.c: op_clip`). Restoring a parent's
+clip must be a **pop** (mode 0). "Restoring" with `vs_clip(1, parent)` intersects *again* and
+leaves the clip still narrowed to the child — after which **every later sibling silently
+vanishes**. The symptom was "`case G_SCROLL:` is never entered", and it was entered; its pixels
+were being thrown away. Anyone touching `draw_rec` should read this first.
+
+**xtc's DWARF import only reaches types named in an exported *signature*.** A struct merely
+declared in a header is invisible to it — even with `-fno-eliminate-unused-debug-types`, which
+puts it in the DWARF but does not make xtc walk to it. So a type the toolkit must *construct*
+needs at least one exported function that names it. `objc_scrollbar()` is that function (and is
+useful anyway).
