@@ -1251,11 +1251,19 @@ The gate is closer than it looks: today only **two** programs draw direct — `a
   an ordinary app, and its wallpaper is *content*, drawn into its own backing store. A dedicated
   wallpaper plane that every process can write is both a hole and, by then, **redundant**. Delete
   it rather than protect it.
-- **The math-cop chunk stack needs an answer too.** It is the third door, and it is not about
-  drawing at all — it is a cacheable DMA buffer shared with the PL. Either it is kernel-only (map
-  it PL0-none and have the worker own it), or a client genuinely needs it and it wants the same
-  treatment as a surface: mapped on request, not blanket-granted. **Do not take the blanket down
-  and leave this standing** — that is closing the front door with the side door open.
+- **The math-cop chunk stack: DECIDED — it stays PL0-RW, for now.** It is the third door
+  (`0x2080_0000`, 2 MB, cacheable), and it is not about drawing at all — it is a DMA buffer
+  shared with the PL math coprocessor. It is *deliberately* being left generally accessible: the
+  math co-pro is a compute service any program may use, and exposing it is not a windowing
+  concern. **This is a narrow, conscious exception, not an oversight** — which is the whole
+  reason it is written down here. The blanket coming down (above) is about *pixels*, and it must
+  not silently sweep the co-pro up with them.
+
+  > The risk it leaves is bounded and worth naming: a hostile program can corrupt *another
+  > program's math results* through that buffer. That is a real hole, but it is a **compute**
+  > hole, not a **display** one — it cannot be used to read or scribble another client's window.
+  > If the co-pro ever grows per-process state worth protecting, it wants the same treatment as
+  > a surface: mapped on request, not blanket-granted.
 
 ### What phase 1 deliberately does *not* do
 
