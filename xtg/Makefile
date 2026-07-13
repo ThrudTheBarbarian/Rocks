@@ -35,6 +35,22 @@ PROGS = demo.so nibdemo.so test_spine.so test_window.so
 
 all: $(PROGS)
 
+# ---- libXtg.so — the toolkit as a REAL shared library --------------------------
+# `xtc --emit-lib` takes a single translation unit ("multi-file inputs not supported
+# on the new-IR path yet"), and #import is include-once — so Xtg.xt is an umbrella
+# that pulls in the ten sources, and that umbrella IS the library.
+#
+# A client then says `#import <Xtg>` and links against it: it subclasses XGView,
+# overrides drawRect, and libXtg calls the override back across the .so boundary.
+# That took four compiler fixes (xtc #611) and is the whole thesis of the toolkit.
+#
+# BLOCKED (spikes/XTC-BUGS.md §5): an imported STRUCT type is not a type name, so a
+# client cannot write `XGRect r = view.bounds();` — Xtg's most common line. Until
+# that lands, programs still #import the sources directly (the PROGS above).
+lib: libXtg.so
+libXtg.so: Xtg.xt $(SRCS)
+	$(XTC) -A $(ARCH) --emit-lib -I . -L $(GEMLIB) Xtg.xt -o $@
+
 %.so: %.xt $(SRCS)
 	$(XTC) $(XTCFLAGS) $< -o $@
 
@@ -43,6 +59,6 @@ run-nibdemo: nibdemo.so ; $(MAKE) -C $(LOADER) xtcrun XTC_SO=$(CURDIR)/nibdemo.s
 run-spine:   test_spine.so ; $(MAKE) -C $(LOADER) xtcrun XTC_SO=$(CURDIR)/test_spine.so
 run-window:  test_window.so ; $(MAKE) -C $(LOADER) xtcrun XTC_SO=$(CURDIR)/test_window.so
 
-clean: ; rm -f $(PROGS)
+clean: ; rm -f $(PROGS) libXtg.so
 
-.PHONY: all clean run-demo run-nibdemo run-spine run-window
+.PHONY: all lib clean run-demo run-nibdemo run-spine run-window
