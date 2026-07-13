@@ -519,30 +519,85 @@ target/action.
 So Cocoa's two patterns get two mechanisms chosen for what they actually *are*, rather than both
 being crammed into one protocol with `respondsToSelector:` papering over the difference.
 
-## ⚠ The trap: "the simple forms are just object trees"
+## The object tree is a **viewport**, not a model
 
-A static table of 20 rows *is* an object tree, and building that first is tempting.
+`XGTableView` / `XGOutlineView` are object trees — **sized to the container, not to the data.**
+The container interprets the model from its datasource and populates the tree with just the cells
+that fit. That is exactly `NSTableView`, and it is exactly cell reuse.
 
-**A table of 10,000 rows cannot be** — and *that is the entire reason `NSTableView` has a
-datasource.* Its purpose is to **avoid materialising the tree**: draw only the visible rows, ask
-the datasource for their contents, and reuse cell views as you scroll.
+> **The tree is a viewport. The datasource is the model. The container is the projection.**
 
-So:
+**Why real OBJECTs and not one big `G_USERDEF`.** The tempting alternative — a single `G_USERDEF`
+that draws all the visible rows itself — is a **regression**, and it took a wrong turn in an
+earlier draft of this document to see why. If each visible cell is a real OBJECT:
+
+- **GEM themes it.** A cell that is a `G_STRING`, a `G_CHECKBOX`, a `G_CICON` costs **zero
+  drawing code** — which is the entire reason we married views to GEM objects.
+- **`objc_find` hit-tests it**, for free, at the right depth.
+- **A custom cell view is the same mechanism** — put an `XGView` in that slot instead. It is not
+  "icing on the cake"; it is the cake, with a different filling.
+
+Drawing the rows by hand inside a userdef would reimplement AppKit's cell drawing *and* throw
+away theming and hit-testing. The cells are objects.
+
+### Scrolling must not mutate the tree
+
+Keep a fixed pool of `visibleRows + 1` cells.
 
 ```
-    XGTableView    ONE G_USERDEF.  Draws the visible rows itself, from the datasource.
-                   Materialises child OBJECTs only for VISIBLE rows, and only when the
-                   client wants custom cell views (objc_add / objc_delete — already
-                   wrapped by XGViewTree).
-
-    XGOutlineView  the same, plus expansion state.  Rows are a flattened view of a tree.
-
-    XGScrollView   an XGView that offsets its children and CLIPS THEM TO ITS BOUNDS.
-                   Blocked on the clipping gap above.
-                   (Note: a scrolling WINDOW is already free — GEM has wind_content_size,
-                    W->scroll_y, real scrollbars and WM_VSLID. A scroll view is the
-                    *embedded* case.)
+    sub-row scroll:        ob_y -= delta.           No tree change.
+    crossing a row:        recycle the cell that left; prepareCell() it for the row
+                           that entered.            No tree change.
+    container resized:     grow/shrink the pool.    objc_add / objc_delete — the ONLY
+                           tree mutation.
 ```
 
-If we build the object-tree version first, we will build the wrong thing and the datasource will
-be decoration on top of a design that never needed it.
+So scrolling is pointer arithmetic and one `prepareCell` call, not a rebuild.
+
+### 🔴 Which makes `OF_CLIPCHILDREN` load-bearing, not optional
+
+That `+1` cell is **partially visible by construction**. With real objects in the tree it **will**
+draw outside the container's rect — over whatever sits next to the table.
+
+An earlier draft had the table drawing rows itself, so it could clip internally and the per-object
+clipping gap looked like a nicety. In the correct design **it is essential**: no clipping, no
+scrolling. See the ask above.
+
+### DataSource and Delegate, concretely
+
+```c
+protocol XGTableDataSource {                 // required contract — all-required is CORRECT
+    u16  numberOfRows(XGTableView@ t);
+    void prepareCell(XGTableView@ t, XGView@ cell, u16 row, u16 col);
+}
+
+class XGTableView : XGView {
+    weak: rowHeight_t^     rowHeight;        // optional hooks — nullable bound methods.
+    weak: shouldSelect_t^  shouldSelectRow;  // `if (h)` == "not implemented", and also
+    weak: didSelect_t^     didSelectRow;     // "the delegate died".
+}
+```
+
+`prepareCell` handing back a **recycled** cell is view-based `NSTableView`, exactly.
+
+## 🔴 GEM ask #2: `G_SLIDER` — a themed scrollbar object
+
+There is **no slider object type**. The types stop at `G_TITLE=32`, plus *"our themed
+extensions"*: `G_CHECKBOX=40, G_RADIO=41, G_POPUP=42, G_FIELD=43, G_CICON=44`. The window's
+scrollbar is **chrome** — drawn inside `draw_one`, not an object — from the theme slice
+`"vscroll.thumb"`.
+
+So an embedded scroll view has no scrollbar to use. **The fix is not for Xtg to draw one.** It is
+`G_SLIDER = 45`, a themed extension alongside the other five — the theme art already exists.
+
+Then `XGScrollBar` is exactly `XGButton`: a class whose `gemType()` returns `G_SLIDER`, containing
+**zero drawing code**. That is the thesis, and it is precisely how `G_CHECKBOX`, `G_RADIO` and
+`G_POPUP` were added.
+
+> **The two GEM asks from this section are the whole cost of `XGScrollView` /
+> `XGTableView` / `XGOutlineView`:**
+> 1. **`OF_CLIPCHILDREN`** — clip an object's subtree to its own rect.
+> 2. **`G_SLIDER`** — a themed slider/scrollbar object type.
+>
+> Everything else is Xtg code. Neither is large, and both make the toolkit *smaller* rather than
+> bigger — which is the sign they are in the right place.
