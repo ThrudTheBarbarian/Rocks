@@ -1,0 +1,16 @@
+#import <c>
+#import <Stdio.xt>
+#import <B>
+class Target : Object {
+    i16 hits;
+    void init(void) { hits = (i16)0; }
+    void onFire(Object@ s) { hits = hits + (i16)1; }
+}
+void main(void) {
+    Ctl@ c = new Ctl();
+    Target@ t = new Target();
+    c.setAction(&t.onFire);          // a BOUND method, stored in a LIBRARY's weak ^ slot
+    c.fire();
+    Stdio.printf("weak ^ across .so: fired=%d hits=%d (expect 1 1)\n", c.fired, t.hits);
+    Stdio.printf("%s\n", (c.fired == (i16)1 && t.hits == (i16)1) ? "PASS" : "FAIL");
+}

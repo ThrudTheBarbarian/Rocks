@@ -1,0 +1,21 @@
+#import <c>
+#import <Stdio.xt>
+#import <P>
+class Client : Object <Listener>
+{
+    i32 got;
+    void init(void) { got = (i32)0; }
+    i32 didStart(i32 n) { got = n; Stdio.printf("  client's didStart ran, n=%d\n", n); return (i32)0; }
+}
+void main(void)
+{
+    Engine@ e = new Engine();
+    Client@ c = new Client();
+    e.setDelegate(c);
+    Stdio.printf("client -> protocol dispatch:\n");
+    Listener@ l = c; l.didStart((i32)7);                 // client dispatching: known to work
+    Stdio.printf("LIBRARY -> protocol dispatch into the client:\n");
+    e.go();                                              // <-- the library calls back
+    Stdio.printf("%s (engine ran=%d, client got=%d, expect 1/42)\n",
+                 (e.ran == (i32)1 && c.got == (i32)42) ? "PASS" : "FAIL", e.ran, c.got);
+}

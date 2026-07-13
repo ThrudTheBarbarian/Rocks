@@ -3,7 +3,6 @@
 #import <Xtg>
 
 
-
 // A custom view: we override drawRect and the AES calls it.
 class SwatchView : XGView
 {

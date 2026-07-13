@@ -21,8 +21,10 @@ and `weak:`, and holds hundreds of live objects. It is meant to find the sharp e
 | **3** | cross-`.so` trampoline identity for `^` | ✅ **fixed (phase-611) — and it was FOUR bugs, one of them a wild write into `.text`** |
 | **4** | arrays of class instances go silent | ✅ fixed (phase-609) — reproduced, real, and worse than silent |
 | **5** | imported `struct` types: parse-fail / silent miscompile | ✅ **fixed (phase-613/614).** Verified: a library instance method returning a struct by value works across the `.so`. |
-| **6** | **`--emit-lib` cannot export a class with a `weak:` field** | 🔴 **OPEN.** `weak:` is baked into the type name. |
-| **7** | **`--emit-lib` cannot export a class exposing a C type from another library** | 🔴 **OPEN — blocks every *binding* library, which is what Xtg is.** |
+| **6** | `--emit-lib` cannot export a class with a `weak:` field | ✅ fixed (phase-616) |
+| **7** | `--emit-lib` cannot export a class exposing a C type from another library | ✅ fixed (phase-616) |
+| **8** | **`weak: T^` — a weak BOUND-METHOD field cannot cross the interface** | 🔴 **OPEN** (`$wbound_void`). `weak: T@` and plain `T^` each work; the *combination* does not. It is Xtg's `XGControl.action` — i.e. target/action. |
+| **9** | **a library's virtual SELF-call on a client-allocated object aborts** | 🔴 **OPEN — the last runtime blocker.** Reproduced minimally. |
 
 **Verified against xtc `cbbe3bc`:** all four Xtg programs pass on the real XTOS loader
 (`demo`, `nibdemo`, `test_spine` 14/14, `test_window`). A–G, and open items 1/2/4 plus
@@ -364,7 +366,68 @@ is a gap worth knowing about.
 
 ---
 
-# 6 & 7. 🔴 `--emit-lib` cannot yet export Xtg's two structural idioms
+# 8. 🔴 `weak: T^` — a weak bound-method field cannot cross the interface
+
+Isolated exactly. Each half works; the **combination** does not:
+
+| field on an exported class | |
+|---|---|
+| `act_t@` — a plain function pointer | **OK** |
+| `act_t^` — a bound method, *not* weak | **OK** |
+| `weak: Object@` — a weak object | **OK** (fixed by #616) |
+| **`weak: act_t^`** — a **weak bound method** | 🔴 **`error: imported library names the type '$wbound_void'`** |
+
+The mangled names tell the story: `$bound_void` serialises, `$wbound_void` does not.
+
+**This is Xtg's `XGControl.action`** — i.e. **target/action itself**, and the reason `weak:` is on it
+is the one that matters: without it, `window → viewtree → button → action → controller → window` is
+a retain cycle (see §F). It is the single field the whole control layer turns on.
+
+Reproducer: `spikes/structret/{blib,bapp}.xt`.
+
+---
+
+# 9. 🔴 A library's virtual SELF-call on a client-allocated object aborts  ⟵ the last runtime blocker
+
+Minimal, standalone, no Xtg:
+
+```c
+// libV.so
+class Engine : Object {
+    i32 n;
+    void init(void) { n = (i32)0; }
+    bool prep(void) { n = (i32)7; return true; }      // virtual
+    i32  go(void)   { if (!self.prep()) { return (i32)-1; }   // <-- the LIBRARY calls self.prep()
+                      return n; }                             //     VIRTUALLY, on an object the
+}                                                             //     CLIENT allocated
+```
+```c
+// the client
+Engine@ e = new Engine();     // a LIBRARY class, allocated in the CLIENT
+bool ok = e.prep();           // 1. client -> library virtual call
+i32  r  = e.go();             // 2. library -> its own self.prep(), same object
+```
+```
+1. client -> library virtual call:            prep() = 1, n = 7     OK
+2. library -> its own self.prep(), same obj:  *** DATA-ABORT ***
+```
+
+**The client's calls dispatch correctly — so the client HAS adopted the library's slot numbering.**
+What is wrong is the **vtable the client installs at `new`**: the library's own compiled code
+dispatches through its numbering and lands on garbage.
+
+So it is the #614 bug in the one direction that fixture did not cover. `Proto@` receivers were
+fixed; a **library class instantiated client-side** was not.
+
+In Xtg this is `XGApplication.run()` calling `self.boot()` — which is exactly where the toolkit
+dies, and why `libXtg.so` links, builds, and then aborts on the first library method that calls
+one of its own.
+
+Reproducer: `spikes/structret/{vlib,vapp}.xt`.
+
+---
+
+# 6 & 7. ✅ Fixed (phase-616) — `weak:` fields and C types now cross the interface
 
 Both found by taking `libXtg.so` further than any synthetic fixture: build the toolkit with
 `--emit-lib`, have a client `#import <Xtg>`, subclass `XGView`, override `drawRect`.

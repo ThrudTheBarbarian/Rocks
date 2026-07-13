@@ -1,0 +1,14 @@
+#import <c>
+#import <Stdio.xt>
+#import <V>
+void main(void)
+{
+    Engine@ e = new Engine();                 // a LIBRARY class, allocated in the CLIENT
+    Stdio.printf("1. client -> library virtual call:\n");
+    bool ok = e.prep();
+    Stdio.printf("   prep() = %d, n = %d\n", (i16)(ok?1:0), e.n);
+    Stdio.printf("2. library -> its own self.prep() (virtual), same object:\n");
+    i32 r = e.go();
+    Stdio.printf("   go() = %d (expect 7)\n", r);
+    Stdio.printf("%s\n", r == (i32)7 ? "PASS" : "FAIL");
+}

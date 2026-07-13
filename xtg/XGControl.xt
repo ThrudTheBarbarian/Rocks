@@ -26,7 +26,7 @@ typedef void XGAction(XGControl@ sender);
 
 class XGControl : XGView
 {
-    weak: XGAction^ action;
+    XGAction^ action;   // TEMPORARY probe: weak: dropped to isolate the last blocker
     u8@             title;
 
     void init(void) {

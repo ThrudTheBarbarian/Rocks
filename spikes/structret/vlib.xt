@@ -1,0 +1,14 @@
+// vlib.xt — a library class whose method makes a VIRTUAL SELF-CALL.
+//   xtc -A arm9 --emit-lib vlib.xt -o libV.so
+class Engine : Object
+{
+    i32 n;
+    void init(void) { n = (i32)0; }
+
+    bool prep(void)  { n = (i32)7; return true; }      // virtual
+
+    i32 go(void) {
+        if (!self.prep()) { return (i32)-1; }          // <-- LIBRARY calls self.prep() VIRTUALLY
+        return n;                                      //     on an object the CLIENT allocated
+    }
+}

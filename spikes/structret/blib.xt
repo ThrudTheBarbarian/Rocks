@@ -1,0 +1,10 @@
+// A weak BOUND-METHOD field on an exported class — Xtg's XGControl.action exactly.
+typedef void act_t(Object@ sender);
+
+class Ctl : Object {
+    weak: act_t^ action;        // <-- weak: on a ^ (bound method), not on an @
+    i16 fired;
+    void init(void) { fired = (i16)0; }
+    void setAction(act_t^ a) { action = a; }
+    void fire(void) { if (action) { fired = fired + (i16)1; action(self); } }
+}

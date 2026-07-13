@@ -1,0 +1,17 @@
+// plib.xt — a library that CALLS BACK into its client through a protocol.
+//   xtc -A arm9 --emit-lib plib.xt -o libP.so
+protocol Listener { i32 didStart(i32 n); }
+
+class Engine : Object
+{
+    Listener@ delegate;
+    i32 ran;
+    void init(void) { delegate = (Listener@)0; ran = (i32)0; }
+    void setDelegate(Listener@ d) { delegate = d; }
+
+    // THE LIBRARY dispatches through a protocol@ receiver into a CLIENT object.
+    void go(void) {
+        ran = (i32)1;
+        if (delegate != (Listener@)0) { delegate.didStart((i32)42); }
+    }
+}
