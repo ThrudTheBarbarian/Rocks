@@ -448,3 +448,101 @@ Other risks, in order:
 1. **Where does Xtg live?** Its own repo, inside `fpga-xt` beside `gem/`, or inside `fpga-xtc/support/arm9/lib`? It is a *library on top of* GEM, not part of it, and it is not part of the compiler either — a sibling repo feels right.
 2. **Float ABI:** `softfp` (loader) vs `hard` (xtc BSP flags). Which wins?
 3. **Rocks-on-XT scope.** The macOS Rocks is a big app. Which slice is the proof — canvas + palette + inspector + menus, and what gets dropped?
+
+---
+
+# 10. Views contain, as well as draw — and what that buys us
+
+## `XGView` is `NSView`, not a leaf
+
+The worry: in AppKit, `NSView` is the *generic container*; in Xtg, a `G_USERDEF` looks like a
+**terminal** — the "draw anything you like" node — which would make the hierarchy less flexible
+than AppKit's.
+
+**It is not a terminal.** `gem/aes/object.c`:
+
+```c
+static void draw_rec(OBJECT *t, int obj, int ax, int ay, int depth) {
+    if (t[obj].ob_flags & OF_HIDETREE) return;
+    draw_obj(t, obj, ax, ay);                                  /* the G_USERDEF hook fires HERE */
+    if (depth > 0) EACH_CHILD(t, obj, c) draw_rec(t, c, ...);  /* then descends. UNCONDITIONALLY. */
+}
+```
+
+There is no type gate. The AES draws the object — calling our `drawRect` for a `G_USERDEF` —
+and **then draws its children on top**. `find_rec` (hit-testing) recurses identically and returns
+the *deepest* hit.
+
+> **That is exactly `NSView`.** Draw yourself; subviews composite over you; hit-testing descends
+> into them.
+
+And we already rely on it without having noticed: in `demo.xt` the content view is a plain
+`XGView` (so `G_USERDEF`) whose children include a real `G_BUTTON`. GEM themes the button, draws
+it over the content view, and hit-tests it. That has been passing since Phase 2.
+
+**So the hierarchy is not a compromise between two models. It is one model**, and GEM adds
+something AppKit cannot: *stock widgets are also tree nodes*, which is why `XGButton` contains
+zero drawing code.
+
+## 🔴 The one real gap: no per-object clipping
+
+`objc_draw` sets the clip **once**, to the rect passed in. `draw_rec` never re-clips per object.
+So **a child can draw outside its parent's bounds.**
+
+`NSView` clips subviews to bounds by default, and every container that *scrolls* depends on it —
+a scroll view is precisely *"children offset beyond my edges, clipped to my rect"*. Without
+per-object clipping, a scrolled row draws straight over the widget below it.
+
+**GEM ask:** clip an object's subtree to its own rect — unconditionally, or behind a flag
+(`OF_CLIPCHILDREN`) if that would disturb existing resources.
+
+This is the **only** thing standing between us and `XGScrollView`.
+
+## DataSource and Delegate: two patterns, two mechanisms
+
+Cocoa's `(dataSource, delegate)` pair is what made `NSTableView` / `NSOutlineView` genuinely
+good, and we want the analogues. xtc gives us a *better* decomposition than Cocoa's, because it
+forces us to distinguish two things Objective-C blurs.
+
+**xtc protocols have no optional methods — every method is required.** In Cocoa that would make a
+fat delegate protocol unusable. But the two roles are *not the same shape*:
+
+| | what it is | mechanism |
+|---|---|---|
+| **`DataSource`** | a **required contract**. Without `numberOfRows` and `objectForRow:column:` the view cannot function at all. | **a protocol.** All-required is *correct* here. Two or three methods. |
+| **`Delegate`** | a set of **optional hooks**. `willDisplayCell`, `shouldSelectRow`, `heightOfRow` — a table works fine with none of them. | **nullable `weak: T^` fields.** `if (h)` means *"not implemented"* — **and** *"the delegate died"*. |
+
+A nullable bound-method field **is** an optional method. That is the `windowShouldClose` question
+from the very start of this project, generalised — and it is why the `^` work matters beyond
+target/action.
+
+So Cocoa's two patterns get two mechanisms chosen for what they actually *are*, rather than both
+being crammed into one protocol with `respondsToSelector:` papering over the difference.
+
+## ⚠ The trap: "the simple forms are just object trees"
+
+A static table of 20 rows *is* an object tree, and building that first is tempting.
+
+**A table of 10,000 rows cannot be** — and *that is the entire reason `NSTableView` has a
+datasource.* Its purpose is to **avoid materialising the tree**: draw only the visible rows, ask
+the datasource for their contents, and reuse cell views as you scroll.
+
+So:
+
+```
+    XGTableView    ONE G_USERDEF.  Draws the visible rows itself, from the datasource.
+                   Materialises child OBJECTs only for VISIBLE rows, and only when the
+                   client wants custom cell views (objc_add / objc_delete — already
+                   wrapped by XGViewTree).
+
+    XGOutlineView  the same, plus expansion state.  Rows are a flattened view of a tree.
+
+    XGScrollView   an XGView that offsets its children and CLIPS THEM TO ITS BOUNDS.
+                   Blocked on the clipping gap above.
+                   (Note: a scrolling WINDOW is already free — GEM has wind_content_size,
+                    W->scroll_y, real scrollbars and WM_VSLID. A scroll view is the
+                    *embedded* case.)
+```
+
+If we build the object-tree version first, we will build the wrong thing and the datasource will
+be decoration on top of a design that never needed it.
