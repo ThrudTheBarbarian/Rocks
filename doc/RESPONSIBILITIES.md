@@ -1193,11 +1193,79 @@ layout and the capacity/extent scheme cannot be added later without touching eve
   implementation is software. If the VDI's internals assume direct pixel access to the target,
   a command-queue backend is a rewrite rather than a backend.
 
+### 🔴 The blanket `PL0-RW` mapping comes down in phase 1 — it is the *last commit* of phase 1
+
+**Today every process can write the framebuffer.** Not by mapping it — by *already having it*.
+`mmu.c` builds the master L1 with
+
+```c
+else if (i < 1024)  l1[i] = base | SEC_PLANE;   /* SALLY/planes: PL0-RW, non-cacheable */
+```
+
+`i` runs from `0x200`, so that is `0x2000_0000`–`0x3FFF_FFFF` — **512 MB, PL0-RW, in the master
+table, inherited by every space** (`vm_space_create` copies it). Verified: there are **three**
+doors, not one.
+
+| L1 sections | region | mapping |
+|---|---|---|
+| `0x200`–`0x3FF` | `0x2000_0000` (512 MB) | `SEC_PLANE` — PL0-RW, non-cacheable. Framebuffer, wallpaper plane, drag overlay, sprite arena, SALLY banks — **and `plv` at `0x3800_0000`.** |
+| `0x330`–`0x33F` | `0x3300_0000` (16 MB) | `SEC_PLANE_C` — wallpaper back-buffer, PL0-RW **cacheable** |
+| `0x208`–`0x209` | `0x2080_0000` (2 MB) | `SEC_PLANE_C` — math-cop chunk stack, PL0-RW cacheable (a DMA buffer shared with the PL) |
+
+**This is deliberate and correct *today*** — the comment at `mmu.c:101` says so: *"the PL-shared
+planes stay PL0-RW (programs draw the framebuffer)"*. There is no `gemd`, and programs genuinely
+do draw the framebuffer. It cannot close until `gemd` exists. Agreed.
+
+**But it means the handle-based validation of §13.1 is defeated by a `memcpy`.** `plv` lives at
+`0x3800_0000`, *inside* the blanket. In phase 2, backing stores live in `plv`. So a client could
+read and write another client's backing store directly, at its identity address, never going
+near `/dev/blitter`. Two doors — and §13 locks one of them.
+
+> A capability you can walk around is not a capability. `/dev/blitter` refusing an
+> out-of-bounds rect is theatre if the same client can `memcpy` to the same pixels.
+
+**Phase 1 is the cheapest moment to close this, not the hardest.** The instinct is to defer it
+to phase 2, alongside `plv` and the per-surface mapping. That is backwards:
+
+| | |
+|---|---|
+| **phase 1** | A client needs **zero** access to `SEC_PLANE`. Backing stores are ordinary cached OS-heap memory (§14) — deliberately *not* `plv`. The only process that needs the framebuffer plane is `gemd`, which composites into it with the CPU. So: **`SEC_PLANE` → PL0-none for everyone; `gemd` gets the plane mapped explicitly; clients get nothing.** The hole closes, and *there is nothing to build.* |
+| **phase 2** | Surfaces come **back**, individually, via `shm` — which is the per-surface mapping machinery you are building anyway (kernel items 2–4). |
+
+Defer it, and phase 2 must build the per-surface mapping **and** flip the blanket at the same
+time, with more moving parts and a live system to keep working. Do it in phase 1 and the blanket
+comes down **while nobody is standing under it**.
+
+**It is a one-way door, so it is a completion criterion, not a task.** The moment `SEC_PLANE`
+goes PL0-none, any app still drawing direct to the framebuffer breaks. So it is not a ticket
+*inside* phase 1 — it is **the last commit of phase 1**, gated on *"no app draws direct any
+more"*. That is a good gate to have: it is a hard, mechanical proof that the client/server split
+is complete. **If flipping it breaks something, the split is not done.**
+
+The gate is closer than it looks: today only **two** programs draw direct — `aesdesk.c` and
+`desktop.c`. Nothing in `gem/` does.
+
+**Two things fall out of it:**
+
+- **`WALLPAPER_BASE` (16 MB, PL0-RW cacheable) may not be needed at all.** §4 makes the desktop
+  an ordinary app, and its wallpaper is *content*, drawn into its own backing store. A dedicated
+  wallpaper plane that every process can write is both a hole and, by then, **redundant**. Delete
+  it rather than protect it.
+- **The math-cop chunk stack needs an answer too.** It is the third door, and it is not about
+  drawing at all — it is a cacheable DMA buffer shared with the PL. Either it is kernel-only (map
+  it PL0-none and have the worker own it), or a client genuinely needs it and it wants the same
+  treatment as a surface: mapped on request, not blanket-granted. **Do not take the blanket down
+  and leave this standing** — that is closing the front door with the side door open.
+
 ### What phase 1 deliberately does *not* do
 
 No `plv` pressure, no contiguity requirement, no cache-maintenance discipline, no
 `/dev/blitter`, no FIFO fairness, no fence. Every one of those is a phase-2 concern, and phase
 1 is better for not pretending otherwise.
+
+(**Note that the `SEC_PLANE` flip above is *not* on this list.** It is the one piece of
+phase-2's isolation story that must land in phase 1 — precisely because in phase 1 it costs
+nothing, and in phase 2 it costs a migration.)
 
 ---
 
