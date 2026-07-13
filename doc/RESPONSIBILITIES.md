@@ -318,44 +318,41 @@ redundant.
 
 ---
 
-### How `gemd` waits: signals, not polling
+### How clients and `gemd` find each other — and how `gemd` waits
 
-`gemd` must watch **three** things at once — `sys_input`, **N client pipes**, and **client
-deaths**. XTOS has no `select`/`poll`/`epoll`, so this looks at first like it forces a poll
-loop, with the poll interval becoming latency on every damage rect.
+**The rendezvous was missing entirely, and this document did not notice.** An earlier draft said
+the control channel was *"one pipe per client"*. **Pipes require shared ancestry** — and `gemd` is
+the parent of neither a boot-script desktop nor an ssh-launched app. The window server and its
+clients **literally could not reach each other**. That was not a detail to design around; it was a
+wall, and the design walked straight past it.
 
-**It does not**, because XTOS has real signals *and* `-EINTR`:
-
-- **Real signals.** Kernel-authoritative disposition table, `rt_sigaction` /
-  `rt_sigprocmask` / `sigreturn`, and **async delivery** — the handler is vectored at the
-  next return-to-PL0, which is a **syscall-return *or a timer-tick***. So even a fully
-  blocked process gets one.
-- **Blocking syscalls unwind with `-EINTR`.** From the kernel:
-  *"a deliverable signal is pending → a blocking syscall should unwind with `-EINTR` (-4) so
-  the kernel can vector the handler on the deferred return."* (`SA_RESTART` is honoured too.)
-
-Which gives the loop for free, with no new syscall and no polling:
+XTOS gained a real rendezvous (M0, `3c6f5b4`), BSD-shaped so there is no new mental model:
 
 ```
-    gemd:      blocks INDEFINITELY on sys_input.   No timeout.  No poll.  No spin.
-
-    a client:  writes its damage rect to its pipe, then signals gemd.
-    gemd:      sys_input returns -EINTR -> drain the client pipes (non-blocking) -> composite.
-
-    a client dies:   SIGCHLD -> the same -EINTR wake -> sys_waitpid_nb reaps it.
+    sys_svc_register(name) -> listen fd      (bind + listen)
+    sys_svc_connect(name)  -> channel fd     (connect)
+    sys_svc_accept(lfd)    -> channel fd     (accept)
+    sys_poll(fds, n, ms)                     (pipes, channels, sockets, files)
 ```
 
-**Zero polling. Zero added latency on a damage rect.** And it satisfies §3's rule that `gemd`
-must never block *on a client* — blocking on `sys_input` is fine, because a signal always
-gets it out.
+A **channel is bidirectional** — two pipes under one fd — so `read`/`write`/`close`/`poll` just
+work on it, and **a dead peer surfaces as EOF**, which is exactly what §9's lifecycle rules need.
 
-> **Recorded because it was nearly a fabricated blocker.** An earlier draft of this document
-> claimed XTOS had no signal delivery and therefore no `SIGCHLD`, and filed "`gemd` cannot
-> wait on more than one source" as *the* open blocker. Both were wrong. The claim came from
-> running `nm -D libxtos.so` — which lists only the **syscall shims**, not the kernel's
-> capabilities — and from reading `vitis/xtos`, which is a **dead tree**. The live kernel is
-> `loader/kernel` + `loader/test/freertos`. Two lessons: *absence of a symbol is not absence
-> of a feature*, and *check which tree is live before concluding anything from it*.
+### `sys_poll` is an architectural improvement, not an ergonomic one
+
+The original plan had the kernel injecting input into *"whichever process holds the gem service"* —
+**window-server policy inside the kernel**, which §2 flatly forbids ("XTOS must never care about
+windows").
+
+With a real `poll`, `gemd` is an **ordinary poll loop** over its listen fd, its client channels,
+and its input fd. **The kernel knows nothing about window servers at all.** The rule held, and
+holding it produced the better design.
+
+> An earlier draft of this section proposed that `gemd` block on `sys_input` and be woken by
+> signals (`-EINTR`). That worked, but it was a workaround for the absence of `poll` — and it
+> would have pushed input routing towards the kernel. `sys_poll` is strictly better and the
+> signal scheme is retired. `SIGCHLD` remains useful for reaping, but is no longer load-bearing:
+> a dead client's channel simply reads EOF.
 
 ---
 
