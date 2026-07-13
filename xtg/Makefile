@@ -40,13 +40,17 @@ all: $(PROGS)
 # on the new-IR path yet"), and #import is include-once — so Xtg.xt is an umbrella
 # that pulls in the ten sources, and that umbrella IS the library.
 #
-# A client then says `#import <Xtg>` and links against it: it subclasses XGView,
-# overrides drawRect, and libXtg calls the override back across the .so boundary.
-# That took four compiler fixes (xtc #611) and is the whole thesis of the toolkit.
+# A client then says `#import <Xtg>` and LINKS against it. It does not yet WORK.
 #
-# BLOCKED (spikes/XTC-BUGS.md §5): an imported STRUCT type is not a type name, so a
-# client cannot write `XGRect r = view.bounds();` — Xtg's most common line. Until
-# that lands, programs still #import the sources directly (the PROGS above).
+# BLOCKED (spikes/XTC-BUGS.md §5): imported STRUCT types are a parse error in half the
+# positions and a SILENT MISCOMPILE in the other half — a struct parameter lowers to
+# u8. Which hits the one signature the whole toolkit turns on:
+#
+#     void drawRect(XGGraphics@ g, XGRect dirty)   <- compiles.  Miscompiled.
+#
+# The library passes an XGRect; the client's override reads a byte. So until that
+# lands, programs #import the sources directly (the PROGS above) and libXtg.so is
+# built only to keep the library path honest.
 lib: libXtg.so
 libXtg.so: Xtg.xt $(SRCS)
 	$(XTC) -A $(ARCH) --emit-lib -I . -L $(GEMLIB) Xtg.xt -o $@
