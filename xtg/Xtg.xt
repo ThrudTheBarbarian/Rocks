@@ -4,6 +4,7 @@
 // umbrella is the library.  Clients then say `#import <Xtg>` and link libXtg.so.
 #import "XGGem.h.xt"
 #import "XGGeometry.xt"
+#import "XGString.xt"
 #import "XGResponder.xt"
 #import "XGViewTree.xt"
 #import "XGView.xt"

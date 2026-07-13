@@ -8,28 +8,7 @@
 // icon: 0 none, 1 note, 2 wait, 3 stop — the theme has art for all three.
 #import "XGGem.h.xt"
 #import "XGControl.xt"
-
-class XGStr
-{
-    static u16 len(u8@ s) {
-        u16 n = (u16)0;
-        while (s[n] != (u8)0) { n = n + (u16)1; }
-        return n;
-    }
-    // a + sep + b   (sep = 0 for none).  Returns a fresh buffer.
-    static u8@ cat(u8@ a, u8 sep, u8@ b) {
-        u16 la = XGStr.len(a);
-        u16 lb = XGStr.len(b);
-        u16 extra = (sep != (u8)0 && la > (u16)0) ? (u16)1 : (u16)0;
-        u8@ o = (u8@)malloc((u32)(la + extra + lb + (u16)1));
-        u16 k = (u16)0;
-        for (u16 i = (u16)0; i < la; i++) { o[k] = a[i]; k = k + (u16)1; }
-        if (extra != (u16)0) { o[k] = sep; k = k + (u16)1; }
-        for (u16 i = (u16)0; i < lb; i++) { o[k] = b[i]; k = k + (u16)1; }
-        o[k] = (u8)0;
-        return o;
-    }
-}
+#import "XGString.xt"
 
 class XGAlert : Object
 {

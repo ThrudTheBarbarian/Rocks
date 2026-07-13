@@ -1,0 +1,14 @@
+// Rocks.xt — the application entry point.
+//
+// The proof-of-concept for Xtg, and the point of the whole exercise: an application
+// that #imports <Xtg>, LINKS libXtg.so, and runs natively on the XT's ARM core under
+// XTOS.  The toolkit is a shared library; this is a client of it.
+#import "RocksApp.xt"
+
+void main(void)
+{
+    XGApplication@ app = new XGApplication();
+    Rocks@ r = new Rocks();
+    app.setDelegate(r);
+    app.run();
+}

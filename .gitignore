@@ -4,3 +4,4 @@ scratch/
 .DS_Store
 xtg/*.so
 xtg/libXtg.so
+xt/*.app

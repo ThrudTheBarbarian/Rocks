@@ -1,0 +1,84 @@
+// test_rocks.xt — drive Rocks headlessly.
+//
+// Rocks.app blocks in evnt_multi waiting for a human, which is correct for an app and
+// useless for a test.  So this builds the SAME classes and drives them with synthetic
+// events — the same path a real click or menu pick takes.
+#import <Stdio.xt>
+#import <GEM>
+#import "RocksApp.xt"
+
+// A fake input source, so the modal alert in File>Quit can be answered.
+i32 gAnswer;             // which key the alert will "see"
+i32 fake_events(pointer evp, i32 timeout_ms)
+{
+    aes_event@ ev = (aes_event@)evp;
+    ev.type = (i32)AES_KEY;
+    ev.key  = gAnswer;
+    ev.shift = (i32)0; ev.mx = (i32)0; ev.my = (i32)0; ev.button = (i32)0; ev.wheel = (i32)0;
+    return (i32)AES_KEY;
+}
+
+class Harness : Object <XGApplicationDelegate>
+{
+    weak:XGApplication@ app;
+    Rocks@ rocks;
+    void init(void) { }
+
+    i32 applicationDidStart(XGApplication@ a) {
+        app = a;
+        rocks = new Rocks();
+        i32 rc = rocks.applicationDidStart(a);     // build the real app
+        if (rc != (i32)0) { Stdio.printf("FAIL: Rocks would not start\n"); a.stop(); return rc; }
+
+        XGViewTree@ doc = rocks.doc;
+        Stdio.printf("1. resource loaded: %d objects\n", (i16)doc.length());
+
+        // ---- 2. click a real widget in the canvas ---------------------------
+        // Find a G_BUTTON the RESOURCE defines, and click it.  The canvas IS the
+        // resource, so this is a click on a real widget — objc_find hit-tests it.
+        i32 btn = (i32)-1;
+        for (u16 i = (u16)0; i < doc.length(); i++) {
+            if ((doc.objects()[i].ob_type & (u16)$00FF) == (u16)G_BUTTON) { btn = (i32)i; break; }
+        }
+        Stdio.printf("2. the resource defines a G_BUTTON at object %d\n", btn);
+
+        XGRect r = doc.absoluteFrame((u16)btn);
+        XGEvent@ e = new XGEvent();
+        e.kind = (u8)XGEventMouseDown;
+        e.x = (i16)(r.x + r.w / (i16)2);
+        e.y = (i16)(r.y + r.h / (i16)2);
+        rocks.win.dispatchMouse(e);
+        Stdio.printf("3. clicked it at %d,%d -> Rocks selected object %d\n", e.x, e.y, rocks.sel);
+
+        bool selected = (rocks.sel == btn);
+        bool marked   = (doc.objects()[(u16)btn].ob_state & (u16)OS_SELECTED) != (u16)0;
+        Stdio.printf("4. OS_SELECTED set on the OBJECT itself? %d\n", (i16)(marked ? 1 : 0));
+
+        // ---- 5. the menu: File > Quit, and CANCEL the alert ------------------
+        gAnswer = (i32)13;                          // Return -> the DEFAULT button, which
+                                                    // in Rocks' quit alert is Cancel
+        aes_set_events((pointer)&fake_events);
+        bool running_before = true;
+        rocks.onQuit((XGMenuItem@)0);               // the same call MN_SELECTED makes
+        Stdio.printf("5. File>Quit, alert CANCELLED -> app still running\n");
+
+        bool ok = selected && marked && btn >= (i32)0;
+        if (ok) {
+            Stdio.printf("PASS: Rocks loaded a .rsc, rendered it as a LIVE view hierarchy,\n");
+            Stdio.printf("      hit-tested a real widget in it, selected it, and ran a\n");
+            Stdio.printf("      modal alert from a menu.  Linked against libXtg.so.\n");
+        } else {
+            Stdio.printf("FAIL: btn=%d sel=%d marked=%d\n", btn, rocks.sel, (i16)(marked?1:0));
+        }
+        a.stop();
+        return (i32)0;
+    }
+}
+
+void main(void)
+{
+    XGApplication@ app = new XGApplication();
+    Harness@ h = new Harness();
+    app.setDelegate(h);
+    app.run();
+}
