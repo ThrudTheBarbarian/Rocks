@@ -5,6 +5,23 @@ libGEM, running on XTOS/arm9. Xtg is a deliberately demanding client: it subclas
 library classes across a `.so` boundary, is called *back* by C (the AES), leans on ARC
 and `weak:`, and holds hundreds of live objects. It is meant to find the sharp edges.
 
+> # 🎉 `libXtg.so` works.
+>
+> The toolkit builds as a real `--emit-lib` shared library, and a client `#import <Xtg>` links it,
+> subclasses `XGView`, overrides `drawRect(XGGraphics@, XGRect)` — and **the library calls that
+> override back**, through the AES, with target/action firing through a `weak: XGAction^` **across
+> the `.so` boundary**. Verified on the XTOS loader:
+>
+> ```
+> demo         PASS  (sources #imported)
+> nibdemo      PASS
+> test_spine   PASS  14/14
+> test_window  PASS
+> libdemo      PASS  <- the SAME program, against libXtg.so
+> ```
+>
+> **There are no open compiler blockers.**
+
 **Status at a glance.**
 
 | | | |
@@ -24,7 +41,7 @@ and `weak:`, and holds hundreds of live objects. It is meant to find the sharp e
 | **6** | `--emit-lib` cannot export a class with a `weak:` field | ✅ fixed (phase-616) |
 | **7** | `--emit-lib` cannot export a class exposing a C type from another library | ✅ fixed (phase-616) |
 | **8** | `weak: T^` — a weak bound-method field cannot cross the interface | ✅ **fixed (phase-617).** I filed it against a **stale binary** — #617 had already landed. All four field shapes now build. |
-| **9** | **a library's virtual SELF-call on a client-allocated object aborts** | 🟠 **OPEN — but unverified since `d5628af`.** Runtime-only, and the loader does not currently build (XTOS shm work in flight), so it cannot be re-run. |
+| **9** | a library's virtual SELF-call on a client-allocated object aborts | ✅ **fixed.** Re-verified on the loader against HEAD. |
 
 **Verified against xtc `cbbe3bc`:** all four Xtg programs pass on the real XTOS loader
 (`demo`, `nibdemo`, `test_spine` 14/14, `test_window`). A–G, and open items 1/2/4 plus
@@ -394,13 +411,18 @@ Reproducer: `spikes/structret/{blib,bapp}.xt`.
 
 ---
 
-# 9. 🟠 A library's virtual SELF-call on a client-allocated object aborts
+# 9. ✅ A library's virtual SELF-call on a client-allocated object — fixed
 
-> **Status: last verified against `d5628af`. NOT re-verified since.** It is a *runtime* bug, and
-> `--emit-lib` is arm9-only, so it can only be exercised through the loader — which does not
-> currently build (`vm_shm_create` gained a parameter; the XTOS shm work is in flight). I will
-> re-run it the moment the loader compiles. Given my record above, **assume nothing until it is
-> re-run.**
+> **Re-verified on the loader against HEAD:**
+> ```
+> 1. client -> library virtual call:            prep() = 1, n = 7
+> 2. library -> its own self.prep(), same obj:  go() = 7 (expect 7)
+> PASS
+> ```
+> **I would have reported this stale too**, had the `weak: ^` re-check not forced me back to HEAD.
+> Both #8 and #9 were already fixed. The reproducer is kept below because it is a good fixture —
+> the *library-internal virtual self-call on a client-allocated object* is a direction that is easy
+> to miss, and it is exactly where `libXtg.so` was dying.
 
 Minimal, standalone, no Xtg:
 
