@@ -5,6 +5,34 @@ libGEM, running on XTOS/arm9. Xtg is a deliberately demanding client: it subclas
 library classes across a `.so` boundary, is called *back* by C (the AES), leans on ARC
 and `weak:`, and holds hundreds of live objects. It is meant to find the sharp edges.
 
+> # 10. 🔴 A struct-valued ternary loses half the struct
+>
+> `spikes/structret/tern.xt` — **arm64 host backend, no library, no loader:**
+>
+> ```c
+>     R a = G.make((i16)12, (i16)38, (i16)40, (i16)20);   // struct R { i16 x,y,w,h; }
+>     bool flag = false;
+>
+>     if (flag) { viaIf = G.twice(a); } else { viaIf = a; }   // if/else  : 12,38 40x20   OK
+>     R viaTern = flag ? G.twice(a) : a;                      // ternary  : 12,38 0x0     WRONG
+> ```
+>
+> An 8-byte struct through a ternary keeps its **first 4 bytes and zeroes the rest**. Compiles
+> clean, of course.
+>
+> **Found in anger**, not by fishing: `XGViewTree.markDirty` accumulates the damage rect with
+>
+> ```c
+>     dirty = hasDirty ? XGGeom.unite(dirty, abs) : abs;
+> ```
+>
+> and the damage rect came out as `12,38 9348x548` — the position right, the size garbage (and
+> *different* garbage each run, so it is reading whatever was on the stack). A dirty rect with a
+> junk size is the worst possible way for this to fail: too small and the repaint is silently
+> incomplete; too large and the optimisation quietly does nothing. Xtg now uses `if`/`else`.
+>
+> ---
+>
 > # 🎉 `libXtg.so` works.
 >
 > The toolkit builds as a real `--emit-lib` shared library, and a client `#import <Xtg>` links it,
@@ -23,6 +51,11 @@ and `weak:`, and holds hundreds of live objects. It is meant to find the sharp e
 > **There are no open compiler blockers.**
 
 **Status at a glance.**
+
+| | | |
+|---|---|---|
+| **10** | **a struct-valued ternary loses half the struct** | 🔴 **OPEN.** Reproduces on the **host** backend. |
+
 
 | | | |
 |---|---|---|

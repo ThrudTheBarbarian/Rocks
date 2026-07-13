@@ -31,6 +31,13 @@ i32 xtg_userdraw(pointer tree, i32 obj, pointer ud)
     if (v == (XGView@)0) { return (i32)0; }
 
     XGRect abs = vt.absoluteFrame((u16)obj);
+
+    // The VDI would clip our drawing anyway — but it cannot stop us DOING it.  A view
+    // outside the damage rect is skipped before drawRect runs at all, which is the
+    // difference between "one line of text repaints one line" and "one line of text
+    // runs every drawRect in the window and throws the pixels away".
+    if (w.hasDamage && !XGGeom.intersects(abs, w.damage)) { return (i32)0; }
+
     gGraphics.bind(aes_handle(), gTheme, abs);
 
     // Virtual dispatch into app code, from inside the AES's own traversal.
@@ -45,9 +52,18 @@ void xtg_window_draw(i32 handle, i32 wx, i32 wy, i32 ww, i32 wh, pointer ud)
     if (w == (XGWindow@)0) { return; }
     w.layoutFor(wx, wy, ww, wh);
 
+    // The AES hands us the WORK AREA.  If we started this repaint we know something
+    // narrower — the damage rect — so hand THAT to objc_draw as the clip.  (The VDI's
+    // clip stack intersects, so we can only ever narrow, never widen: safe either way.)
+    i32 cx = wx; i32 cy = wy; i32 cw = ww; i32 ch = wh;
+    if (w.hasDamage) {
+        cx = (i32)w.damage.x; cy = (i32)w.damage.y;
+        cw = (i32)w.damage.w; ch = (i32)w.damage.h;
+    }
+
     // Point the seam at THIS window for the duration of the walk.
     objc_set_userdraw((pointer)&xtg_userdraw, (pointer)w);
-    objc_draw((pointer)w.tree.objects(), (i32)0, (i32)8, wx, wy, ww, wh);
+    objc_draw((pointer)w.tree.objects(), (i32)0, (i32)8, cx, cy, cw, ch);
 }
 
 class XGWindow : XGResponder
@@ -60,6 +76,15 @@ class XGWindow : XGResponder
     // its OWN size — the designer chose it — so we position it but never resize it.
     bool         resizesContent;
 
+    // The damage rect for the repaint currently in flight, if WE started it.  The
+    // AES's content callback is handed the WORK AREA, not the damage — so the window
+    // parks the rect here for the duration of its own wind_redraw_area().
+    //
+    // When the AES redraws us for its OWN reasons (first paint, resize) this is false
+    // and we draw everything, which is correct: we were not told what changed.
+    XGRect       damage;
+    bool         hasDamage;
+
     void init(void) {
         super.init();
         handle = (i32)0;
@@ -67,6 +92,8 @@ class XGWindow : XGResponder
         contentView = (XGView@)0;
         firstResponder = (XGResponder@)0;
         resizesContent = true;
+        damage         = XGGeom.zero();
+        hasDamage      = false;
     }
 
     // The content view is the tree's ROOT object — a G_BOX, so GEM paints the
@@ -81,7 +108,7 @@ class XGWindow : XGResponder
         wind_content(handle, (pointer)&xtg_window_draw, (pointer)self);
         wind_open(handle, (i32)f.x, (i32)f.y, (i32)f.w, (i32)f.h);
         tree.finalise();
-        self.display();
+        self.displayAll();                       // first paint: everything
     }
 
     // Open a window whose content came out of a .rsc.  The resource's OBJECT tree
@@ -96,7 +123,7 @@ class XGWindow : XGResponder
         wind_set_name(handle, title);
         wind_content(handle, (pointer)&xtg_window_draw, (pointer)self);
         wind_open(handle, (i32)f.x, (i32)f.y, (i32)f.w, (i32)f.h);
-        self.display();
+        self.displayAll();                       // first paint: everything
     }
 
     // Find a view by its object index — how an app reaches a control the nib made.
@@ -113,9 +140,23 @@ class XGWindow : XGResponder
         }
     }
 
-    // Repaint.  One call, coalesced by the caller — and now genuinely per-window
-    // rather than a full-screen composite.
-    void display(void) { wind_redraw_win(handle); }
+    // Repaint ONLY WHAT CHANGED.  Nothing dirty -> nothing to do; this is called for
+    // every window on every pass of the run loop, so a clean window must be free.
+    void display(void) {
+        if (!tree.isDirty()) { return; }
+        XGRect d = tree.takeDirty();
+        damage    = d;
+        hasDamage = true;                       // xtg_window_draw reads it back
+        wind_redraw_area((i32)d.x, (i32)d.y, (i32)d.w, (i32)d.h);
+        hasDamage = false;
+    }
+
+    // Repaint everything: first paint, and a WM_REDRAW the AES asked for (where we
+    // were not told what changed, so we must assume all of it).
+    void displayAll(void) {
+        tree.takeDirty();                       // subsumed by a full repaint
+        wind_redraw_win(handle);
+    }
 
     // A click landed in this window: let the AES find what was hit, then send it
     // into the responder chain.

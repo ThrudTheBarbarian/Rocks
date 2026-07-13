@@ -32,7 +32,16 @@ class XGViewTree
     u16     capacity;
     bool    owns;        // did we malloc `tree`, or does a rscdoc own it?
 
+    // The union of every rect marked dirty since the last repaint, in ABSOLUTE
+    // coordinates.  It lives HERE, not on XGWindow, so a view can mark itself dirty
+    // without knowing what a window is — XGView already holds its tree, and an
+    // XGView -> XGWindow import would be a cycle.
+    XGRect  dirty;
+    bool    hasDirty;
+
     void init(void) {
+        dirty    = XGGeom.zero();
+        hasDirty = false;
         owns = true;
         capacity = (u16)16;
         tree  = (OBJECT@)malloc((u32)capacity * (u32)sizeof(OBJECT));
@@ -61,6 +70,24 @@ class XGViewTree
 
     OBJECT@ objects(void) { return tree; }
     u16     length(void)  { return count; }
+
+    // ---- damage -------------------------------------------------------------
+    void markDirty(XGRect abs) {
+        if (XGGeom.isEmpty(abs)) { return; }
+        // NOT a ternary.  `dirty = hasDirty ? unite(dirty,abs) : abs;` corrupts the
+        // struct: x and y survive, w and h come back as garbage (xtc: struct-valued
+        // ternary — reproducer in spikes/structret/tern.xt).
+        if (hasDirty) { dirty = XGGeom.unite(dirty, abs); }
+        else          { dirty = abs; }
+        hasDirty = true;
+    }
+    bool   isDirty(void) { return hasDirty; }
+    XGRect takeDirty(void) {
+        XGRect d = dirty;
+        dirty    = XGGeom.zero();
+        hasDirty = false;
+        return d;
+    }
 
     // Grow the flat array.  Indices are preserved, so every ob_next/head/tail
     // stays valid — that is the whole point of relative indices.

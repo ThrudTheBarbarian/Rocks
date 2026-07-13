@@ -133,11 +133,25 @@ class XGView : XGResponder
     // inside the AES's clip — see objc_set_userdraw.  Coordinates are absolute.
     void drawRect(XGGraphics@ g, XGRect dirty) { }
 
-    // Mark dirty.  Draws NOTHING: it raises a flag, and the run loop repaints once
-    // per iteration.  Coalescing here is the whole reason a hundred setNeedsDisplay
-    // calls in one event cost one repaint — and it keeps XGView free of any
-    // knowledge of windows, so there is no import cycle.
-    void setNeedsDisplay(void) { gNeedsDisplay = true; }
+    // Mark dirty.  Draws NOTHING: it records a RECT on the tree, and the run loop
+    // repaints once per iteration.
+    //
+    // The rect matters.  A global "something changed" flag repaints the WHOLE WINDOW,
+    // which is invisible for a button and exactly backwards for a text editor: one
+    // character typed would redraw every view and damage the entire window.  A table
+    // scrolling a single row would repaint the world.
+    //
+    // The rect goes on the TREE, not on a window: XGView already holds its tree, and
+    // an XGView -> XGWindow import would be a cycle.  gNeedsDisplay survives as the
+    // cheap "is ANY window dirty?" test the run loop checks first.
+    void setNeedsDisplay(void) { self.setNeedsDisplayInRect(self.absoluteFrame()); }
+
+    // Redraw only part of me — what a text view does when one line changes.
+    // `abs` is in ABSOLUTE (screen) coordinates, as absoluteFrame() returns.
+    void setNeedsDisplayInRect(XGRect abs) {
+        if (owner != (XGViewTree@)0) { owner.markDirty(abs); }
+        gNeedsDisplay = true;
+    }
 
     // ---- hit-testing ---------------------------------------------------------
     // Deliberately NOT implemented here: objc_find already does it, correctly,

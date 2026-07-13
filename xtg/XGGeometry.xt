@@ -24,6 +24,18 @@ class XGGeom
         return px >= r.x && py >= r.y && px < r.x + r.w && py < r.y + r.h;
     }
 
+    // The smallest rect containing both.  An empty operand is ignored — otherwise a
+    // zero rect at the origin would drag every union back to (0,0).
+    static XGRect unite(XGRect a, XGRect b) {
+        if (XGGeom.isEmpty(a)) { return b; }
+        if (XGGeom.isEmpty(b)) { return a; }
+        i16 x0 = a.x < b.x ? a.x : b.x;
+        i16 y0 = a.y < b.y ? a.y : b.y;
+        i16 x1 = (a.x + a.w) > (b.x + b.w) ? (i16)(a.x + a.w) : (i16)(b.x + b.w);
+        i16 y1 = (a.y + a.h) > (b.y + b.h) ? (i16)(a.y + a.h) : (i16)(b.y + b.h);
+        return XGGeom.make(x0, y0, (i16)(x1 - x0), (i16)(y1 - y0));
+    }
+
     static bool intersects(XGRect a, XGRect b) {
         if (a.x + a.w <= b.x || b.x + b.w <= a.x) { return false; }
         if (a.y + a.h <= b.y || b.y + b.h <= a.y) { return false; }

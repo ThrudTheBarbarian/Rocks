@@ -26,6 +26,7 @@ void    wind_close(i32 h);
 void    wind_set_name(i32 h, u8@ name);
 void    wind_content(i32 h, pointer fn, pointer ud);
 void    wind_redraw_win(i32 h);
+void    wind_redraw_area(i32 x, i32 y, i32 w, i32 h);   // repaint ONE RECT, not a window
 i32     wind_find(i32 x, i32 y);
 void    wind_get(i32 h, i32 what, pointer a, pointer b, pointer c, pointer d);
 

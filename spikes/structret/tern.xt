@@ -1,0 +1,27 @@
+// A struct-valued ternary loses part of the struct.
+//   xtc -A arm64 tern.xt -o tern && ./tern
+#import <Stdio.xt>
+
+struct R { i16 x; i16 y; i16 w; i16 h; }
+
+class G {
+    static R make(i16 x, i16 y, i16 w, i16 h) { R r; r.x=x; r.y=y; r.w=w; r.h=h; return r; }
+    static R twice(R a) { return G.make(a.x, a.y, (i16)(a.w*(i16)2), (i16)(a.h*(i16)2)); }
+}
+
+void main(void)
+{
+    R a = G.make((i16)12, (i16)38, (i16)40, (i16)20);
+    bool flag = false;
+
+    R viaIf;
+    if (flag) { viaIf = G.twice(a); } else { viaIf = a; }
+    Stdio.printf("if/else  : %d,%d %dx%d   (expect 12,38 40x20)\n", viaIf.x, viaIf.y, viaIf.w, viaIf.h);
+
+    R viaTern = flag ? G.twice(a) : a;                 // <-- struct-valued ternary
+    Stdio.printf("ternary  : %d,%d %dx%d   (expect 12,38 40x20)\n", viaTern.x, viaTern.y, viaTern.w, viaTern.h);
+
+    bool ok = viaTern.x == (i16)12 && viaTern.y == (i16)38
+           && viaTern.w == (i16)40 && viaTern.h == (i16)20;
+    Stdio.printf("%s\n", ok ? "PASS" : "FAIL: the ternary lost w/h");
+}

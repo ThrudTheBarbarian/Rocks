@@ -154,7 +154,9 @@ class XGApplication : XGResponder
         return (i32)0;
     }
 
-    // One repaint per loop iteration, however many views asked for it.
+    // One repaint per loop iteration, however many views asked for it — and each
+    // window repaints only the UNION of the rects its views marked.  A window whose
+    // views said nothing costs a single bool test.
     void displayIfNeeded(void) {
         if (!gNeedsDisplay) { return; }
         gNeedsDisplay = false;
@@ -169,8 +171,9 @@ class XGApplication : XGResponder
         if (kind == (i16)WM_CLOSED) {
             self.stop();
         } else if (kind == (i16)WM_REDRAW || kind == (i16)WM_SIZED || kind == (i16)WM_MOVED) {
+            // The AES did not tell us WHAT changed, so we must assume all of it.
             XGWindow@ w = self.windowWithHandle((i32)msg[3]);
-            if (w != (XGWindow@)0) { w.display(); }
+            if (w != (XGWindow@)0) { w.displayAll(); }
         }
     }
 
