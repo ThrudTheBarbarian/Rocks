@@ -1,0 +1,13 @@
+// srlib.xt — build with:  xtc -A arm9 --emit-lib srlib.xt -o libSr.so
+struct P { i16 x; i16 y; }
+
+class Shape : Object
+{
+    i16 tag;
+    void init(void) { tag = (i16)3; }
+
+    void   nothing(void)   { }                                   // instance, void   -> OK
+    i16    scalar(void)    { return (i16)5; }                    // instance, scalar -> OK
+    P      origin(void)    { P p; p.x = (i16)7; p.y = (i16)9; return p; }  // instance, STRUCT
+    static P mk(void)      { P p; p.x = (i16)1; p.y = (i16)2; return p; }  // STATIC,   STRUCT -> OK
+}

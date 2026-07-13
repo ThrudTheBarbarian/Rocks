@@ -1,0 +1,7 @@
+// (1) an exported class with a weak: field
+class Node : Object {
+    weak:Node@ parent;          // <-- weak-qualified type in the interface
+    i16 tag;
+    void init(void) { tag = (i16)1; }
+    i16 get(void) { return tag; }
+}

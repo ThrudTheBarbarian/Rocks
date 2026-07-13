@@ -1,0 +1,4 @@
+#import <c>
+#import <Stdio.xt>
+#import <W>
+void main(void) { Node@ n = new Node(); Stdio.printf("weak field: %d\n", n.get()); }

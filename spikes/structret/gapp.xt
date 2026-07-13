@@ -1,0 +1,4 @@
+#import <c>
+#import <Stdio.xt>
+#import <G2>
+void main(void) { Holder@ h = new Holder(); Stdio.printf("c-type: %lx\n", (u32)h.objects()); }

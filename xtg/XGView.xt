@@ -58,7 +58,12 @@ class XGView : XGResponder
 
     // ---- geometry: the OBJECT is the truth ---------------------------------
 
+    // A view with no tree has no frame.  `owner` is weak: it is nil before attachTo(),
+    // and it BECOMES nil if the tree is released out from under us — so this is a guard
+    // against a live hazard, not just against misuse.  (Without it, bounds() on an
+    // unattached view is a null-receiver call: PC=0, PREFETCH-ABORT.)
     XGRect frame(void) {
+        if (owner == (XGViewTree@)0) { return XGGeom.make((i16)0, (i16)0, (i16)0, (i16)0); }
         OBJECT@ o = &owner.objects()[index];
         return XGGeom.make(o.ob_x, o.ob_y, o.ob_w, o.ob_h);
     }
@@ -75,7 +80,10 @@ class XGView : XGResponder
         return XGGeom.make((i16)0, (i16)0, f.w, f.h);
     }
 
-    XGRect absoluteFrame(void) { return owner.absoluteFrame(index); }
+    XGRect absoluteFrame(void) {
+        if (owner == (XGViewTree@)0) { return XGGeom.make((i16)0, (i16)0, (i16)0, (i16)0); }
+        return owner.absoluteFrame(index);
+    }
 
     // ---- hierarchy ----------------------------------------------------------
 

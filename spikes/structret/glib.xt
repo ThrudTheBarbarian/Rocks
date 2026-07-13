@@ -1,0 +1,7 @@
+// (2) an exported class exposing a DWARF-imported C type (OBJECT, from libGEM)
+#import <GEM>
+class Holder : Object {
+    OBJECT@ objs;               // <-- a C type from #import <GEM>, in the interface
+    void init(void) { objs = (OBJECT@)0; }
+    OBJECT@ objects(void) { return objs; }
+}

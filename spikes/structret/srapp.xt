@@ -1,0 +1,13 @@
+#import <Stdio.xt>
+#import <c>
+#import <Sr>
+void main(void)
+{
+    Shape@ s = new Shape();
+    s.nothing();                       Stdio.printf("1 instance void   : ok\n");
+    i16 n = s.scalar();                Stdio.printf("2 instance scalar : %d (expect 5)\n", n);
+    P m = Shape.mk();                  Stdio.printf("3 STATIC struct   : %d,%d (expect 1,2)\n", m.x, m.y);
+    Stdio.printf("4 instance STRUCT : calling...\n");
+    P p = s.origin();                  Stdio.printf("4 instance STRUCT : %d,%d (expect 7,9)\n", p.x, p.y);
+    Stdio.printf("PASS\n");
+}

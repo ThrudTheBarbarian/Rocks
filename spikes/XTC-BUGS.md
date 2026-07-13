@@ -20,7 +20,9 @@ and `weak:`, and holds hundreds of live objects. It is meant to find the sharp e
 | **2** | gcc temp object name leaks into the `.so` | ✅ fixed (phase-610) — two sources, not one; `.so` builds are byte-identical now |
 | **3** | cross-`.so` trampoline identity for `^` | ✅ **fixed (phase-611) — and it was FOUR bugs, one of them a wild write into `.text`** |
 | **4** | arrays of class instances go silent | ✅ fixed (phase-609) — reproduced, real, and worse than silent |
-| **5** | **imported `struct` types: parse-fail in half the positions, SILENT MISCOMPILE in the other half** | 🔴 **OPEN (compiler thread on it).** `libXtg.so` links but does **not work**. |
+| **5** | imported `struct` types: parse-fail / silent miscompile | ✅ **fixed (phase-613/614).** Verified: a library instance method returning a struct by value works across the `.so`. |
+| **6** | **`--emit-lib` cannot export a class with a `weak:` field** | 🔴 **OPEN.** `weak:` is baked into the type name. |
+| **7** | **`--emit-lib` cannot export a class exposing a C type from another library** | 🔴 **OPEN — blocks every *binding* library, which is what Xtg is.** |
 
 **Verified against xtc `cbbe3bc`:** all four Xtg programs pass on the real XTOS loader
 (`demo`, `nibdemo`, `test_spine` 14/14, `test_window`). A–G, and open items 1/2/4 plus
@@ -362,7 +364,76 @@ is a gap worth knowing about.
 
 ---
 
-# 5. 🔴 Imported `struct` types — half parse-fail, half **silently miscompile**
+# 6 & 7. 🔴 `--emit-lib` cannot yet export Xtg's two structural idioms
+
+Both found by taking `libXtg.so` further than any synthetic fixture: build the toolkit with
+`--emit-lib`, have a client `#import <Xtg>`, subclass `XGView`, override `drawRect`.
+
+**These are the no-silent-degradation work paying off.** Both are *loud errors*, not miscompiles.
+That is exactly the outcome asked for in §5 — the compiler now says "I cannot do this" instead of
+lowering it to `u8` and letting it explode on hardware.
+
+## 6. A `weak:` field cannot cross the interface
+
+```c
+class Node : Object { weak:Node@ parent;  i16 tag;  i16 get(void) { return tag; } }
+```
+```
+error: imported library names the type 'weak:Node', but its interface does not describe it
+```
+
+The `weak:` qualifier is **baked into the type name**, so the client looks up `weak:Node` and finds
+only `Node`.
+
+**Structural for Xtg, not incidental:** `weak:` is on the responder chain (`nextResponder`), on
+`XGView.owner` and `.superview`, and on `XGControl.action` (`weak: XGAction^`). Those are the
+edges that stop the view hierarchy being one enormous retain cycle — every one of them must cross.
+
+## 7. A C type imported from *another* library cannot cross the interface  ⟵ the deeper one
+
+```c
+#import <GEM>
+class Holder : Object { OBJECT@ objs;  OBJECT@ objects(void) { return objs; } }
+```
+```
+error: imported library names the type '$anon_431336', but its interface does not describe it
+       (If it is a struct, rebuild the library: older .so files predate struct export.)
+```
+
+The hint cannot help here: `OBJECT` comes from **libGEM's DWARF**, not from this library's source.
+Rebuilding cannot give `--emit-lib` a definition it never had.
+
+**This blocks the entire category of *binding* library — and that is precisely what Xtg is.** Its
+central claim is *"a view IS a GEM object"*: `XGViewTree.objects()` returns `OBJECT@`. The same
+would hit `theme`, `gfx_surface`, `SCROLLBAR` — any C type a wrapper exposes.
+
+### Suggested shape: a reference, not a copy
+
+Have the `.xtc.iface` record *"this type comes from `libGEM.so`"* rather than re-serialising it.
+The client already passes `-L` to libGEM and can re-import from the same DWARF.
+
+That keeps **one source of truth**. Re-serialising would mean two libraries could disagree about
+`OBJECT`'s layout after a change to `aes.h` — and a silent layout disagreement across a `.so` is
+the worst failure this project has, because nothing type-checks it and nothing reports it.
+
+---
+
+# 5. ✅ Imported `struct` types — fixed (phase-613/614)
+
+> **Verified.** A library **instance** method returning a struct **by value** now works across the
+> `.so` (`spikes/structret/`). So do library statics, scalars, void methods, and virtual dispatch
+> (`gemType()` correctly returns `G_USERDEF` through the vtable).
+>
+> **And a warning to my future self.** While testing this I filed a `PC=0` PREFETCH-ABORT against
+> the compiler. It was **my bug**: `XGView.frame()` dereferenced `owner`, which is `weak:` and is
+> **nil for an unattached view** — `new XGView()` has no tree. The standalone reproducer passing is
+> what exposed it. `frame()` and `absoluteFrame()` are now guarded, which they needed anyway: a
+> `weak:` field can go nil *at any time*.
+>
+> The original report is kept below, because the *pattern* it named is the one the compiler thread
+> then found twice more.
+
+## The original report (for the record)
 
 **`libXtg.so` links but does not work.** The last thing between Xtg and a real library, and it
 is nastier than it first looked.
