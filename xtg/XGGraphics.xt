@@ -42,4 +42,22 @@ class XGGraphics {
         vst_height(vh, size, (pointer)0, (pointer)0, (pointer)0, (pointer)0);
         v_gtext(vh, (i32)(origin.x + x), (i32)(origin.y + y), s);
     }
+
+    // A filled triangle.  The one shape GEM has no object type for, and an outline view
+    // needs it for the disclosure marker: ▶ when collapsed, ▼ when expanded.
+    //
+    // A themed "disclosure.open"/"disclosure.closed" slice would be better and would move
+    // this out of Xtg — the same argument as the selected-row fill.  Borrowing the theme's
+    // hscroll.right arrow instead would look wrong the moment scroll buttons grow a bezel:
+    // they are scrollbar parts, not disclosure marks.
+    void fillTriangle(i16 x0, i16 y0, i16 x1, i16 y1, i16 x2, i16 y2, i32 pen) {
+        i16 pxy[6];
+        pxy[0] = (i16)(origin.x + x0); pxy[1] = (i16)(origin.y + y0);
+        pxy[2] = (i16)(origin.x + x1); pxy[3] = (i16)(origin.y + y1);
+        pxy[4] = (i16)(origin.x + x2); pxy[5] = (i16)(origin.y + y2);
+        vsf_color(vh, pen);
+        vsf_interior(vh, (i32)1);
+        vsf_perimeter(vh, (i32)0);
+        v_fillarea(vh, (i32)3, (pointer)&pxy[0]);
+    }
 }

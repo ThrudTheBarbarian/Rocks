@@ -39,6 +39,22 @@ is "verified by build" any more.
 | `test_table` | a datasource-driven table of real GEM objects — and it repaints only what is visible |
 | `Rocks` / `test_rocks` | the app: a `.rsc` as a live canvas, selection, menus, alerts |
 
+### 🟠 `XGOutlineView` is written, and is NOT in the suite
+
+`XGOutlineView.xt` and `test_outline.xt` are committed but **`test_outline` is deliberately not
+in `PROGS`**, because it hits memory corruption: reassigning the outline's own strong `Array@`
+field empties an `Array` in the *datasource's* object graph — a different object, a different
+address, nothing of ours pointing at it. Full evidence in `spikes/XTC-BUGS.md` #15, including
+the seven things I ruled out.
+
+I could not reduce it, and **I have not proved it is not my own bug**, so it is filed as
+evidence rather than as a compiler defect. `XGTableView` shares all the same machinery and is
+unaffected.
+
+The design is sound and worth keeping: an outline view is a **table whose row list is derived
+from a tree**, so expanding re-derives the list and everything downstream — drawing,
+hit-testing, selection, scrolling, pruning — is the table's, unchanged.
+
 ### The table scales with what is VISIBLE, not with how much data there is
 
 The question that gets asked of every toolkit, answered by measurement rather than by

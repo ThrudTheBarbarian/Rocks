@@ -118,6 +118,9 @@ class XGTableView : XGView
     // MEASURE that instead of believing it — see test_table.
     i32    drawCount;
 
+    // How many row objects EXIST.  >= nrows: the surplus is hidden, not deleted.
+    i32    builtRows;
+
     void init(void) {
         super.init();
         dataSource  = (XGTableDataSource@)0;
@@ -128,6 +131,7 @@ class XGTableView : XGView
         selectedRow = (i32)-1;
         nrows       = (i32)0;
         drawCount   = (i32)0;
+        builtRows   = (i32)0;
     }
 
     // A G_BOX: GEM paints the table's background.
@@ -153,41 +157,97 @@ class XGTableView : XGView
     // XGView -> XGWindow import would be a cycle — so the app wires the two together.)
     i16 contentHeight(void) { return (i16)((i32)nrows * (i32)rowHeight); }
 
-    // Build the OBJECT tree from the datasource.  Every row and every cell becomes a real
-    // GEM object, so objc_draw draws them, objc_find hit-tests them, and OF_CLIPCHILDREN
-    // prunes the ones that are scrolled out of sight.
-    void reloadData(void) {
-        if (dataSource == (XGTableDataSource@)0) { return; }
-        nrows = dataSource.numberOfRows(self);
+    // ---- the three hooks a subclass overrides --------------------------------
+    // XGOutlineView is a table whose row list is DERIVED from a tree, so it needs to say
+    // how many rows there are, what class a row is, and what goes in the cells.  Nothing
+    // else about a table changes — which is why an outline gets scrolling, hit-testing,
+    // selection and pruning without a line of new code for any of them.
+    //
+    // Always called through `self.` — a bare self-call is devirtualised by xtc today
+    // (spikes/XTC-BUGS.md, bug B) and would silently run THIS implementation, not the
+    // override.
 
+    i32 countRows(void) {
+        if (dataSource == (XGTableDataSource@)0) { return (i32)0; }
+        return dataSource.numberOfRows(self);
+    }
+
+    XGTableRow@ newRow(void) { return new XGTableRow(); }
+
+    // Fill row `r`'s cells.  The table lays them out by column and asks the datasource.
+    void configureRow(XGTableRow@ rv, i32 r) {
         i32 ncols = (i32)columns.count();
+        i16 cx = (i16)0;
+        for (i32 c = (i32)0; c < ncols; c++) {
+            XGTableColumn@ col = (XGTableColumn@ ?)columns.get((u16)c);
+            XGTableCell@ cell = (XGTableCell@ ?)rv.subviews.get((u16)c);
+            OBJECT@ co = &owner.objects()[cell.index];
+            co.ob_x = cx; co.ob_y = (i16)0;
+            co.ob_w = col.width; co.ob_h = rowHeight;
+            co.ob_spec = (pointer)dataSource.valueForCell(self, r, c);   // NOT copied
+            cx = (i16)(cx + col.width);
+        }
+    }
+
+    // ---- reload: REUSE the row objects, never remove them ---------------------
+    //
+    // A GEM tree is a flat array whose indices are referenced by every ob_next / ob_head /
+    // ob_tail in it, so deleting an object is not a local operation. An outline view
+    // re-derives its row list on every expand and collapse, and rebuilding the objects each
+    // time would leak a slot per row, for ever.
+    //
+    // So rows are POOLED: they are created once, reused with new contents, and the surplus
+    // is hidden with OF_HIDETREE (which objc_draw and objc_find both honour, so a hidden row
+    // is neither drawn nor hit). That is AppKit's cell reuse, arrived at from the other
+    // direction — not as an optimisation, but because the tree will not let us do otherwise.
+    void reloadData(void) {
+        nrows = self.countRows();
+        self.ensureRows(nrows);
+
         for (i32 r = (i32)0; r < nrows; r++) {
-            XGTableRow@ rv = new XGTableRow();
+            XGTableRow@ rv = (XGTableRow@ ?)rows.get((u16)r);
+            OBJECT@ ro = &owner.objects()[rv.index];
+            ro.ob_y     = (i16)(r * (i32)rowHeight);
+            ro.ob_h     = rowHeight;
+            ro.ob_flags = ro.ob_flags & (u16)$FF7F;      // clear OF_HIDETREE: shown
+            ro.ob_state = ro.ob_state & (u16)$FFFE;      // clear OS_SELECTED
+            self.configureRow(rv, r);
+        }
+
+        // Whatever is left over from a previous, longer list: hide it. The objects stay.
+        for (i32 r = nrows; r < builtRows; r++) {
+            XGTableRow@ rv = (XGTableRow@ ?)rows.get((u16)r);
+            OBJECT@ ro = &owner.objects()[rv.index];
+            ro.ob_flags = ro.ob_flags | (u16)OF_HIDETREE;
+        }
+
+        selectedRow = (i32)-1;      // the row that was selected may no longer be the same row
+        self.setNeedsDisplay();
+    }
+
+    // Create row objects (and their cells) up to `want`, reusing everything already built.
+    void ensureRows(i32 want) {
+        i32 ncols = (i32)columns.count();
+        for (i32 r = builtRows; r < want; r++) {
+            XGTableRow@ rv = self.newRow();
             rv.table = self;
             rv.row   = r;
             self.addSubview(rv, XGGeom.make((i16)0, (i16)(r * (i32)rowHeight),
                                             self.frame().w, rowHeight));
 
-            // A row clips its children: a cell whose text overruns its column is cut at
-            // the column edge rather than scribbling over the next one — and, more
-            // importantly, an off-screen row costs ONE rect test instead of a walk
-            // through all of its cells.
+            // A row clips its children: a cell whose text overruns its column is cut at the
+            // column edge rather than scribbling over the next one — and, more importantly,
+            // an off-screen row costs ONE rect test instead of a walk through all its cells.
             OBJECT@ ro = &owner.objects()[rv.index];
             ro.ob_flags = ro.ob_flags | (u16)OF_CLIPCHILDREN;
 
-            i16 cx = (i16)0;
             for (i32 c = (i32)0; c < ncols; c++) {
-                XGTableColumn@ col = (XGTableColumn@ ?)columns.get((u16)c);
                 XGTableCell@ cell = new XGTableCell();
-                rv.addSubview(cell, XGGeom.make(cx, (i16)0, col.width, rowHeight));
-
-                OBJECT@ co = &owner.objects()[cell.index];
-                co.ob_spec = (pointer)dataSource.valueForCell(self, r, c);   // NOT copied
-                cx = (i16)(cx + col.width);
+                rv.addSubview(cell, XGGeom.make((i16)0, (i16)0, (i16)8, rowHeight));
             }
             rows.add(rv);
         }
-        self.setNeedsDisplay();
+        if (want > builtRows) { builtRows = want; }
     }
 
     // Selection lives in the OBJECT's own state, so it survives a redraw, and a future

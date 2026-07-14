@@ -5,6 +5,72 @@ libGEM, running on XTOS/arm9. Xtg is a deliberately demanding client: it subclas
 library classes across a `.so` boundary, is called *back* by C (the AES), leans on ARC
 and `weak:`, and holds hundreds of live objects. It is meant to find the sharp edges.
 
+# 15. 🟠 Memory corruption in `XGOutlineView` — **NOT REDUCED, and possibly mine**
+
+I am reporting this one **unreduced and unattributed**, because I could not make it small
+and I have not proved it is the compiler's. It may be an xtc/ARC bug, an `Array` bug, or a
+bug in Xtg. Read it as evidence, not as an accusation.
+
+### What happens
+
+`XGOutlineView.countRows()` had:
+
+```c
+nodes = new Array();                 // reassign a strong Array@ field
+self.flatten((Object@)0, (i32)0);
+```
+
+That assignment **empties `root.kids`** — an `Array` in a completely different object graph,
+owned by the test's model, never referenced by Xtg, at a different address:
+
+```
+     n=100016E0  n.kids=1003FA88  count=3     <- called directly:      3 children
+     n=100016E0  n.kids=1003FA88  count=0     <- called 1 line later:  0 children
+```
+
+**Same `Array` pointer**, count 3 → 0. It was not replaced, it was *emptied* — i.e. dealloc'd
+out from under its owner while the owner still points at it. Nothing in the interval touches
+it. The datasource object is alive, its `root` field is intact, the arguments arrive intact,
+and the correct method runs — I verified every one of those.
+
+Replacing the reassignment with `nodes.removeAll()` — **changing nothing else** — makes the
+symptom go away and the count stay 3.
+
+### The part that makes me suspect a heap overflow rather than a codegen bug
+
+`removeAll()` does not touch the allocator. `new Array()` does. So the reassignment may not be
+*causing* the damage so much as *tripping* damage that is already there — a heap that some
+earlier out-of-bounds write has corrupted, where the next malloc/free walks a broken free list.
+
+That would also explain why the crash **persists after the removeAll fix**, just later and
+elsewhere: `DATA-ABORT, DFAR=0x4`, which is `Node.kids` (offset 4) read through a null `Node`.
+
+### What I ruled out
+
+Each of these was built and run, on **arm9 under qemu** and on the **arm64 host**, against a
+freshly-built compiler. All passed, so none of them is the bug on its own:
+
+| tried | result |
+|---|---|
+| protocol dispatch through a protocol-typed `weak:` field | ✅ correct |
+| arguments passed through a protocol call | ✅ arrive intact |
+| reading a *field of self* inside a protocol-dispatched method | ✅ correct |
+| a base method calling `self.hook()` where a subclass overrides `hook` | ✅ dispatches to the override |
+| bare `hook()` self-call (the old bug B) | ✅ **also dispatches correctly now** |
+| reassigning a strong `Array@` field | ✅ correct standalone |
+| ...on a 4-deep subclass with five inherited `Array@` fields | ✅ correct standalone |
+
+It needs the full Xtg object graph to appear, and I ran out of budget before I could bisect
+that. **`XGTableView` — which shares all the same machinery — is unaffected and passes 15/15.**
+
+### To reproduce
+
+`xtg/XGOutlineView.xt` and `xtg/test_outline.xt` are both committed. `test_outline` is
+deliberately **not** in `PROGS`, so the suite stays green. Put it back, restore the
+`nodes = new Array()` line, and it aborts.
+
+---
+
 # 14. 🔴 A subclass that declares no `init()` runs **no initialiser at all**
 
 **Verified against a freshly-built HEAD (`5fea860`), reproduced on the host in 30 lines.**

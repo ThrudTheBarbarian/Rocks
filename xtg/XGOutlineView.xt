@@ -1,0 +1,222 @@
+// XGOutlineView.xt — a table whose rows have a hierarchy.
+//
+// It is an XGTableView, so everything the table already earned comes along unchanged:
+// rows and cells are real GEM objects, GEM draws the cell text, objc_find hit-tests,
+// the responder chain routes a cell click to its row, the AES runs the scrollbar, and
+// OF_CLIPCHILDREN prunes the rows you cannot see.
+//
+// What an outline ADDS is exactly three things:
+//
+//   1. a datasource that speaks in ITEMS AND CHILDREN rather than rows and columns
+//   2. a FLATTENING pass — the expanded tree becomes the list of visible rows
+//   3. an indent, and a disclosure triangle that toggles a row open or shut
+//
+// The flattening is the whole idea. An outline view is not a tree widget; it is a table
+// whose row list is DERIVED from a tree. Expanding a node re-derives the list. So there
+// is no second drawing path, no second hit-test, and no second scrolling model — an
+// outline row is a table row, and everything downstream of that already works.
+//
+// LIFETIME: as with XGTableView, valueForItem's string goes straight into ob_spec and is
+// NOT copied. It must outlive the row.
+
+#import <GEM>
+#import "XGGem.xt"
+#import "XGTableView.xt"
+
+// The datasource speaks in ITEMS. `item` is nil for the root, so one method serves both
+// "what are the top-level rows?" and "what are this node's children?".
+protocol XGOutlineDataSource {
+    i32     numberOfChildren(XGOutlineView@ o, Object@ item);
+    Object@ childOfItem(XGOutlineView@ o, Object@ item, i32 i);
+    bool    isExpandable(XGOutlineView@ o, Object@ item);
+    u8@     valueForItem(XGOutlineView@ o, Object@ item, i32 col);
+}
+
+#define XG_INDENT   12       // px per level
+#define XG_TRI      8        // the disclosure triangle's box
+
+// One visible line: the item, how deep it sits, and whether it is open.
+class XGOutlineNode : Object
+{
+    Object@ item;
+    i32     level;
+    bool    expandable;
+    bool    expanded;
+    void init(void) {
+        item = (Object@)0; level = (i32)0;
+        expandable = false; expanded = false;
+    }
+}
+
+// A row that draws a disclosure triangle, and toggles when you hit it.
+class XGOutlineRow : XGTableRow
+{
+    weak: XGOutlineView@ outline;
+    void init(void) { super.init(); outline = (XGOutlineView@)0; }
+
+    void drawRect(XGGraphics@ g, XGRect dirty) {
+        super.drawRect(g, dirty);              // the selected-row background
+        if (outline == (XGOutlineView@)0) { return; }
+
+        XGOutlineNode@ n = outline.nodeAt(row);
+        if (n == (XGOutlineNode@)0) { return; }
+        if (!n.expandable) { return; }
+
+        // The triangle sits in the indent gutter this row's level bought it.
+        i16 h  = self.bounds().h;
+        i16 x  = (i16)((i32)n.level * (i32)XG_INDENT + (i32)2);
+        i16 y  = (i16)((i32)h / (i32)2 - (i32)XG_TRI / (i32)2);
+
+        if (n.expanded) {                       // ▼
+            g.fillTriangle(x, y,
+                           (i16)(x + XG_TRI), y,
+                           (i16)(x + XG_TRI / 2), (i16)(y + XG_TRI), (i32)1);
+        } else {                                // ▶
+            g.fillTriangle(x, y,
+                           (i16)(x + XG_TRI), (i16)(y + XG_TRI / 2),
+                           x, (i16)(y + XG_TRI), (i32)1);
+        }
+    }
+
+    // A click in the triangle's gutter toggles; anywhere else selects, as a table row does.
+    //
+    // The click arrives here even when it landed on a CELL, because a cell does not handle
+    // mouseDown — so `e.x` may be inside a child, and the test has to be against the row's
+    // own absolute frame rather than against whatever got hit.
+    void mouseDown(XGEvent@ e) {
+        if (outline != (XGOutlineView@)0) {
+            XGOutlineNode@ n = outline.nodeAt(row);
+            if (n != (XGOutlineNode@)0 && n.expandable) {
+                XGRect f  = self.absoluteFrame();
+                i16 gx    = (i16)(f.x + (i16)((i32)n.level * (i32)XG_INDENT));
+                if (e.x >= gx && e.x < (i16)(gx + (i16)(XG_TRI + (i16)4))) {
+                    outline.toggleRow(row);
+                    return;                     // the toggle CONSUMES the click
+                }
+            }
+        }
+        super.mouseDown(e);                     // otherwise: select, exactly as a table row
+    }
+}
+
+class XGOutlineView : XGTableView
+{
+    weak: XGOutlineDataSource@ outlineSource;
+    Array@ nodes;                 // XGOutlineNode, one per VISIBLE line
+    Array@ expandedItems;         // items the user has opened — survives a re-flatten
+
+    void init(void) {
+        super.init();
+        outlineSource = (XGOutlineDataSource@)0;
+        nodes         = new Array();
+        expandedItems = new Array();
+    }
+
+    void setOutlineSource(XGOutlineDataSource@ d) { outlineSource = d; }
+
+    XGOutlineNode@ nodeAt(i32 r) {
+        if (r < (i32)0 || r >= (i32)nodes.count()) { return (XGOutlineNode@)0; }
+        return (XGOutlineNode@ ?)nodes.get((u16)r);
+    }
+
+    i32 visibleCount(void) { return (i32)nodes.count(); }
+
+    // Expansion is remembered against the ITEM, not against a row index — a row index is
+    // meaningless the moment anything above it opens or shuts.
+    bool isExpanded(Object@ item) {
+        for (u16 i = (u16)0; i < expandedItems.count(); i++) {
+            if (expandedItems.get(i) == item) { return true; }
+        }
+        return false;
+    }
+
+    void setExpanded(Object@ item, bool open) {
+        for (u16 i = (u16)0; i < expandedItems.count(); i++) {
+            if (expandedItems.get(i) == item) {
+                if (!open) { expandedItems.removeAt(i); }
+                return;                                   // already in the right state
+            }
+        }
+        if (open) { expandedItems.add(item); }
+    }
+
+    // THE FLATTENING.  Walk the item tree, and emit a line for every item whose ancestors
+    // are all open.  This is the only place the hierarchy exists; everything downstream
+    // sees a flat list of rows, which is precisely why it all still works.
+    void flatten(Object@ item, i32 level) {
+        i32 n = outlineSource.numberOfChildren(self, item);
+        for (i32 i = (i32)0; i < n; i++) {
+            Object@ child = outlineSource.childOfItem(self, item, i);
+
+            XGOutlineNode@ node = new XGOutlineNode();
+            node.item       = child;
+            node.level      = level;
+            node.expandable = outlineSource.isExpandable(self, child);
+            node.expanded   = node.expandable && self.isExpanded(child);
+            nodes.add(node);
+
+            if (node.expanded) { self.flatten(child, level + (i32)1); }   // depth-first
+        }
+    }
+
+    // ---- the three hooks.  Everything else is XGTableView's, unchanged. --------
+
+    // Re-derive the visible line list from the item tree.  This is where the hierarchy
+    // lives, and it is the ONLY place it lives.
+    i32 countRows(void) {
+        if (outlineSource == (XGOutlineDataSource@)0) { return (i32)0; }
+
+        // EMPTY the array; do NOT reassign the field.
+        //
+        // `nodes = new Array()` here corrupts memory: it empties root.kids — an Array in a
+        // completely different object graph, reached through the datasource, with a
+        // different address and no reference to it from Xtg at all. Its count goes 3 -> 0
+        // while its pointer stays valid, i.e. it gets dealloc'd out from under its owner.
+        // Swapping the reassignment for removeAll() fixes it outright, with nothing else
+        // changed. I could not reduce it below the full Xtg object graph — a deep subclass
+        // with five Array@ fields does NOT reproduce it standalone on arm9 or the host.
+        //
+        // Note removeAll() does not touch the allocator and `new Array()` does, so this may
+        // be a heap overflow elsewhere that only ALLOCATION trips. See spikes/XTC-BUGS.md #15.
+        // Either way this is the better code: reloading a table should not churn the heap.
+        nodes.removeAll();
+        self.flatten((Object@)0, (i32)0);          // nil item = the root
+        return (i32)nodes.count();
+    }
+
+    XGTableRow@ newRow(void) {
+        XGOutlineRow@ r = new XGOutlineRow();
+        r.outline = self;
+        return r;
+    }
+
+    // Like the table's, but the first column is pushed right by this row's depth, leaving
+    // the gutter the disclosure triangle draws into.
+    void configureRow(XGTableRow@ rv, i32 r) {
+        XGOutlineNode@ node = self.nodeAt(r);
+        if (node == (XGOutlineNode@)0) { return; }
+
+        i32 ncols = (i32)columns.count();
+        i16 cx = (i16)0;
+        for (i32 c = (i32)0; c < ncols; c++) {
+            XGTableColumn@ col = (XGTableColumn@ ?)columns.get((u16)c);
+            i16 ind = (i32)c == (i32)0
+                    ? (i16)((i32)node.level * (i32)XG_INDENT + (i32)XG_TRI + (i32)4)
+                    : (i16)0;
+
+            XGTableCell@ cell = (XGTableCell@ ?)rv.subviews.get((u16)c);
+            OBJECT@ co = &owner.objects()[cell.index];
+            co.ob_x = (i16)(cx + ind); co.ob_y = (i16)0;
+            co.ob_w = (i16)(col.width - ind); co.ob_h = rowHeight;
+            co.ob_spec = (pointer)outlineSource.valueForItem(self, node.item, c);
+            cx = (i16)(cx + col.width);
+        }
+    }
+
+    void toggleRow(i32 r) {
+        XGOutlineNode@ n = self.nodeAt(r);
+        if (n == (XGOutlineNode@)0 || !n.expandable) { return; }
+        self.setExpanded(n.item, !n.expanded);
+        self.reloadData();              // re-derive: the visible rows have changed
+    }
+}
