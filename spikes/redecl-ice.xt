@@ -1,0 +1,16 @@
+// xtc: an identical redeclaration of a VOID-returning function crashes the compiler.
+//
+//   xtc: sema: -[XTType pointeeType]: unrecognized selector sent to instance 0x...
+//
+// It is an INTERNAL ERROR, not a diagnostic: no file, no line, no way to tell which
+// declaration it fell over on. A non-void function redeclares fine, so it is the void
+// return that does it.
+#import <Stdio.xt>
+
+void    sink(pointer p);
+void    sink(pointer p);      // <-- identical redeclaration: ICE
+
+pointer grab(u32 n);
+pointer grab(u32 n);          // non-void: fine
+
+void main(void) { Stdio.printf("ok\n"); }

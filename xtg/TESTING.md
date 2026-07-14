@@ -50,6 +50,7 @@ is "verified by build" any more.
 | `test_alert` | modal `form_alert`, driven through the pluggable input source |
 | `test_chrome` | every chrome field through `wind_set`, hi/lo split |
 | `test_scroll` | the AES runs the scrollbar; clicks follow the scroll with no arithmetic |
+| `test_leak` | 🟠 **KNOWN-LEAK.** Measures bytes/cycle. Must read **0** when the new Foundation lands |
 | `test_table` | a datasource-driven table of real GEM objects — and it repaints only what is visible |
 | `test_outline` | expand/collapse re-derives the rows; the row OBJECTS are reused, so the tree never grows |
 | `libtable` | a protocol declared IN the `.so`, adopted by a client class, called back across the boundary |
@@ -197,6 +198,43 @@ best argument there is for testing it rather than reading it.
 
 Keeping `XGGeometry` and `XGString` free of `#import <GEM>` is what makes this possible.
 **Do not casually add a GEM dependency to either.**
+
+## 🟠 Xtg leaks, and it is not Xtg's fault
+
+`test_leak` probes the allocator — take a small block, free it, do N cycles of real work, take
+another. A clean run reuses the block and the address does not move. It moves:
+
+```
+view tree + 10 views        453 bytes/cycle
+table, 20 rows x 2 cols    1255 bytes/cycle
+```
+
+**Nothing is reclaimed.** Every allocation in that test is ARC'd and goes out of scope, so this
+is not a missing release in Xtg — it is the **Foundation types** (`Array` and friends) leaking
+on arm9. They were only ever correct on the 6502. The compiler thread is replacing them with
+production-quality versions.
+
+That means every Xtg app has been leaking on every window it opens and every table it reloads,
+which is exactly the kind of cost that never shows up in a test that runs for two seconds and
+exits. It took a *measurement* to see it, not a code review.
+
+The cause, from the compiler thread: the free routines were wrapped in `#if defined(6502)` and
+were **empty on every other platform**. So `free` compiled to nothing, and the leak is total
+rather than partial — which is exactly the signature the probe showed. Nothing reclaimed, ever.
+
+`test_leak` is the gate: **it must read 0 bytes/cycle** when the new Foundation lands. Until
+then it reports `KNOWN-LEAK` and is not counted as a pass.
+
+### When the new Foundation lands, BUMP `XTG_MINOR`
+
+`Array`'s indices were capped at `u16`, and Xtg is bound to that API in a dozen places
+(`XGViewTree.count`, `Array.get(u16)`, every `for (u16 i...)` walk). A widened `Array` changes
+those signatures, which moves offsets and vtable slots — **that is an ABI break by definition**.
+
+So the moment the new Foundation is adopted, `XGVersion.xt` must go to `1.1.0`. That is precisely
+what the minor is for, and it means a client built against the old library will be refused **by
+name, at load** (`xtld_load err: Xtg_abi_1_0 rc=undefined symbol`) instead of dying as `PC=0` in
+a stale vtable. Good timing: the gate went in one commit before we needed it.
 
 ## Versioning: `libXtg.so` is `major.minor.patch`, and the ABI is in the SYMBOL NAME
 

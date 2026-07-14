@@ -34,7 +34,7 @@ SRCS = XGVersion.xt XGAbi.xt XGLibc.xt XGGeometry.xt XGResponder.xt XGViewTree.x
 
 PROGS = demo.so nibdemo.so test_spine.so test_window.so test_scroll.so \
         test_dirty.so test_key.so test_menu.so test_alert.so test_clip.so \
-        test_scale.so test_chrome.so test_table.so test_outline.so libdemo.so libtable.so
+        test_scale.so test_chrome.so test_table.so test_outline.so test_leak.so libdemo.so libtable.so
 
 all: $(PROGS)
 

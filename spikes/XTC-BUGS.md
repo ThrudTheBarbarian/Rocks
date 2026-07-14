@@ -5,6 +5,30 @@ libGEM, running on XTOS/arm9. Xtg is a deliberately demanding client: it subclas
 library classes across a `.so` boundary, is called *back* by C (the AES), leans on ARC
 and `weak:`, and holds hundreds of live objects. It is meant to find the sharp edges.
 
+# 17. 🟠 An identical redeclaration of a **void** function crashes the compiler
+
+**Reproducer: `spikes/redecl-ice.xt`.** Eight lines. Not chased further — the compiler thread is
+working in this area, so this is filed, not pursued.
+
+```c
+void    sink(pointer p);
+void    sink(pointer p);      // identical redeclaration
+```
+```
+    xtc: sema: -[XTType pointeeType]: unrecognized selector sent to instance 0x...
+```
+
+An **internal error**, not a diagnostic: no file, no line, nothing naming the declaration it
+fell over on. A non-void function (`pointer grab(u32 n);`) redeclares fine, so it is the `void`
+return that does it.
+
+How it found me: `test_leak.xt` hand-declared `malloc`/`free` while also importing `XGLibc.xt`,
+which already declares them. `malloc` returns `pointer` and was fine; `free` returns `void` and
+brought the compiler down. Redundant, so the fix in Xtg was to delete the declarations — but the
+compiler should say so rather than crash.
+
+---
+
 > ## ✅ #16 is fixed — and the fix found something worse than the bug I reported
 >
 > I reported `##`. The compiler thread found the *reason* it corrupted: macro-argument
