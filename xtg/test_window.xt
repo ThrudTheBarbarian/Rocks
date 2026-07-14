@@ -17,6 +17,7 @@
 #import <GEM>
 #import <xtos>
 #import "XGGem.xt"
+#import "XGBoot.xt"
 
 // libxtos.so is built without -g, so it carries no DWARF and xtc cannot type it.
 // Mirror the two things we need by hand (see xtsys.h / usys.h).  Adding -g to the
@@ -48,6 +49,7 @@ void    vsf_color(i32 h, i32 pen);
 void    vsf_interior(i32 h, i32 style);
 void    vsf_perimeter(i32 h, i32 on);
 void    vr_recfl(i32 h, pointer pxy);
+void    v_get_pixel(i32 h, i32 x, i32 y, i32@ pel, i32@ index);
 pointer malloc(u32 n);
 
 #define W_NAME    $0001
@@ -60,6 +62,7 @@ OBJECT  gTree[3];
 theme   gTheme;          // ~18KB (256 slices) — DWARF gives us the real size
 i32     gVH;
 u16     gDrawCalls;
+i32     gInkIndex;       // the pen v_get_pixel found where drawRect painted (-1 = no match)
 
 // The pixel our drawRect paints, so we can prove it ran.
 #define INK_PEN  2          /* VDI pen 2 = red */
@@ -86,6 +89,15 @@ i32 xtg_userdraw(pointer tree, i32 obj, pointer ud)
     vsf_interior(h, (i32)1);                // solid
     vsf_perimeter(h, (i32)0);
     vr_recfl(h, (pointer)&pxy[0]);          // <- app code painting, called by the AES
+
+    // READ IT BACK THE ONLY WAY A CLIENT CAN — through the workstation we just painted
+    // with.  v_get_pixel reads that workstation's TARGET SURFACE, which under gemd is our
+    // own shm backing store, not the screen.  We ask "is the pixel mine?", never "is the
+    // pixel on the plane?" — the plane is gemd's, and we cannot see it.  (An earlier
+    // version of this test peeked at the wallpaper buffer and, once we became a gemd
+    // client, correctly found nothing there.)
+    i32 pel = (i32)0;
+    v_get_pixel(h, ax + (i32)8, ay + (i32)8, &pel, &gInkIndex);
     return (i32)0;
 }
 
@@ -100,6 +112,9 @@ void xtg_window_draw(i32 handle, i32 wx, i32 wy, i32 ww, i32 wh, pointer ud)
 
 void main(void)
 {
+    // qemu has no SD card, so init started no gemd.  TEST-ONLY (XGBoot.xt).
+    if (!XGBoot.ensureWindowServer()) { Stdio.printf("no gemd\n"); return; }
+
     gDrawCalls = (u16)0;
 
     // ---- boot GEM, entirely from xtc ----------------------------------------
@@ -161,27 +176,22 @@ void main(void)
     wind_open(win, wx, wy, ww, wh);
     wind_redraw_win(win);                     // the new per-window damage path
 
-    // ---- verify: did our drawRect actually put red pixels on the screen? -----
+    // ---- verify: did our drawRect actually paint, onto our own surface? ------
     Stdio.printf("userdraw invoked %d time(s)   (the AES called our xtc code)\n", (i16)gDrawCalls);
 
-    // the G_USERDEF sits at window work-area + (20,20); sample well inside it
     i32 ax = (i32)0;
     i32 ay = (i32)0;
     objc_offset(&gTree[0], (i32)2, &ax, &ay);
     Stdio.printf("G_USERDEF is at %d,%d  (screen is %dx%d)\n",
                  (i16)ax, (i16)ay, (i16)fb.w, (i16)fb.h);
-    u32 px = bb.px[(ax + (i32)8) + (ay + (i32)8) * bb.stride];
-    Stdio.printf("pixel inside the G_USERDEF = %lx\n", px);
+    Stdio.printf("pen at that pixel, read back through our workstation = %d (want %d)\n",
+                 (i16)gInkIndex, (i16)INK_PEN);
 
-    u8 r = (u8)(px >> 24);
-    u8 g = (u8)(px >> 16);
-    u8 b = (u8)(px >> 8);
-    bool isRed = r > (u8)200 && g < (u8)80 && b < (u8)80;
-
-    if (gDrawCalls > (u16)0 && isRed) {
+    if (gDrawCalls > (u16)0 && gInkIndex == (i32)INK_PEN) {
         Stdio.printf("PASS: the AES called our xtc drawRect, and it painted pixels.\n");
         Stdio.printf("      The G_BUTTON next to it was drawn by GEM, themed, for free.\n");
+        Stdio.printf("      The pixel was read back from OUR SURFACE — the screen is gemd's.\n");
     } else {
-        Stdio.printf("FAIL: draws=%d red=%d\n", (i16)gDrawCalls, (i16)(isRed ? 1 : 0));
+        Stdio.printf("FAIL: draws=%d pen=%d\n", (i16)gDrawCalls, (i16)gInkIndex);
     }
 }

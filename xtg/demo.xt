@@ -3,6 +3,7 @@
 #import "XGApplication.xt"
 
 #import "XGControl.xt"
+#import "XGBoot.xt"
 
 // A custom view: we override drawRect and the AES calls it.
 class SwatchView : XGView
@@ -101,6 +102,9 @@ class Controller : Object <XGApplicationDelegate>
 
 void main(void)
 {
+    // qemu has no SD card, so init started no gemd.  TEST-ONLY (see XGBoot.xt).
+    if (!XGBoot.ensureWindowServer()) { Stdio.printf("could not start gemd\n"); return; }
+
     XGApplication@ app = new XGApplication();
     Controller@ c = new Controller();
     app.setDelegate(c);

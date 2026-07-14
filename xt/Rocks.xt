@@ -4,9 +4,17 @@
 // that #imports <Xtg>, LINKS libXtg.so, and runs natively on the XT's ARM core under
 // XTOS.  The toolkit is a shared library; this is a client of it.
 #import "RocksApp.xt"
+#import "../xtg/XGBoot.xt"
 
 void main(void)
 {
+    // SCAFFOLDING, AND ONLY UNDER QEMU. gemd is normally started by a boot script off the
+    // SD card, which qemu does not have — so with no SD card there is no gemd, and an app
+    // that needs a window server finds none. On the board this call connects to the gemd
+    // that is already running and returns immediately; it is a no-op there. An application
+    // does NOT get to start the window server, and this goes the moment qemu boots properly.
+    if (!XGBoot.ensureWindowServer()) { Stdio.printf("Rocks: no window server\n"); return; }
+
     XGApplication@ app = new XGApplication();
     Rocks@ r = new Rocks();
     app.setDelegate(r);

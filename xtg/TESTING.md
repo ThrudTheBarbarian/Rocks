@@ -16,31 +16,15 @@ this project two false findings.
 do not, so make believes it is done. If `freertos.elf` fails on `libtomcrypt.a`, delete
 `$(BUILD)/dropbear/objects.list` and rebuild.
 
-## 🟡 The hardware suite is MOSTLY parked
+## ✅ The whole suite now runs AS GEMD CLIENTS
 
-`libGEM` now hard-exits without `gemd`:
-
-```
-gem: no window server — is gemd running? (there is no single-process mode on XTOS)
-```
-
-Every test that opens a *window* calls `appl_init`, so those cannot run. `gemd` is at **M4 of 7**.
-
-**But not everything needs a server.** `objc_offset`, `objc_find` and the damage logic are **pure
-tree math** — they never touch the AES's window list. So the tree half of the toolkit *is*
-verifiable on hardware today, and `test_spine` now covers it: **20 checks, 0 failures.**
-
-**This is the right call on the GEM side** — a local-fallback mode would be a lie, and it
-would hide exactly the bugs the split exists to surface. But it means everything built
-during this window is **verified by build, not by running**, and must not be described as
-"working" until it has run.
-
-### Must be re-run against the first `gemd` that hosts a client
+Every test below runs under qemu against a real `gemd`, over a real shm backing store. Nothing
+is "verified by build" any more.
 
 | | proves |
 |---|---|
-| ~~`test_spine`~~ | ✅ **RUNS — 20 checks, 0 failures.** No server needed. |
-| `test_window` | the AES calls our `drawRect`, and it paints pixels |
+| `test_spine` | tree math: 20 checks, 0 failures (needs no server) |
+| `test_window` | the AES calls our `drawRect`, and it paints pixels **into our own surface** |
 | `demo` | hit-test → responder → target/action → `setNeedsDisplay` → repaint |
 | `libdemo` | **the same program against `libXtg.so`** — subclass + override across a `.so` |
 | `nibdemo` | a Rocks-authored `.rsc` is a LIVE view hierarchy |
@@ -50,11 +34,58 @@ during this window is **verified by build, not by running**, and must not be des
 | `test_key` | click → first responder → `keyDown` → `objc_edit` → text |
 | `test_menu` | model → `menu_build` → `MN_SELECTED` → bound method |
 | `test_alert` | modal `form_alert`, driven through the pluggable input source |
-| `test_chrome` | **NEVER RUN.** Every chrome field through `wind_set`, hi/lo split |
+| `test_chrome` | every chrome field through `wind_set`, hi/lo split |
 | `Rocks` / `test_rocks` | the app: a `.rsc` as a live canvas, selection, menus, alerts |
 
-Everything except `test_chrome` **had** passed on the loader before the split landed.
-`test_chrome` has never run at all.
+`gemd` confirms the design in its own log:
+
+```
+gemd: wind_open wh=1 pid=2 work 182x76 -> surf 0 gen 1 cap 192x120 (stride 192)
+```
+
+A shm backing store, with **stride = capacity width, not current width** (RESPONSIBILITIES §13).
+
+### A CLIENT CANNOT READ THE SCREEN — and that broke a test, correctly
+
+`test_window` used to draw and then peek at the **wallpaper framebuffer** to check for red pixels.
+Under `gemd` that fails: `draws=2 red=0`. The `drawRect` ran; the pixels simply were not on the
+plane, because **the plane is not ours**. A client paints into its own shm surface and `gemd`
+composites it.
+
+The fix is not to reach further — it is to ask a question a client is *allowed* to ask. The test
+now reads the pixel back with **`v_get_pixel`, through the very workstation it painted with**.
+That workstation targets our surface, so the question becomes "is the pixel *mine*?" instead of
+"is the pixel *on the screen*?". Same proof, no trespass.
+
+Any future test that verifies drawing must do the same. If a test needs to see the composited
+screen, that is a `gemd`-side test, not a client-side one.
+
+### Chrome is read back from a CACHE, not from the server
+
+`test_chrome` failed the first time it ever ran: every field read back `""`. That was right too —
+`wind_set(WF_NAME, ...)` on a client **sends the string to `gemd`** (§11) and stores nothing, so
+`wind_get` had nothing to return.
+
+`wind_set` now caches the **strings, and only the strings**, client-side. The asymmetry is the
+point:
+
+* **Chrome strings** — `gemd` never rewrites your title, so your request **is** the truth. Safe to
+  cache, and `wind_get(WF_NAME)` is a classic call an app is entitled to.
+* **Geometry** — `gemd` **clamps**. Your request is *not* the truth; the truth arrives later as
+  `MSG_MOVED`. A client that cached `WF_CURRXYWH` would disagree with the screen every time
+  `gemd` said no.
+
+**Cache what cannot be refused.**
+
+### Running an app under qemu needs a bootstrap
+
+qemu has **no SD card**, so `boot_run()` finds no `/OS/boot/NN-*` scripts and **nothing starts
+`gemd`**. `XGBoot.ensureWindowServer()` (test scaffolding — deliberately *not* in the `Xtg.xt`
+library umbrella) spawns `/bin/gemd` and waits for the `"gem"` service.
+
+It is idempotent: on the board it connects to the already-running `gemd` and returns immediately.
+An application does **not** get to start the window server; this goes the moment qemu boots
+properly.
 
 ## ✅ What DOES run
 

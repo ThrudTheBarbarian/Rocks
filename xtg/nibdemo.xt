@@ -6,6 +6,7 @@
 #import <Stdio.xt>
 #import "XGApplication.xt"
 #import "XGNib.xt"
+#import "XGBoot.xt"
 
 class Controller : Object <XGApplicationDelegate>
 {
@@ -87,6 +88,9 @@ class Controller : Object <XGApplicationDelegate>
 
 void main(void)
 {
+    // qemu has no SD card, so init started no gemd.  TEST-ONLY (XGBoot.xt).
+    if (!XGBoot.ensureWindowServer()) { Stdio.printf("no gemd\n"); return; }
+
     XGApplication@ app = new XGApplication();
     Controller@ c = new Controller();
     app.setDelegate(c);

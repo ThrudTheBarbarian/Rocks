@@ -6,6 +6,7 @@
 #import <Stdio.xt>
 #import <GEM>
 #import "RocksApp.xt"
+#import "../xtg/XGBoot.xt"
 
 // A fake input source, so the modal alert in File>Quit can be answered.
 i32 gAnswer;             // which key the alert will "see"
@@ -77,6 +78,9 @@ class Harness : Object <XGApplicationDelegate>
 
 void main(void)
 {
+    // qemu has no SD card, so no boot script started gemd (see Rocks.xt). Test-only.
+    if (!XGBoot.ensureWindowServer()) { Stdio.printf("no gemd\n"); return; }
+
     XGApplication@ app = new XGApplication();
     Harness@ h = new Harness();
     app.setDelegate(h);

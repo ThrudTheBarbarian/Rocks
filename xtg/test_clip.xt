@@ -7,6 +7,7 @@
 #import <GEM>
 #import <xtos>
 #import "XGGem.xt"
+#import "XGBoot.xt"
 
 i32     v_opnvwk(pointer surface);
 void    vdi_init(pointer surface);
@@ -35,6 +36,9 @@ theme      gTheme;
 
 void main(void)
 {
+    // qemu has no SD card, so init started no gemd.  TEST-ONLY (XGBoot.xt).
+    if (!XGBoot.ensureWindowServer()) { Stdio.printf("no gemd\n"); return; }
+
     os_fbinfo fb; os_fbinfo wp;
     if (sys_fb_info((pointer)&fb) != (i32)0)      { Stdio.printf("no display\n"); return; }
     if (sys_fb_wallpaper((pointer)&wp) != (i32)0) { Stdio.printf("no back buffer\n"); return; }
