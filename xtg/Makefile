@@ -34,7 +34,7 @@ SRCS = XGLibc.xt XGGeometry.xt XGResponder.xt XGViewTree.xt XGView.xt XGControl.
 
 PROGS = demo.so nibdemo.so test_spine.so test_window.so test_scroll.so \
         test_dirty.so test_key.so test_menu.so test_alert.so test_clip.so \
-        test_scale.so test_chrome.so test_table.so test_outline.so libdemo.so
+        test_scale.so test_chrome.so test_table.so test_outline.so libdemo.so libtable.so
 
 all: $(PROGS)
 
@@ -83,6 +83,9 @@ libXtg.so: Xtg.xt $(SRCS)
 # override back.  It needs `-L .` (where libXtg.so is), which the generic %.so rule below
 # does not pass, so it gets its own rule.  It had none: it was being built from my shell
 # history, which is exactly what the note at the top of this file complains about.
+libtable.so: libtable.xt libXtg.so
+	$(XTC) -A $(ARCH) -I . -L . -L $(GEMLIB) $< -o $@
+
 libdemo.so: libdemo.xt libXtg.so
 	$(XTC) -A $(ARCH) -I . -L . -L $(GEMLIB) $< -o $@
 

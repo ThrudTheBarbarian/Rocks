@@ -17,3 +17,5 @@
 #import "XGMenu.xt"
 #import "XGAlert.xt"
 #import "XGNib.xt"
+#import "XGTableView.xt"
+#import "XGOutlineView.xt"
