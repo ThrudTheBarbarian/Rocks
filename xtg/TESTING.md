@@ -225,16 +225,32 @@ rather than partial — which is exactly the signature the probe showed. Nothing
 `test_leak` is the gate: **it must read 0 bytes/cycle** when the new Foundation lands. Until
 then it reports `KNOWN-LEAK` and is not counted as a pass.
 
-### When the new Foundation lands, BUMP `XTG_MINOR`
+### Is the widened `Array` an ABI break? TEST IT — do not assume
 
-`Array`'s indices were capped at `u16`, and Xtg is bound to that API in a dozen places
-(`XGViewTree.count`, `Array.get(u16)`, every `for (u16 i...)` walk). A widened `Array` changes
-those signatures, which moves offsets and vtable slots — **that is an ABI break by definition**.
+`Array`'s indices were capped at `u16` and are going to `u32`, and Xtg is bound to that API in a
+dozen places (`XGViewTree.count`, `Array.get(u16)`, every `for (u16 i...)` walk).
 
-So the moment the new Foundation is adopted, `XGVersion.xt` must go to `1.1.0`. That is precisely
-what the minor is for, and it means a client built against the old library will be refused **by
-name, at load** (`xtld_load err: Xtg_abi_1_0 rc=undefined symbol`) instead of dying as `PC=0` in
-a stale vtable. Good timing: the gate went in one commit before we needed it.
+My first instinct was "that moves signatures, so it is an ABI break — bump the minor." **That was
+probably wrong**, and the binaries say so:
+
+```
+libXtg.so    Array$add   FUNC GLOBAL DEFAULT  7    <- DEFINED here
+libtable.so  Array$add   FUNC GLOBAL DEFAULT  UND  <- resolved FROM the library
+```
+
+There is **one** `Array` implementation, in `libXtg.so`, and a client only ever *calls* it — it
+carries no knowledge of `Array`'s field offsets. And on arm9 a `u16` and a `u32` argument both
+travel in a 32-bit register, so `Array$get(u16)` → `Array$get(u32)` does not change the calling
+convention. The compiler widens and narrows at the call sites, and the only thing genuinely lost
+is the >64k-element case, which no view tree is going to reach.
+
+So it is plausibly a **patch** bump, not a minor one.
+
+**The way to settle it is to run it, not to reason about it.** The three-case matrix already
+exists (matched / newer patch / ABI bump): build a client against the old library, rebuild
+`libXtg.so` on the new Foundation, and run the *old binary* against it. If it works, bump the
+patch. If it dies, bump the minor — and the gate will have named the symbol rather than letting
+it die as `PC=0`, which is the whole reason it is there.
 
 ## Versioning: `libXtg.so` is `major.minor.patch`, and the ABI is in the SYMBOL NAME
 
