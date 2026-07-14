@@ -54,13 +54,6 @@ class XGControl : XGView
 // themes a button in any other GEM app.
 class XGButton : XGControl
 {
-    // NOT boilerplate.  A subclass that declares no init runs NO initialiser — not even the
-    // inherited one (spikes/XTC-BUGS.md #14) — so without this, XGControl.init never runs:
-    // `subviews` is a null Array, `action` is zeroed and `title` is a null pointer.  A button
-    // survived that only by luck (nothing adds a subview to a button, and every caller happened
-    // to setTitle before drawing).  Luck is not a lifetime.
-    void init(void) { super.init(); }
-
     u16 gemType(void) { return (u16)G_BUTTON; }
 
     void attachTo(XGViewTree@ t, XGRect frame) {

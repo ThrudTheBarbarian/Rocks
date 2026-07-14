@@ -1,0 +1,60 @@
+// spikes/ternary-release.xt — XTC-BUGS.md #15.
+//
+// Assigning an OBJECT-TYPED TERNARY to a strong local releases the object it selects,
+// without ever having retained it. The object is deallocated while its owner still
+// points at it, and the next read of that field is a use-after-free.
+//
+//     Node@ n = cond ? a : b;      // <-- frees whichever arm is chosen
+//     if (cond) { n = a; } else { n = b; }   // <-- correct
+//
+// `n` is never read. Merely BINDING the ternary to a strong local is enough.
+//
+//   build + run (host):   xtc -A arm64 ternary-release.xt -o t && ./t
+//   build + run (arm9):   xtc -A arm9 -L <gemlib> ternary-release.xt -o t.so
+//
+// Expected: no "dealloc" line until main() returns.
+// Actual:   dealloc runs inside viaTernary(), and root.v then reads 0.
+//
+// The sibling bug — a STRUCT-valued ternary losing half the struct — was #10, and was
+// fixed. The OBJECT-valued case was not covered.
+#import <Stdio.xt>
+
+class Node : Object
+{
+    i32  v;
+    void init(void)    { v = (i32)42; }
+    void dealloc(void) { Stdio.printf("   !! Node.dealloc ran\n"); }
+}
+
+class Holder : Object
+{
+    Node@ root;                        // a STRONG reference. root must stay alive.
+    void init(void) { root = (Node@)0; }
+
+    // `item` is always nil, so the ternary selects `root`. `n` is never used.
+    void viaTernary(Object@ item) {
+        Node@ n = item == (Object@)0 ? root : (Node@ ?)item;
+    }
+
+    // The identical selection, as if/else. The control.
+    void viaIfElse(Object@ item) {
+        Node@ n;
+        if (item == (Object@)0) { n = root; } else { n = (Node@ ?)item; }
+    }
+}
+
+void main(void)
+{
+    Holder@ h = new Holder();
+    h.root = new Node();
+
+    Stdio.printf("if/else x3 (holder still owns root):\n");
+    h.viaIfElse((Object@)0);
+    h.viaIfElse((Object@)0);
+    h.viaIfElse((Object@)0);
+    Stdio.printf("   root.v = %d   <- 42: alive, as it should be\n", (i16)h.root.v);
+
+    Stdio.printf("ternary x1 (holder STILL owns root):\n");
+    h.viaTernary((Object@)0);
+    Stdio.printf("   root.v = %d   <- 0: USE AFTER FREE\n", (i16)h.root.v);
+}

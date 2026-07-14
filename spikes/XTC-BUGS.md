@@ -5,106 +5,104 @@ libGEM, running on XTOS/arm9. Xtg is a deliberately demanding client: it subclas
 library classes across a `.so` boundary, is called *back* by C (the AES), leans on ARC
 and `weak:`, and holds hundreds of live objects. It is meant to find the sharp edges.
 
-# 15. 🟠 Memory corruption in `XGOutlineView` — **NOT REDUCED, and possibly mine**
+> ## ✅ #14 and #15 are BOTH FIXED — and both workarounds are gone from Xtg
+>
+> Verified against a freshly-built compiler, with the reproducers below, and — the part that
+> actually matters — **by deleting the workarounds and rebuilding**. The natural code now
+> compiles and runs, which is the only way to test a fix:
+>
+> - `test_outline`'s datasource uses the **ternary** again, not `if/else`.
+> - `XGButton`, and `test_scroll`'s `Row`/`Doc`, declare **no `init`** again.
+>
+> Suite: **16/16 under gemd**, including `XGOutlineView`, which was never at fault.
+>
+> ---
 
-I am reporting this one **unreduced and unattributed**, because I could not make it small
-and I have not proved it is the compiler's. It may be an xtc/ARC bug, an `Array` bug, or a
-bug in Xtg. Read it as evidence, not as an accusation.
+# 15. ✅ FIXED — An object-typed **ternary** frees the object it selects
 
-### What happens
-
-`XGOutlineView.countRows()` had:
-
-```c
-nodes = new Array();                 // reassign a strong Array@ field
-self.flatten((Object@)0, (i32)0);
-```
-
-That assignment **empties `root.kids`** — an `Array` in a completely different object graph,
-owned by the test's model, never referenced by Xtg, at a different address:
-
-```
-     n=100016E0  n.kids=1003FA88  count=3     <- called directly:      3 children
-     n=100016E0  n.kids=1003FA88  count=0     <- called 1 line later:  0 children
-```
-
-**Same `Array` pointer**, count 3 → 0. It was not replaced, it was *emptied* — i.e. dealloc'd
-out from under its owner while the owner still points at it. Nothing in the interval touches
-it. The datasource object is alive, its `root` field is intact, the arguments arrive intact,
-and the correct method runs — I verified every one of those.
-
-Replacing the reassignment with `nodes.removeAll()` — **changing nothing else** — makes the
-symptom go away and the count stay 3.
-
-### It needs NO window, NO gemd, NO AES — `xtg/repro_outline.so`
-
-This is the useful part, and it came after the first write-up. Strip the whole GEM stack away —
-no `wind_open`, no framebuffer, no server, just an `XGViewTree`, an `XGOutlineView` and a plain
-model of `Node`s — and **it still dies**, inside `flatten()`:
-
-```
-before: root.kids=10000260 count=2 (want 2)
-  [flatten n=2]                       <- the datasource answered correctly
-    [child 0 = 10000380]  ok          <- also held by a local strong ref
-    [child 1 = 10000C80]              <- held ONLY by the Array's retain
-*** DATA-ABORT   DFAR=0x8   CALLER=0x10000c80
-```
-
-**`CALLER` is `0x10000c80` — the child's own address.** Control jumped *into the heap object*
-as though it were code, so what we dereferenced was not a `Node` but reused/garbage memory.
-
-And the split between the two children is the tell:
-
-* `child 0` is `docs`, which **also** has a local `Node@ docs` strong reference. It survives.
-* `child 1` is `mknode("readme")` — a **temporary**, whose only owner is the `Array`'s retain
-  inside `root.kids`. It is **dead by the time `flatten` reads it back.**
-
-So an object that only the container retains is being freed. That is a refcount bug, and the
-`Array`-reassignment symptom in the first write-up is almost certainly the same bug seen from
-the other end (freed objects → reused memory → an `Array` that reads `count = 0`).
-
-### But the obvious minimal form of THAT does not reproduce either
-
-Both of these keep the object alive, correctly, on **arm9 and the host**:
+**Reproducer: `spikes/ternary-release.xt`.** Self-contained, no GEM, no Xtg. Fails on the
+**arm64 host** and on **arm9**, against a freshly-built compiler.
 
 ```c
-a.add(mk(22));                    // temporary, local Array          -> v == 22  ✅
-m.root.kids.add(mk(22));          // temporary, two-hop field chain  -> v == 22  ✅
+class Node : Object {
+    i32  v;
+    void init(void)    { v = (i32)42; }
+    void dealloc(void) { Stdio.printf("   !! Node.dealloc ran\n"); }
+}
+
+class Holder : Object {
+    Node@ root;                       // a STRONG reference: root must stay alive
+
+    void viaTernary(Object@ item) {   // item is always nil -> the ternary selects `root`
+        Node@ n = item == (Object@)0 ? root : (Node@ ?)item;
+    }                                 // `n` is NEVER READ
+
+    void viaIfElse(Object@ item) {    // the identical selection, as if/else
+        Node@ n;
+        if (item == (Object@)0) { n = root; } else { n = (Node@ ?)item; }
+    }
+}
+```
+```
+    if/else x3 (holder still owns root):
+       root.v = 42                <- alive, correct
+    ternary x1 (holder STILL owns root):
+       !! Node.dealloc ran        <- FREED, while Holder.root still points at it
+       root.v = 0                 <- use after free
 ```
 
-So `add(temporary)` is not *by itself* broken. Something about the outline's object graph —
-which also holds `weak:` back-pointers from every row to the view, and a `weak:` protocol-typed
-`outlineSource` — is what tips it over. **That is where I ran out of budget.**
+**Assigning an object-typed ternary to a strong local releases the selected object without
+ever retaining it.** Binding it is enough — `n` is never read. The `if/else` form, selecting
+the very same object, is correct.
 
-`xtg/repro_outline.xt` is committed and is the shortest path back in.
+### Which forms break
 
-### What I ruled out
+Every one of these frees the object. The checked downcast is **irrelevant** — I chased it as
+the suspect and it is innocent:
 
-Each of these was built and run, on **arm9 under qemu** and on the **arm64 host**, against a
-freshly-built compiler. All passed, so none of them is the bug on its own:
-
-| tried | result |
+| form | result |
 |---|---|
-| protocol dispatch through a protocol-typed `weak:` field | ✅ correct |
-| arguments passed through a protocol call | ✅ arrive intact |
-| reading a *field of self* inside a protocol-dispatched method | ✅ correct |
-| a base method calling `self.hook()` where a subclass overrides `hook` | ✅ dispatches to the override |
-| bare `hook()` self-call (the old bug B) | ✅ **also dispatches correctly now** |
-| reassigning a strong `Array@` field | ✅ correct standalone |
-| ...on a 4-deep subclass with five inherited `Array@` fields | ✅ correct standalone |
+| `Node@ n = c ? a : b;` — both arms fields | 🔴 freed |
+| `Node@ n = c ? a : (Node@ ?)o;` — one arm a checked downcast | 🔴 freed |
+| `Node@ n = c ? a : (Node@)0;` — one arm nil | 🔴 freed |
+| `Node@ n = c ? x : x;` — both arms the same **local** | 🔴 freed |
+| `return c ? a : b;` — ternary in a **return** | ✅ correct |
+| `if (c) { n = a; } else { n = b; }` | ✅ correct |
 
-It needs the full Xtg object graph to appear, and I ran out of budget before I could bisect
-that. **`XGTableView` — which shares all the same machinery — is unaffected and passes 15/15.**
+So it is specifically **ternary → strong local binding**. The `return` path already gets it
+right, which is probably where the fix should be read from.
 
-### To reproduce
+### Why it was so hard to see
 
-`xtg/XGOutlineView.xt` and `xtg/test_outline.xt` are both committed. `test_outline` is
-deliberately **not** in `PROGS`, so the suite stays green. Put it back, restore the
-`nodes = new Array()` line, and it aborts.
+This is the sibling of **#10** (a *struct*-valued ternary losing half the struct), which was
+fixed. The *object*-valued case was not covered, and it fails far more quietly: the ternary
+looks like a read, so a datasource written the obvious way —
+
+```c
+Node@ n = item == (Object@)0 ? root : (Node@ ?)item;   // every call frees `root`
+return (i32)n.kids.count();
+```
+
+— quietly decrements its model's refcount **on every call**. The model survives the first few
+calls and then dies mid-walk. What you actually observe is an `Array` that reads `count = 0`,
+or a `DATA-ABORT` whose faulting `CALLER` address is a **heap object**, arbitrarily far from
+the ternary. I spent a long time chasing a phantom `Array`/ARC bug and a phantom protocol-
+dispatch bug before the real cause fell out.
+
+### Retraction of the first report
+
+The earlier version of this entry claimed that *"reassigning a strong `Array@` field empties an
+unrelated `Array`"*, on the evidence that swapping `nodes = new Array()` for `nodes.removeAll()`
+made the symptom vanish. **That was a red herring** — a timing artefact of the heap damage, not
+a cause. With the ternary fixed, `nodes = new Array()` works fine. Recorded here because the
+wrong theory survived two write-ups and cost hours.
+
+**`XGOutlineView` was never at fault.** The ternaries were in the *test's datasource*. With them
+written as `if/else`, `test_outline` passes and the outline view is in the suite.
 
 ---
 
-# 14. 🔴 A subclass that declares no `init()` runs **no initialiser at all**
+# 14. ✅ FIXED — A subclass that declares no `init()` runs **no initialiser at all**
 
 **Verified against a freshly-built HEAD (`5fea860`), reproduced on the host in 30 lines.**
 

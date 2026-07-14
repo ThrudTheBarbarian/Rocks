@@ -36,13 +36,8 @@ void check(u8@ what, i32 got, i32 want) {
 
 // A row, and the document that holds them: plain G_BOXes, so GEM paints them and we
 // write no drawing code at all.
-//
-// The `init` bodies are NOT boilerplate — omit them and xtc runs NO initialiser at all,
-// not even the inherited one, so XGView's `subviews` array is never allocated and the
-// first addSubview dereferences null (DATA-ABORT, DFAR=0x8).  It compiles clean.
-// See spikes/XTC-BUGS.md #14.
-class Row : XGView { void init(void) { super.init(); }  u16 gemType(void) { return (u16)G_BOX; } }
-class Doc : XGView { void init(void) { super.init(); }  u16 gemType(void) { return (u16)G_BOX; } }
+class Row : XGView { u16 gemType(void) { return (u16)G_BOX; } }
+class Doc : XGView { u16 gemType(void) { return (u16)G_BOX; } }
 
 class Controller : Object <XGApplicationDelegate>
 {

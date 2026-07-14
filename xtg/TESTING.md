@@ -37,28 +37,31 @@ is "verified by build" any more.
 | `test_chrome` | every chrome field through `wind_set`, hi/lo split |
 | `test_scroll` | the AES runs the scrollbar; clicks follow the scroll with no arithmetic |
 | `test_table` | a datasource-driven table of real GEM objects — and it repaints only what is visible |
+| `test_outline` | expand/collapse re-derives the rows; the row OBJECTS are reused, so the tree never grows |
 | `Rocks` / `test_rocks` | the app: a `.rsc` as a live canvas, selection, menus, alerts |
 
-### 🟠 `XGOutlineView` is written, and is NOT in the suite
+### `XGOutlineView` — and the bug that made it look broken
 
-`XGOutlineView.xt` and `test_outline.xt` are committed but **`test_outline` is deliberately not
-in `PROGS`**, because it hits memory corruption: reassigning the outline's own strong `Array@`
-field empties an `Array` in the *datasource's* object graph — a different object, a different
-address, nothing of ours pointing at it. Full evidence in `spikes/XTC-BUGS.md` #15, including
-the seven things I ruled out.
+`test_outline` is in the suite and passes. It very nearly was not, and the story is worth
+keeping.
 
-`xtg/repro_outline.xt` is the shortest way back in: **no window, no gemd, no AES** — just an
-`XGViewTree`, an `XGOutlineView` and a plain model — and it still dies inside `flatten()`. The
-object that dies is the one child whose *only* owner is the `Array`'s retain; its sibling, which
-also has a local strong reference, survives. So an object the container alone retains is being
-freed. `XGTableView` shares all the same machinery and is unaffected.
+The outline corrupted memory. I chased it into an `Array` bug, then a protocol-dispatch bug,
+then heap corruption, and wrote all three up. **All three were wrong.** The actual cause was
+one line in the *test's datasource*:
 
-I have **not** proved it is not my own bug, so it is filed as evidence rather than as a compiler
-defect.
+```c
+Node@ n = item == (Object@)0 ? root : (Node@ ?)item;
+```
 
-The design is sound and worth keeping: an outline view is a **table whose row list is derived
-from a tree**, so expanding re-derives the list and everything downstream — drawing,
-hit-testing, selection, scrolling, pruning — is the table's, unchanged.
+An object-typed ternary bound to a strong local **freed the object it selected** (xtc bug,
+`spikes/XTC-BUGS.md` #15 — **now fixed**; reproducer `spikes/ternary-release.xt`). Every datasource call
+quietly decremented the model's refcount, and the model died mid-walk — surfacing as an
+`Array` that read `count = 0` and a `DATA-ABORT` whose faulting address was a heap object,
+nowhere near the ternary.
+
+The compiler thread fixed it, the workaround came straight back out, and the datasource uses the
+ternary again. **`XGOutlineView` was never at fault.** The lesson is the one at the top of this
+file, again: a symptom that appears in an `Array` need not be a bug in the `Array`.
 
 ### The table scales with what is VISIBLE, not with how much data there is
 

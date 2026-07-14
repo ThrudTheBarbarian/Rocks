@@ -166,19 +166,7 @@ class XGOutlineView : XGTableView
     i32 countRows(void) {
         if (outlineSource == (XGOutlineDataSource@)0) { return (i32)0; }
 
-        // EMPTY the array; do NOT reassign the field.
-        //
-        // `nodes = new Array()` here corrupts memory: it empties root.kids — an Array in a
-        // completely different object graph, reached through the datasource, with a
-        // different address and no reference to it from Xtg at all. Its count goes 3 -> 0
-        // while its pointer stays valid, i.e. it gets dealloc'd out from under its owner.
-        // Swapping the reassignment for removeAll() fixes it outright, with nothing else
-        // changed. I could not reduce it below the full Xtg object graph — a deep subclass
-        // with five Array@ fields does NOT reproduce it standalone on arm9 or the host.
-        //
-        // Note removeAll() does not touch the allocator and `new Array()` does, so this may
-        // be a heap overflow elsewhere that only ALLOCATION trips. See spikes/XTC-BUGS.md #15.
-        // Either way this is the better code: reloading a table should not churn the heap.
+        // removeAll(), not `nodes = new Array()`: reloading a table should not churn the heap.
         nodes.removeAll();
         self.flatten((Object@)0, (i32)0);          // nil item = the root
         return (i32)nodes.count();
