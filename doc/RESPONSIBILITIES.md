@@ -899,16 +899,65 @@ extending one we already have.
 because they are **additive rather than substitutive**: `wind_content`, `wind_redraw_win`/`_area`,
 `wind_content_size`, the scroll calls. None of those asks a client to draw in `gemd`'s pixels.
 
-### The protocol
+### 🔴 And it should be `wind_set`, not a new call — because `wind_set` is BROKEN
+
+`wind_set` implements **exactly one field**:
+
+```c
+    void wind_set(int hd,int field,int a,int b,int c,int d){
+        if(hd<1||hd>=MAXW) return; awin*W=&g_w[hd];
+        if(field==WF_CURRXYWH){ ... }        /* <- the ONLY field.  That is the whole function. */
+    }
+```
+
+**`WF_NAME` is in the enum and silently ignored.** Meanwhile `aes.h` opens with:
+
+> *"The classic GEM ABI (OBJECT layout, types, flags, states, **call names**) is preserved so **m68k
+> apps bind to it directly**."*
+
+So a classic GEM app that sets its title the only way it knows how — `wind_set(h, WF_NAME, ...)` —
+**gets silence.** No title, no error. The silent-degradation pattern, this time in GEM.
+
+**And `wind_set_name()` is why nobody noticed.** The sugar gave everything in our own tree a working
+path, so the hole in the *compatible* path was never exercised. **A convenience wrapper that hides a
+broken standard call is worse than no wrapper**, and this one hid it for the whole life of the
+project.
+
+### The protocol — one field per attribute, which is how GEM has always grown
+
+No new mechanism. The declarative chrome model *is* `wind_set`:
 
 ```
-    client -> gemd:   wind_set_title(h, text, subtitle, icon_id, flags)   ~64 bytes
-                      wind_set_info(h, text)
-                      wind_titlebtns(h, glyphs[], n)
+    WF_NAME       (2)   title string            <- classic.  Currently IGNORED.
+    WF_INFO       (3)   info string             <- classic.  Never implemented.
+    WF_SUBTITLE         subtitle string         <- new field, classic shape
+    WF_ICON             proxy / document icon
+    WF_TITLEFLAGS       modified dot, etc.
+    WF_TITLEBTNS        glyph list + count
 
-    gemd -> client:   WM_TBUTTON(h, idx)      a title button was pressed
-                      WM_CLOSED / WM_TOPPED / ...   as now
+    gemd -> client:     WM_TBUTTON(h, idx)      a title button was pressed
+                        WM_CLOSED / WM_TOPPED / ...   as now
 ```
+
+`wind_title`, `wind_title_active`, `wind_info`, `wind_titlebtns`, `wind_titlebtn_rect` **and
+`wind_set_name`** all collapse into `wind_set`.
+
+**The type-safety objection answers itself.** Yes, `wind_set(int,int,int,int,int,int)` passing a
+`char*` through an `int` is ugly, and DWARF cannot tell xtc it is a pointer. But that is GEM's ABI,
+and it is the price of the compatibility the header promises. **Type safety belongs in Xtg, not the
+AES**: `XGWindow.setTitle(u8@)` wraps the cast and app code never sees it.
+
+> **The toolkit is where types go. The AES is where compatibility goes.** That is the same layering
+> this document defends everywhere else — and the reason `wind_set_name` felt harmless is that it
+> quietly put a toolkit concern (a nicer signature) into the compatibility layer.
+
+**Open question for the GEM/m68k track:** if m68k apps really do "bind directly", `wind_set(WF_NAME)`
+must accept the classic **hi/lo pointer split** across two 16-bit args — our `int` is 32-bit and the
+pointer fits in `a` alone. Someone should decide whether "binds directly" is literally true, because
+the answer changes the signature.
+
+`gemd` owns the model, so a full repaint, a drag, a theme change or a wedged owner all redraw
+correctly with **no client involvement whatsoever.**
 
 `gemd` owns the model, so a full repaint, a drag, a theme change or a wedged owner all redraw
 correctly with **no client involvement whatsoever.**
