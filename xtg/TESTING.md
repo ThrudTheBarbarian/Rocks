@@ -225,6 +225,30 @@ rather than partial — which is exactly the signature the probe showed. Nothing
 `test_leak` is the gate: **it must read 0 bytes/cycle** when the new Foundation lands. Until
 then it reports `KNOWN-LEAK` and is not counted as a pass.
 
+### Adopting the new Foundation: the checklist
+
+1. **`test_leak` must read `0 bytes/cycle`.** That is the whole point; it is 453 and 1255 today.
+2. **Delete the hand-rolled search.** `XGOutlineView.isExpanded` / `setExpanded` walk
+   `expandedItems` element by element because today's `Array` has **no search API at all**. The
+   new one has `indexOf` / `contains` and a real `Array.notFound()` sentinel, so both collapse:
+
+   ```c
+   bool isExpanded(Object@ item) { return expandedItems.contains(item); }
+   ```
+
+   This is the same bargain Xtg strikes with GEM everywhere else — *if we are reimplementing
+   something the library already does, that is a bug in Xtg.* It applies to the Foundation too.
+3. **Do NOT hard-code `$FFFF` as "not found".** With `u32` indices, `65535` is a **valid index**,
+   so a `$FFFF` sentinel silently becomes a real element. Use `Array.notFound()`. *(Audited: Xtg
+   has no such sentinel today — every `$FFFF` in the tree is GEM's hi/lo pointer split, which is
+   unrelated.)*
+4. **Then** answer the ABI question below, by running it.
+
+**Hazard while the compiler thread is mid-edit:** `make` in `fpga-xtc` runs `sync-support`, which
+installs `support/` into `/opt/xtc/` — the path `xtc` actually reads. Rebuilding the compiler to
+pick up a fix will therefore *also* install whatever state the Foundation happens to be in. Do not
+rebuild it while `git status` in that tree shows ` M support/...`.
+
 ### Is the widened `Array` an ABI break? TEST IT — do not assume
 
 `Array`'s indices were capped at `u16` and are going to `u32`, and Xtg is bound to that API in a
