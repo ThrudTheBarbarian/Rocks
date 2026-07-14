@@ -22,7 +22,14 @@
 #import <Xtg>
 #import "Structure.xt"
 
-#define RSC_PATH   "/System/OS/Apps/Desktop/desktop.rsc"
+// THE RESOURCE LIVES IN TWO PLACES, because we boot from two.
+//   the SD card:  /OS/Apps/Desktop/desktop.rsc          <- the real board
+//   the romfs:    /System/OS/Apps/Desktop/desktop.rsc   <- qemu, which has no card
+// Try the card first, then fall back — exactly as desktop.c does (desktop.c:2434). gemd
+// itself shipped without this fallback and came up on qemu with no font at all, which made
+// EVERY window title on the system blank. One missing fallback, one system-wide symptom.
+#define RSC_PATH_SD   "/OS/Apps/Desktop/desktop.rsc"
+#define RSC_PATH_ROM  "/System/OS/Apps/Desktop/desktop.rsc"
 
 // ---------------------------------------------------------------------------------
 // The inspector: what is selected, and what it is.  A plain XGView — Rocks draws this
@@ -100,8 +107,9 @@ class Rocks : Object <XGApplicationDelegate, XGTableDelegate>
     XGOutlineView@ outline;
     Structure@     structure;
     bool           syncing;    // selection is TWO-WAY; this stops it echoing
+    u8@            rscPath;   // whichever of the two paths actually had the resource
 
-    void init(void) { treeIndex = (i32)0; sel = (i32)-1; syncing = false; }
+    void init(void) { treeIndex = (i32)0; sel = (i32)-1; syncing = false; rscPath = ""; }
 
     // ---- menu actions -------------------------------------------------------
     void onOpen(XGMenuItem@ m)  { Stdio.printf("[Rocks] File > Open\n"); }
@@ -195,13 +203,20 @@ class Rocks : Object <XGApplicationDelegate, XGTableDelegate>
         a.setMenuBar(bar);
 
         // ---- the document: the .rsc IS the view tree ------------------------
-        doc = XGNib.load(RSC_PATH, treeIndex);
+        u8@ path = RSC_PATH_SD;
+        doc = XGNib.load(path, treeIndex);
         if (doc == (XGViewTree@)0) {
-            Stdio.printf("[Rocks] could not load %s\n", RSC_PATH);
+            path = RSC_PATH_ROM;                      // no card: qemu
+            doc  = XGNib.load(path, treeIndex);
+        }
+        if (doc == (XGViewTree@)0) {
+            Stdio.printf("[Rocks] could not load a resource from %s or %s\n",
+                         RSC_PATH_SD, RSC_PATH_ROM);
             return (i32)1;
         }
+        rscPath = path;
         Stdio.printf("[Rocks] loaded %s tree %d: %d objects\n",
-                     RSC_PATH, (i16)treeIndex, (i16)doc.length());
+                     path, (i16)treeIndex, (i16)doc.length());
 
         // ---- the CANVAS window: the resource, live --------------------------
         // It gets the left two-thirds; the structure takes the rest.
@@ -215,7 +230,7 @@ class Rocks : Object <XGApplicationDelegate, XGTableDelegate>
         // Chrome is DECLARATIVE (RESPONSIBILITIES §11): we hand gemd a MODEL — a name, a path,
         // a footer — and gemd draws and maintains it. We never draw a title bar, and gemd can
         // still repaint ours if we wedge.
-        win.setSubtitle(RSC_PATH);
+        win.setSubtitle(rscPath);
         win.setInfo(XGStr.append(XGStr.fromInt((i32)doc.length()), " objects"));
 
         // ---- the inspector, as a subview of the resource's ROOT --------------

@@ -27,7 +27,7 @@ XTCFLAGS = -A $(ARCH) -I . -L $(GEMLIB)
 # The toolkit's own sources.  Not built standalone yet: xtc has no separate
 # compilation, so a program #imports the sources it needs.  When libXtg.so becomes a
 # real --emit-lib artefact, this list is what goes into it.
-SRCS = XGLibc.xt XGGeometry.xt XGResponder.xt XGViewTree.xt XGView.xt XGControl.xt \
+SRCS = XGVersion.xt XGAbi.xt XGLibc.xt XGGeometry.xt XGResponder.xt XGViewTree.xt XGView.xt XGControl.xt \
        XGWindow.xt XGApplication.xt XGEvent.xt XGGraphics.xt XGNib.xt \
        XGMenu.xt XGAlert.xt XGString.xt XGGem.xt XGGem.h.xt XGTableView.xt \
        XGOutlineView.xt
@@ -62,70 +62,12 @@ host: test_host
 test_host: test_host.xt XGGeometry.xt XGString.xt XGLibc.xt
 	$(XTC) -A arm64 -I . $< -o $@
 
-# ---- VERSIONING: major.minor.patch, and the ABI lives in the SYMBOL NAME ---------
-#
-# A client compiled against one libXtg.so and run against another does not fail politely:
-# it jumps through a stale vtable offset and dies as PC=0, PREFETCH-ABORT, naming neither
-# the library nor the mismatch. That cost us a debugging session, and in a tree where three
-# threads rebuild each other's libraries it will happen again.
-#
-# VERSION is `major.minor.patch`, and the three parts mean different things:
-#
-#   major   a conceptual redesign. Different library, in effect.
-#   minor   AN ABI BREAK — the layout moved. A client built against 1.2 CANNOT run on 1.3.
-#   patch   compatible: additions and fixes. 1.2.5 satisfies a client that needs 1.2.4.
-#
-# So the two halves are enforced in two different places, because they need different rules:
-#
-#   major.minor -> THE SYMBOL NAME.   libXtg.so defines Xtg_abi_1_0; a client CALLS it. Bump
-#                  the minor and that symbol ceases to exist, so the LOADER refuses the stale
-#                  client, by name, before main() runs:
-#
-#                      xtld_load err: Xtg_abi_1_0 rc=undefined symbol
-#
-#                  It is exact-match by construction, which is what an ABI break means, and it
-#                  cannot be outrun — a stale layout cannot crash us before a check that the
-#                  loader performs.
-#
-#   patch       -> A RETURNED NUMBER.  Xtg_abi_1_0() returns the patch level, so a client can
-#                  say "I need at least 1.0.4" and be happy with 1.0.7. An exact match here
-#                  would be wrong: that is the whole difference between `patch` and `minor`.
-#
-# The generated files exist only because xtc has no `##` token-paste operator (see
-# spikes/XTC-BUGS.md #16), so the symbol name cannot be built from the numbers in a macro.
-# If ## lands, XGAbi.xt/XGAbiDef.xt collapse into a couple of lines of ordinary header.
-XTG_VERSION := $(strip $(shell cat VERSION))
-XTG_MAJOR   := $(word 1,$(subst ., ,$(XTG_VERSION)))
-XTG_MINOR   := $(word 2,$(subst ., ,$(XTG_VERSION)))
-XTG_PATCH   := $(word 3,$(subst ., ,$(XTG_VERSION)))
-XTG_ABI     := $(XTG_MAJOR)_$(XTG_MINOR)
-
-version: ; @echo "libXtg.so $(XTG_VERSION)  (abi symbol: Xtg_abi_$(XTG_ABI))"
-
-# The library half: DEFINE the ABI symbol, and have it return the patch level.
-XGAbiDef.xt: VERSION Makefile
-	@printf '// GENERATED from VERSION. Do not edit.\n' > $@
-	@printf '// The library half of the version gate: the symbol NAME carries major.minor (an ABI\n' >> $@
-	@printf '// break renames it, so a stale client cannot link), and the RETURN VALUE is the patch\n' >> $@
-	@printf '// level (so a newer patch still satisfies an older requirement). See the Makefile.\n' >> $@
-	@printf 'i32 Xtg_abi_$(XTG_ABI)(void) { return (i32)$(XTG_PATCH); }\n' >> $@
-
-# The client half: CALL it. The reference must survive dead-code elimination, so the result
-# is consumed by the caller's branch — an unused call is optimised away and the gate silently
-# vanishes, which is exactly what happened the first time I built this.
-XGAbi.xt: VERSION Makefile
-	@printf '// GENERATED from VERSION. Do not edit. Include this in any client of libXtg.so.\n' > $@
-	@printf '//\n' >> $@
-	@printf '//     if (!xtg_require((i32)4)) { ...refuse to run... }   // needs >= $(XTG_MAJOR).$(XTG_MINOR).4\n' >> $@
-	@printf '//\n' >> $@
-	@printf '// Calling this makes the client REFERENCE Xtg_abi_$(XTG_ABI). If libXtg.so has had an ABI\n' >> $@
-	@printf '// break since, that symbol is gone and the loader rejects the client BY NAME, at load,\n' >> $@
-	@printf '// rather than letting it die as PC=0 in a stale vtable.\n' >> $@
-	@printf 'i32 gXtgPatch;\n' >> $@
-	@printf 'bool xtg_require(i32 minPatch) {\n' >> $@
-	@printf '    gXtgPatch = Xtg_abi_$(XTG_ABI)();      // the ABI reference the loader checks\n' >> $@
-	@printf '    return gXtgPatch >= minPatch;          // consumed: survives dead-code elimination\n' >> $@
-	@printf '}\n' >> $@
+# ---- VERSIONING ------------------------------------------------------------------
+# It lives in XGVersion.xt now: major.minor.patch, with major.minor pasted into the ABI
+# SYMBOL NAME so a stale client is refused BY THE LOADER, by name, before main() runs.
+# See the header — and note this used to be two GENERATED files plus thirty lines of make,
+# because xtc had no `##`. It does now (XTC-BUGS #16), so it is ordinary preprocessor.
+version: ; @grep -E '^#define XTG_(MAJOR|MINOR|PATCH)' XGVersion.xt
 
 lib: libXtg.so
 
@@ -138,7 +80,7 @@ lib: libXtg.so
 # A library that is built but not deployed is a stale library.  These are one step.
 LIBDEST = $(LOADER)/romfs-overlay/Library
 
-libXtg.so: Xtg.xt $(SRCS) XGAbiDef.xt XGAbi.xt
+libXtg.so: Xtg.xt $(SRCS)
 	$(XTC) -A $(ARCH) --emit-lib -I . -L $(GEMLIB) Xtg.xt -o $@
 	@mkdir -p $(LIBDEST)
 	cp $@ $(LIBDEST)/
@@ -162,6 +104,6 @@ run-nibdemo: nibdemo.so ; $(MAKE) -C $(LOADER) xtcrun XTC_SO=$(CURDIR)/nibdemo.s
 run-spine:   test_spine.so ; $(MAKE) -C $(LOADER) xtcrun XTC_SO=$(CURDIR)/test_spine.so
 run-window:  test_window.so ; $(MAKE) -C $(LOADER) xtcrun XTC_SO=$(CURDIR)/test_window.so
 
-clean: ; rm -f $(PROGS) libXtg.so test_host XGAbi.xt XGAbiDef.xt
+clean: ; rm -f $(PROGS) libXtg.so test_host
 
-.PHONY: all lib host clean version abi run-demo run-nibdemo run-spine run-window
+.PHONY: all lib host clean version run-demo run-nibdemo run-spine run-window

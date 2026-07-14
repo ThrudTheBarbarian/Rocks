@@ -5,7 +5,30 @@ libGEM, running on XTOS/arm9. Xtg is a deliberately demanding client: it subclas
 library classes across a `.so` boundary, is called *back* by C (the AES), leans on ARC
 and `weak:`, and holds hundreds of live objects. It is meant to find the sharp edges.
 
-# 16. 🟡 No `##` token-paste operator
+> ## ✅ #16 is fixed — and the fix found something worse than the bug I reported
+>
+> I reported `##`. The compiler thread found the *reason* it corrupted: macro-argument
+> substitution was a raw textual replace of the parameter name across the body, with no notion
+> of a token. So a parameter also rewrote itself **inside longer identifiers and inside string
+> literals**:
+>
+> ```c
+> #define INSTR(a)  "a is here"      // INSTR(zz)  ->  "zz is here"   <- SILENT
+> ```
+>
+> The `##` failure was loud. *That* one compiles and runs with the wrong text baked in, and
+> nothing in the corpus touched it. It is the more dangerous half of the same root cause — and I
+> would never have found it from where I stood, because I only ever saw the loud symptom.
+>
+> **Audited Xtg: it defines no function-like macros at all, so it could not have been bitten.**
+> Checked, not assumed.
+>
+> With `##` and `#` landed, `XGAbi.xt` / `XGAbiDef.xt` stopped being generated: the ABI symbol is
+> one line of preprocessor in `XGVersion.xt`, and thirty lines of Makefile went with them.
+>
+> ---
+
+# 16. ✅ FIXED — No `##` token-paste operator
 
 **Reproducer: `spikes/token-paste.xt`.** Low severity, but it has a concrete cost.
 
