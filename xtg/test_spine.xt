@@ -89,6 +89,54 @@ void main(void)
     ck(t.objects()[box.index].ob_head == (i16)-1, "removeChild unlinks the only child");
     ck(t.hitTest((i16)120, (i16)65) == (i32)box.index, "the AES no longer finds it");
 
+    // ---- damage accumulation ------------------------------------------------
+    // The union of what views marked dirty.  Pure logic, no AES — so it is testable
+    // even with no window server, and it is where the struct-ternary miscompile bit.
+    XGViewTree@ d = new XGViewTree();
+    ProbeView@ a1 = new ProbeView();
+    ProbeView@ a2 = new ProbeView();
+    a1.attachTo(d, XGGeom.make((i16)10, (i16)10, (i16)20, (i16)20));
+    a2.attachTo(d, XGGeom.make((i16)100, (i16)100, (i16)20, (i16)20));
+    d.addChild(a1.index, a2.index);
+
+    ck(!d.isDirty(), "a fresh tree is clean");
+    a1.setNeedsDisplay();
+    XGRect r1 = d.dirty;
+    ck(d.isDirty() && r1.x == (i16)10 && r1.y == (i16)10 && r1.w == (i16)20 && r1.h == (i16)20,
+       "one view dirty -> the damage rect is THAT view");
+
+    a2.setNeedsDisplay();                       // a2 sits at 110,110 (child-relative)
+    XGRect r2 = d.dirty;
+    ck(r2.x == (i16)10 && r2.y == (i16)10 && r2.w == (i16)120 && r2.h == (i16)120,
+       "two views dirty -> the UNION of both");
+
+    XGRect taken = d.takeDirty();
+    ck(!d.isDirty() && taken.w == (i16)120, "takeDirty returns the union and clears it");
+    a1.setNeedsDisplay();
+    ck(d.dirty.w == (i16)20, "and the next mark starts fresh, not from the old union");
+
+    // ---- DEEP trees: objc_find past the classic depth of 8 -------------------
+    // Classic GEM stopped at 8.  A view hierarchy is deeper than that (window ->
+    // content -> scroll -> clip -> table -> row -> cell -> field is eight already), and
+    // past the limit the AES silently stops descending: never drawn, never hit-tested.
+    XGViewTree@ deep = new XGViewTree();
+    ProbeView@ top = new ProbeView();
+    top.attachTo(deep, XGGeom.make((i16)0, (i16)0, (i16)200, (i16)200));
+    ProbeView@ prev = top;
+    ProbeView@ last = top;
+    for (i32 k = (i32)0; k < (i32)15; k++) {     // 16 levels deep in total
+        ProbeView@ p = new ProbeView();
+        p.attachTo(deep, XGGeom.make((i16)1, (i16)1, (i16)(180 - (i32)2 * k), (i16)(180 - (i32)2 * k)));
+        deep.addChild(prev.index, p.index);
+        prev = p;
+        last = p;
+    }
+    deep.finalise();
+    XGRect la = deep.absoluteFrame(last.index);
+    i32 hit = deep.hitTest((i16)(la.x + (i16)2), (i16)(la.y + (i16)2));
+    ck(hit == (i32)last.index,
+       "objc_find reaches level 16 (classic GEM stopped at 8, silently)");
+
     Stdio.printf("spine: %d checks, %d failure(s) — %s\n",
                  (i16)gChecks, (i16)gFails, gFails == (u16)0 ? "PASS" : "FAIL");
 }

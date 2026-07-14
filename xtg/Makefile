@@ -19,7 +19,7 @@
 
 XTC     ?= xtc
 LOADER  ?= $(HOME)/src/fpga-xt/loader
-GEMLIB  ?= $(LOADER)/build
+GEMLIB  ?= $(LOADER)/build-xtg
 
 ARCH    ?= arm9
 XTCFLAGS = -A $(ARCH) -I . -L $(GEMLIB)
