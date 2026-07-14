@@ -5,6 +5,20 @@ depth-8 tree truncation, the dangling VDI surface, the `vs_clip` push-vs-pop, an
 five separate compiler miscompiles **all compiled clean**. So the status of every
 claim is recorded here, and "verified" always means *run*.
 
+## gemd now DUMPS THE SCREEN as ASCII art
+
+`gemd` prints an ASCII-art rendering of the framebuffer to the console. It is a good debug
+feature and it will wreck a naive test harness: it floods stdout, and a grep for failure will
+happily match the art. Filter it — every art line is made only of `-*:=. ~+#@%$&`:
+
+```sh
+qemu ... | grep -vE '^[-*:=. ~+#@%$&]*$'
+```
+
+I lost an hour to this: I read a screen dump as a crash, "bisected" a library that was never
+broken, and reported gemd as down when it was up and working. **Look at the raw bytes before
+believing a filter.**
+
 ## Build directory
 
 **Use a private one.** `make BUILD=build-xtg` in `fpga-xt/loader`, and point `xtg/Makefile`'s
@@ -38,6 +52,7 @@ is "verified by build" any more.
 | `test_scroll` | the AES runs the scrollbar; clicks follow the scroll with no arithmetic |
 | `test_table` | a datasource-driven table of real GEM objects — and it repaints only what is visible |
 | `test_outline` | expand/collapse re-derives the rows; the row OBJECTS are reused, so the tree never grows |
+| `libtable` | a protocol declared IN the `.so`, adopted by a client class, called back across the boundary |
 | `Rocks` / `test_rocks` | the app: a `.rsc` as a live canvas, selection, menus, alerts |
 
 ### `XGOutlineView` — and the bug that made it look broken
