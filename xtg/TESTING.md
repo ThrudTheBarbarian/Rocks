@@ -47,9 +47,14 @@ field empties an `Array` in the *datasource's* object graph — a different obje
 address, nothing of ours pointing at it. Full evidence in `spikes/XTC-BUGS.md` #15, including
 the seven things I ruled out.
 
-I could not reduce it, and **I have not proved it is not my own bug**, so it is filed as
-evidence rather than as a compiler defect. `XGTableView` shares all the same machinery and is
-unaffected.
+`xtg/repro_outline.xt` is the shortest way back in: **no window, no gemd, no AES** — just an
+`XGViewTree`, an `XGOutlineView` and a plain model — and it still dies inside `flatten()`. The
+object that dies is the one child whose *only* owner is the `Array`'s retain; its sibling, which
+also has a local strong reference, survives. So an object the container alone retains is being
+freed. `XGTableView` shares all the same machinery and is unaffected.
+
+I have **not** proved it is not my own bug, so it is filed as evidence rather than as a compiler
+defect.
 
 The design is sound and worth keeping: an outline view is a **table whose row list is derived
 from a tree**, so expanding re-derives the list and everything downstream — drawing,

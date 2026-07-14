@@ -36,14 +36,47 @@ and the correct method runs — I verified every one of those.
 Replacing the reassignment with `nodes.removeAll()` — **changing nothing else** — makes the
 symptom go away and the count stay 3.
 
-### The part that makes me suspect a heap overflow rather than a codegen bug
+### It needs NO window, NO gemd, NO AES — `xtg/repro_outline.so`
 
-`removeAll()` does not touch the allocator. `new Array()` does. So the reassignment may not be
-*causing* the damage so much as *tripping* damage that is already there — a heap that some
-earlier out-of-bounds write has corrupted, where the next malloc/free walks a broken free list.
+This is the useful part, and it came after the first write-up. Strip the whole GEM stack away —
+no `wind_open`, no framebuffer, no server, just an `XGViewTree`, an `XGOutlineView` and a plain
+model of `Node`s — and **it still dies**, inside `flatten()`:
 
-That would also explain why the crash **persists after the removeAll fix**, just later and
-elsewhere: `DATA-ABORT, DFAR=0x4`, which is `Node.kids` (offset 4) read through a null `Node`.
+```
+before: root.kids=10000260 count=2 (want 2)
+  [flatten n=2]                       <- the datasource answered correctly
+    [child 0 = 10000380]  ok          <- also held by a local strong ref
+    [child 1 = 10000C80]              <- held ONLY by the Array's retain
+*** DATA-ABORT   DFAR=0x8   CALLER=0x10000c80
+```
+
+**`CALLER` is `0x10000c80` — the child's own address.** Control jumped *into the heap object*
+as though it were code, so what we dereferenced was not a `Node` but reused/garbage memory.
+
+And the split between the two children is the tell:
+
+* `child 0` is `docs`, which **also** has a local `Node@ docs` strong reference. It survives.
+* `child 1` is `mknode("readme")` — a **temporary**, whose only owner is the `Array`'s retain
+  inside `root.kids`. It is **dead by the time `flatten` reads it back.**
+
+So an object that only the container retains is being freed. That is a refcount bug, and the
+`Array`-reassignment symptom in the first write-up is almost certainly the same bug seen from
+the other end (freed objects → reused memory → an `Array` that reads `count = 0`).
+
+### But the obvious minimal form of THAT does not reproduce either
+
+Both of these keep the object alive, correctly, on **arm9 and the host**:
+
+```c
+a.add(mk(22));                    // temporary, local Array          -> v == 22  ✅
+m.root.kids.add(mk(22));          // temporary, two-hop field chain  -> v == 22  ✅
+```
+
+So `add(temporary)` is not *by itself* broken. Something about the outline's object graph —
+which also holds `weak:` back-pointers from every row to the view, and a `weak:` protocol-typed
+`outlineSource` — is what tips it over. **That is where I ran out of budget.**
+
+`xtg/repro_outline.xt` is committed and is the shortest path back in.
 
 ### What I ruled out
 
