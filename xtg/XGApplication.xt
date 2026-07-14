@@ -116,6 +116,29 @@ class XGApplication : XGResponder
 
     void stop(void) { running = false; }
 
+    // Drain whatever gemd has already said, without blocking.
+    //
+    // Under gemd a lot of the truth is ASYNCHRONOUS. Ask for a rect and gemd clamps it;
+    // report a content size and gemd takes 16px of your work area for a scrollbar. Neither
+    // answer lands in your window until you run an evnt_multi, because that is where the
+    // client library absorbs MSG_SIZED / MSG_MOVED / MSG_VSLID and updates its window list.
+    //
+    // So a client that sets something and immediately reads it back is reading its own
+    // request, not gemd's answer. pump() is how you wait for the answer: one evnt_multi with
+    // a short timer, which returns as soon as the messages are in.
+    void pump(i32 ms) {
+        i16 msg[8];
+        i32 mx = (i32)0; i32 my = (i32)0; i32 mb = (i32)0;
+        i32 ks = (i32)0; i32 key = (i32)0; i32 nc = (i32)0;
+        i32 what = evnt_multi(MU_MESAG|MU_TIMER, (i32)1, (i32)1, (i32)1,
+                              (i32)0,(i32)0,(i32)0,(i32)0,(i32)0,
+                              (i32)0,(i32)0,(i32)0,(i32)0,(i32)0,
+                              (pointer)&msg[0], ms, (i32)0,
+                              (pointer)&mx, (pointer)&my, (pointer)&mb,
+                              (pointer)&ks, (pointer)&key, (pointer)&nc);
+        if ((what & MU_MESAG) != (i32)0) { self.handleMessage(&msg[0]); }
+    }
+
     // The run loop.  One evnt_multi; translate; dispatch; repeat.
     i32 run(void) {
         if (!self.boot()) { return (i32)1; }

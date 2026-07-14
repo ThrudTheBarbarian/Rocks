@@ -31,7 +31,9 @@ SRCS = XGLibc.xt XGGeometry.xt XGResponder.xt XGViewTree.xt XGView.xt XGControl.
        XGWindow.xt XGApplication.xt XGEvent.xt XGGraphics.xt XGNib.xt \
        XGMenu.xt XGAlert.xt XGString.xt XGGem.xt XGGem.h.xt
 
-PROGS = demo.so nibdemo.so test_spine.so test_window.so
+PROGS = demo.so nibdemo.so test_spine.so test_window.so test_scroll.so \
+        test_dirty.so test_key.so test_menu.so test_alert.so test_clip.so \
+        test_scale.so test_chrome.so libdemo.so
 
 all: $(PROGS)
 
@@ -60,8 +62,28 @@ test_host: test_host.xt XGGeometry.xt XGString.xt XGLibc.xt
 	$(XTC) -A arm64 -I . $< -o $@
 
 lib: libXtg.so
+
+# BUILDING THE LIBRARY DEPLOYS IT.  The loader ships libXtg.so out of its romfs-overlay,
+# so a build that stops at the .so leaves the IMAGE running the previous one — and the
+# failure is a link error inside qemu (`xtld_load err: XGButton$$init rc=undefined symbol`)
+# that points at the symbol, not at the stale file.  The copy used to live in one `run`
+# target in ../xt/Makefile, so every other way of building got the old library.
+#
+# A library that is built but not deployed is a stale library.  These are one step.
+LIBDEST = $(LOADER)/romfs-overlay/Library
+
 libXtg.so: Xtg.xt $(SRCS)
 	$(XTC) -A $(ARCH) --emit-lib -I . -L $(GEMLIB) Xtg.xt -o $@
+	@mkdir -p $(LIBDEST)
+	cp $@ $(LIBDEST)/
+
+# libdemo is the ONE program that links Xtg as a real library instead of #importing the
+# sources — it subclasses XGView across the .so boundary and lets the LIBRARY call its
+# override back.  It needs `-L .` (where libXtg.so is), which the generic %.so rule below
+# does not pass, so it gets its own rule.  It had none: it was being built from my shell
+# history, which is exactly what the note at the top of this file complains about.
+libdemo.so: libdemo.xt libXtg.so
+	$(XTC) -A $(ARCH) -I . -L . -L $(GEMLIB) $< -o $@
 
 %.so: %.xt $(SRCS)
 	$(XTC) $(XTCFLAGS) $< -o $@

@@ -35,6 +35,7 @@ is "verified by build" any more.
 | `test_menu` | model → `menu_build` → `MN_SELECTED` → bound method |
 | `test_alert` | modal `form_alert`, driven through the pluggable input source |
 | `test_chrome` | every chrome field through `wind_set`, hi/lo split |
+| `test_scroll` | the AES runs the scrollbar; clicks follow the scroll with no arithmetic |
 | `Rocks` / `test_rocks` | the app: a `.rsc` as a live canvas, selection, menus, alerts |
 
 `gemd` confirms the design in its own log:
@@ -76,6 +77,30 @@ point:
   `gemd` said no.
 
 **Cache what cannot be refused.**
+
+### Two traps that make a GREEN build run STALE code
+
+Both of these produced failures that pointed nowhere near their cause. Both are now
+impossible, because the Makefile does the step.
+
+**1. Building `libXtg.so` did not deploy it.** The loader ships the library out of
+`loader/romfs-overlay/Library/`, and the copy lived in *one* `run:` target in `xt/Makefile`
+— so every other way of building left the image running the *previous* library. The symptom
+is a link error inside qemu that names a symbol, not a file:
+
+```
+xtld_load err: XGButton$init rc=undefined symbol
+```
+
+`libXtg.so` now deploys as part of being built. **A library that is built but not deployed
+is a stale library.**
+
+**2. `libdemo` had no Makefile rule at all.** It needs `-L .` to find `libXtg.so`, which the
+generic `%.so` rule does not pass — so it was only ever built by hand, from shell history.
+It has a rule now, and every test is in `PROGS`: `make` builds the whole suite.
+
+The lesson both times: **if a step is not in the Makefile, it is not in the build** — it is
+in my shell history, and it will be skipped exactly when it matters.
 
 ### Running an app under qemu needs a bootstrap
 

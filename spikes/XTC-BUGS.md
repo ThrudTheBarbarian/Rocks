@@ -5,6 +5,78 @@ libGEM, running on XTOS/arm9. Xtg is a deliberately demanding client: it subclas
 library classes across a `.so` boundary, is called *back* by C (the AES), leans on ARC
 and `weak:`, and holds hundreds of live objects. It is meant to find the sharp edges.
 
+# 14. 🔴 A subclass that declares no `init()` runs **no initialiser at all**
+
+**Verified against a freshly-built HEAD (`5fea860`), reproduced on the host in 30 lines.**
+
+```c
+class Base {
+    i32 magic;
+    void init(void) { magic = (i32)12345; }
+    i32  value(void) { return magic; }
+}
+
+class Derived : Base {              // declares no init of its own
+    i32 extra(void) { return (i32)1; }
+}
+
+class Explicit : Base {             // the control
+    void init(void) { super.init(); }
+}
+```
+```
+    Base     magic = 12345      <- ok
+    Derived  magic = 0          <- NO INITIALISER RAN.  Not even the inherited one.
+    Explicit magic = 12345      <- ok
+```
+
+`new Derived()` runs **nothing**. Not `Derived.init` (there isn't one), and — the bug —
+not `Base.init` either. Every inherited field is left zeroed.
+
+C++, Objective-C, Swift and Java all run the base initialiser when the derived class
+declares none. Omitting `init` reads as *"I have nothing to add"*, not *"skip my parent's
+initialisation."*
+
+### Why this one is nasty
+
+It **compiles clean**, and the damage surfaces arbitrarily far from the cause. A zeroed
+inherited field is usually a **null object pointer**, so the failure is a `DATA-ABORT` in
+some unrelated method, later, with no hint of which class forgot an `init`.
+
+That is exactly how it found me. In Xtg:
+
+```c
+class Row : XGView { u16 gemType(void) { return (u16)G_BOX; } }
+```
+
+`XGView.init` allocates `subviews = new Array()`. It never ran, so `subviews` was null and
+the first `addSubview` died:
+
+```
+*** DATA-ABORT in task 'xtcprog'
+    PC=0x02177cf0  DFAR=0x00000008
+```
+
+`DFAR=0x8` — a field read at offset 8 of a null `Array`. Nothing in that message points at
+`Row`, or at `init`, or at the line that actually declared the problem. I bisected it to a
+tree-growth bug, then to a scrollbar bug, before finding the real cause: a class that looked
+*complete*.
+
+### Suggested fix
+
+If a class declares no `init`, synthesise one that calls `super.init()`.
+
+If that is not wanted, the alternative is to make it **loud**: a class whose superclass
+declares an `init` and which declares none itself should be an **error**, forcing the
+`void init(void) { super.init(); }` boilerplate to be written. Silent zeroing is the one
+option that should not survive — it converts a missing declaration into a null-pointer
+crash somewhere else.
+
+**Severity: high.** It is silent, it is easy to hit (any subclass that only overrides one
+method), and it produces null fields rather than an obvious failure.
+
+---
+
 > ## ✅ §10 and §11 are fixed — and the *family* is being closed
 >
 > Both verified against HEAD, and **both workarounds have been removed from Xtg** — the natural
