@@ -7,6 +7,7 @@
 #import <GEM>
 #import "RocksApp.xt"
 #import "../xtg/XGBoot.xt"
+#import "../xtg/XGAbi.xt"     // the ABI stamp libXtg.so must match (generated)
 
 // A fake input source, so the modal alert in File>Quit can be answered.
 i32 gAnswer;             // which key the alert will "see"
@@ -78,6 +79,12 @@ class Harness : Object <XGApplicationDelegate>
 
 void main(void)
 {
+    // THE VERSION GATE. This app died as PC=0, PREFETCH-ABORT when libXtg.so moved under it.
+    // Calling xtg_require references Xtg_abi_<major>_<minor>, so an ABI break is caught BY THE
+    // LOADER, by name, before main() runs. The argument is the minimum PATCH we need — a newer
+    // patch still satisfies it, which is the whole point of separating patch from minor.
+    if (!xtg_require((i32)0)) { Stdio.printf("Rocks: libXtg.so is too old\n"); return; }
+
     // qemu has no SD card, so no boot script started gemd (see Rocks.xt). Test-only.
     if (!XGBoot.ensureWindowServer()) { Stdio.printf("no gemd\n"); return; }
 

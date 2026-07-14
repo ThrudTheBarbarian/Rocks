@@ -1,6 +1,7 @@
 // demo.xt — an Xtg application.  This is what writing for the XT looks like.
 #import <Stdio.xt>
 #import <Xtg>
+#import "XGAbi.xt"          // the ABI stamp libXtg.so must match (generated)
 #import "XGBoot.xt"
 
 
@@ -101,6 +102,12 @@ class Controller : Object <XGApplicationDelegate>
 
 void main(void)
 {
+    // THE VERSION GATE. Calling this references Xtg_abi_<major>_<minor>, so if libXtg.so has
+    // had an ABI break since we were compiled, the LOADER rejects us by name before main()
+    // runs — instead of PC=0 in a stale vtable. The argument is the minimum PATCH we need,
+    // and a newer patch is fine.
+    if (!xtg_require((i32)0)) { Stdio.printf("libdemo: libXtg.so is too old\n"); return; }
+
     // qemu has no SD card, so init started no gemd.  TEST-ONLY (XGBoot.xt).
     if (!XGBoot.ensureWindowServer()) { Stdio.printf("no gemd\n"); return; }
 

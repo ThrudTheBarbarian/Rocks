@@ -11,10 +11,10 @@ ARCH   ?= arm9
 all: Rocks.app test_rocks.app
 
 Rocks.app: Rocks.xt RocksApp.xt $(XTG)/libXtg.so
-	$(XTC) -A $(ARCH) -I . -L $(XTG) -L $(GEMLIB) Rocks.xt -o $@
+	$(XTC) -A $(ARCH) -I . -I $(XTG) -L $(XTG) -L $(GEMLIB) Rocks.xt -o $@
 
 test_rocks.app: test_rocks.xt RocksApp.xt $(XTG)/libXtg.so
-	$(XTC) -A $(ARCH) -I . -L $(XTG) -L $(GEMLIB) test_rocks.xt -o $@
+	$(XTC) -A $(ARCH) -I . -I $(XTG) -L $(XTG) -L $(GEMLIB) test_rocks.xt -o $@
 
 $(XTG)/libXtg.so:
 	$(MAKE) -C $(XTG) lib

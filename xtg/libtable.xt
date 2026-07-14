@@ -14,6 +14,7 @@
 #import <GEM>
 #import <Xtg>
 #import "XGBoot.xt"          // test scaffolding only (spawns gemd under qemu)
+#import "XGAbi.xt"           // the ABI stamp libXtg.so must match (generated)
 
 #define NROWS 12
 
@@ -103,6 +104,12 @@ class Controller : Object <XGApplicationDelegate>
 }
 
 void main(void) {
+    // THE VERSION GATE. Calling this references Xtg_abi_<major>_<minor>, so if libXtg.so has
+    // had an ABI break since we were compiled, the LOADER rejects us by name before main()
+    // runs — instead of PC=0 in a stale vtable. The argument is the minimum PATCH we need,
+    // and a newer patch is fine.
+    if (!xtg_require((i32)0)) { Stdio.printf("libtable: libXtg.so is too old\n"); return; }
+
     if (!XGBoot.ensureWindowServer()) { Stdio.printf("no gemd\n"); return; }
     XGApplication@ app = new XGApplication();
     Controller@ c = new Controller();

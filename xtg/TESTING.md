@@ -197,3 +197,44 @@ best argument there is for testing it rather than reading it.
 
 Keeping `XGGeometry` and `XGString` free of `#import <GEM>` is what makes this possible.
 **Do not casually add a GEM dependency to either.**
+
+## Versioning: `libXtg.so` is `major.minor.patch`, and the ABI is in the SYMBOL NAME
+
+`xtg/VERSION` holds `major.minor.patch`, and the three parts mean different things:
+
+| | meaning | enforced |
+|---|---|---|
+| **major** | a conceptual redesign — a different library, in effect | symbol name |
+| **minor** | **an ABI break** — the layout moved | symbol name |
+| **patch** | compatible: additions and fixes | a returned number |
+
+The two halves are enforced in different places, because they need different rules.
+
+**major.minor → the symbol name.** `libXtg.so` defines `Xtg_abi_1_0`; a client *calls* it.
+Bump the minor and that symbol ceases to exist, so the **loader** refuses the stale client —
+by name, before `main()` runs:
+
+```
+xtld_load err: Xtg_abi_1_0 rc=undefined symbol
+```
+
+Exact-match by construction, which is what an ABI break *means*. And it cannot be outrun: a
+stale vtable offset cannot crash the app before a check the loader performs. That is the whole
+reason this is not a version number compared at start-up — `test_rocks` died as
+`PC=0, PREFETCH-ABORT` when the library moved under it, naming neither the library nor the
+mismatch, and a run-time check can arrive too late to prevent that.
+
+**patch → a returned number.** `Xtg_abi_1_0()` returns the patch level, so a client says what
+it *needs* and a newer library still satisfies it:
+
+```c
+if (!xtg_require((i32)4)) { ... }     // needs >= 1.0.4; happy with 1.0.7
+```
+
+An exact match here would be wrong — that is precisely the difference between `patch` and
+`minor`. All four cases are verified on the loader: matched (runs), newer patch (runs), ABI
+bump (**refused by name at load**), patch too old (**refused politely, by the app**).
+
+`XGAbi.xt` and `XGAbiDef.xt` are **generated** from `VERSION`, and exist only because xtc has
+no `##` token-paste operator (`spikes/XTC-BUGS.md` #16) to build the symbol name from the
+numbers. If `##` lands, both collapse into ordinary header text.

@@ -1,0 +1,5 @@
+// GENERATED from VERSION. Do not edit.
+// The library half of the version gate: the symbol NAME carries major.minor (an ABI
+// break renames it, so a stale client cannot link), and the RETURN VALUE is the patch
+// level (so a newer patch still satisfies an older requirement). See the Makefile.
+i32 Xtg_abi_1_0(void) { return (i32)0; }

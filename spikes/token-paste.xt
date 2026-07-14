@@ -1,0 +1,20 @@
+// spikes/token-paste.xt — XTC-BUGS.md #16: xtc has no `##` token-paste operator.
+//
+//   xtc -A arm64 token-paste.xt -o t
+//   error: Expected ')' but found '#'
+//
+// The `##` is not recognised at all: the macro body is emitted with the '#' characters
+// still in it. (An earlier form produced the mangled token `i_`, so it is not simply
+// "unimplemented and inert" — it corrupts the token stream.)
+#import <Stdio.xt>
+
+i32 foo_1_2(void) { return (i32)77; }
+
+#define PASTE2(a,b) a##b
+#define PASTE(a,b)  PASTE2(a,b)
+#define MAJ 1
+#define MIN 2
+
+void main(void) {
+    Stdio.printf("%d (want 77)\n", (i16)PASTE(PASTE(foo_, MAJ), PASTE(_, MIN))());
+}

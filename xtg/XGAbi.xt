@@ -1,0 +1,12 @@
+// GENERATED from VERSION. Do not edit. Include this in any client of libXtg.so.
+//
+//     if (!xtg_require((i32)4)) { ...refuse to run... }   // needs >= 1.0.4
+//
+// Calling this makes the client REFERENCE Xtg_abi_1_0. If libXtg.so has had an ABI
+// break since, that symbol is gone and the loader rejects the client BY NAME, at load,
+// rather than letting it die as PC=0 in a stale vtable.
+i32 gXtgPatch;
+bool xtg_require(i32 minPatch) {
+    gXtgPatch = Xtg_abi_1_0();      // the ABI reference the loader checks
+    return gXtgPatch >= minPatch;          // consumed: survives dead-code elimination
+}

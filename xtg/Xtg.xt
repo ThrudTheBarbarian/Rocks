@@ -3,6 +3,7 @@
 // xtc's --emit-lib takes a single input, and #import is include-once, so this
 // umbrella is the library.  Clients then say `#import <Xtg>` and link libXtg.so.
 #import "XGGem.h.xt"
+#import "XGAbiDef.xt"      // the ABI stamp this library DEFINES (generated)
 #import "XGLibc.xt"
 #import "XGGeometry.xt"
 #import "XGString.xt"
