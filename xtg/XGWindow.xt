@@ -113,7 +113,7 @@ class XGWindow : XGResponder
         content.setNextResponder(self);          // the chain ends at the window
 
         handle = wind_create(W_NAME|W_CLOSER|W_MOVER, (i32)f.x, (i32)f.y, (i32)f.w, (i32)f.h);
-        wind_set_name(handle, title);
+        self.setTitle(title);
         wind_content(handle, (pointer)&xtg_window_draw, (pointer)self);
         wind_open(handle, (i32)f.x, (i32)f.y, (i32)f.w, (i32)f.h);
         tree.finalise();
@@ -129,10 +129,33 @@ class XGWindow : XGResponder
         if (contentView != (XGView@)0) { contentView.setNextResponder(self); }
 
         handle = wind_create(W_NAME|W_CLOSER|W_MOVER, (i32)f.x, (i32)f.y, (i32)f.w, (i32)f.h);
-        wind_set_name(handle, title);
+        self.setTitle(title);
         wind_content(handle, (pointer)&xtg_window_draw, (pointer)self);
         wind_open(handle, (i32)f.x, (i32)f.y, (i32)f.w, (i32)f.h);
         self.displayAll();                       // first paint: everything
+    }
+
+    // ---- chrome: DECLARATIVE (§11) ------------------------------------------
+    // A client cannot draw in gemd's chrome, so chrome is a MODEL the AES renders.
+    // GEM's pointer fields take the classic hi/lo split — a 16-bit-era ABI we keep so
+    // an m68k app binds directly.  That cast is ugly, and it is buried HERE, once:
+    // app code says setTitle("Rocks") and never sees it.
+    //
+    //   The toolkit is where types go.  The AES is where compatibility goes.
+    void setField(i32 field, u8@ s) {
+        u32 p = (u32)s;
+        wind_set(handle, field, (i32)((p >> (u32)16) & (u32)$FFFF),
+                                (i32)(p & (u32)$FFFF), (i32)0, (i32)0);
+    }
+
+    void setTitle(u8@ s)    { self.setField((i32)WF_NAME,     s); }
+    void setSubtitle(u8@ s) { self.setField((i32)WF_SUBTITLE, s); }   // a path, a second line
+    void setInfo(u8@ s)     { self.setField((i32)WF_INFO,     s); }   // the footer text
+    void setIcon(u8@ slice) { self.setField((i32)WF_ICON,     slice); } // a theme slice name
+
+    void setModified(bool m) {
+        wind_set(handle, (i32)WF_TITLEFLAGS, m ? (i32)WT_MODIFIED : (i32)0,
+                 (i32)0, (i32)0, (i32)0);
     }
 
     // Find a view by its object index — how an app reaches a control the nib made.

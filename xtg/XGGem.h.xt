@@ -23,7 +23,17 @@ void    wind_set_desktop(u32 rgba);
 i32     wind_create(i32 kind, i32 x, i32 y, i32 w, i32 h);
 void    wind_open(i32 h, i32 x, i32 y, i32 w, i32 h2);
 void    wind_close(i32 h);
-void    wind_set_name(i32 h, u8@ name);
+void    wind_set(i32 h, i32 field, i32 a, i32 b, i32 c, i32 d);
+void    wind_set_name(i32 h, u8@ name);        // DEPRECATED — sugar over wind_set(WF_NAME)
+
+#define WF_NAME        2
+#define WF_INFO        3
+#define WF_TOP        10
+#define WF_SUBTITLE   32
+#define WF_ICON       33
+#define WF_TITLEFLAGS 34
+#define WF_TITLEBTNS  35
+#define WT_MODIFIED   $01
 void    wind_content(i32 h, pointer fn, pointer ud);
 void    wind_redraw_win(i32 h);
 void    wind_redraw_area(i32 x, i32 y, i32 w, i32 h);   // repaint ONE RECT, not a window

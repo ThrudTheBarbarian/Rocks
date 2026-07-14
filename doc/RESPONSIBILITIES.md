@@ -899,7 +899,7 @@ extending one we already have.
 because they are **additive rather than substitutive**: `wind_content`, `wind_redraw_win`/`_area`,
 `wind_content_size`, the scroll calls. None of those asks a client to draw in `gemd`'s pixels.
 
-### 🔴 And it should be `wind_set`, not a new call — because `wind_set` is BROKEN
+### ✅ LANDED (`fpga-xt` `ff669ca`) — and it should be `wind_set`, because `wind_set` was BROKEN
 
 `wind_set` implements **exactly one field**:
 
@@ -959,8 +959,108 @@ the answer changes the signature.
 `gemd` owns the model, so a full repaint, a drag, a theme change or a wedged owner all redraw
 correctly with **no client involvement whatsoever.**
 
+### What landed
+
+**libGEM** (`ff669ca`):
+
+```c
+    wind_set(h, field, a, b, c, d)      /* now implements its fields:                       */
+        WF_NAME (2)  WF_INFO (3)  WF_TOP (10)  WF_CURRXYWH (5)          /* classic          */
+        WF_SUBTITLE (32)  WF_ICON (33)  WF_TITLEFLAGS (34)  WF_TITLEBTNS (35)  /* ours       */
+
+    wind_get_str(h, field, &hi, &lo)    /* read a string field back — the AES's OWN copy     */
+    WIND_PTR_HI/LO/WIND_PTR             /* the classic hi/lo split, for native callers       */
+```
+
+- **Pointer fields take the classic hi/lo split** (`a` = high half, `b` = low half), because GEM has
+  always passed a pointer as two 16-bit words and an m68k app must bind directly.
+- **`draw_one` renders the title MODEL**: proxy icon (`WF_ICON`, a theme slice name) · name ·
+  unsaved-changes dot (`WT_MODIFIED`) · subtitle, centred as one group. And it draws the `W_INFO`
+  footer from `WF_INFO` text.
+- **The `wind_title` / `wind_info` draw callbacks are deprecated**: consulted *only* when no model
+  text is set, so nothing in the tree breaks while `aesdesk`/`xtdesk` migrate. They go away after
+  that — **a client cannot draw in `gemd`'s chrome.**
+- `wind_set_name` is now implemented **through** `wind_set` rather than *beside* it. That is the only
+  reason it is safe to keep.
+
+**Xtg** — the typed wrapper, and the whole point of having a toolkit:
+
+```c
+    win.setTitle("Rocks");
+    win.setSubtitle("/System/OS/Apps/Desktop/desktop.rsc");
+    win.setInfo("11 objects   tree 0 of 1");
+    win.setIcon("alert.note");
+    win.setModified(true);
+```
+
+The hi/lo cast is buried in **one** private method (`XGWindow.setField`). App code never sees it.
+
+> **The toolkit is where types go. The AES is where compatibility goes.** The reason `wind_set_name`
+> felt harmless is precisely that it smuggled a *toolkit* concern (a nicer signature) into the
+> *compatibility* layer — and then hid a hole in the layer it had displaced.
+
+### ⚠ Verification status
+
+**Built, not run.** `libGEM` now hard-exits without `gemd` (*"there is no single-process mode on
+XTOS"*), `gemd` is at **M4 of 7**, and qemu has issues. So no client can attach and **no Xtg test can
+run at all** — `test_chrome.xt` is written and waiting, along with the rest of the suite.
+
+That is the right call: a local-fallback path would be a lie, and it would hide exactly the bugs the
+split exists to surface. But it means everything from here is **verified by build, not on hardware**,
+and should be read that way until the suite runs again.
+
 `gemd` owns the model, so a full repaint, a drag, a theme change or a wedged owner all redraw
 correctly with **no client involvement whatsoever.**
+
+### What landed
+
+**libGEM** (`ff669ca`):
+
+```c
+    wind_set(h, field, a, b, c, d)      /* now implements its fields:                       */
+        WF_NAME (2)  WF_INFO (3)  WF_TOP (10)  WF_CURRXYWH (5)          /* classic          */
+        WF_SUBTITLE (32)  WF_ICON (33)  WF_TITLEFLAGS (34)  WF_TITLEBTNS (35)  /* ours       */
+
+    wind_get_str(h, field, &hi, &lo)    /* read a string field back — the AES's OWN copy     */
+    WIND_PTR_HI/LO/WIND_PTR             /* the classic hi/lo split, for native callers       */
+```
+
+- **Pointer fields take the classic hi/lo split** (`a` = high half, `b` = low half), because GEM has
+  always passed a pointer as two 16-bit words and an m68k app must bind directly.
+- **`draw_one` renders the title MODEL**: proxy icon (`WF_ICON`, a theme slice name) · name ·
+  unsaved-changes dot (`WT_MODIFIED`) · subtitle, centred as one group. And it draws the `W_INFO`
+  footer from `WF_INFO` text.
+- **The `wind_title` / `wind_info` draw callbacks are deprecated**: consulted *only* when no model
+  text is set, so nothing in the tree breaks while `aesdesk`/`xtdesk` migrate. They go away after
+  that — **a client cannot draw in `gemd`'s chrome.**
+- `wind_set_name` is now implemented **through** `wind_set` rather than *beside* it. That is the only
+  reason it is safe to keep.
+
+**Xtg** — the typed wrapper, and the whole point of having a toolkit:
+
+```c
+    win.setTitle("Rocks");
+    win.setSubtitle("/System/OS/Apps/Desktop/desktop.rsc");
+    win.setInfo("11 objects   tree 0 of 1");
+    win.setIcon("alert.note");
+    win.setModified(true);
+```
+
+The hi/lo cast is buried in **one** private method (`XGWindow.setField`). App code never sees it.
+
+> **The toolkit is where types go. The AES is where compatibility goes.** The reason `wind_set_name`
+> felt harmless is precisely that it smuggled a *toolkit* concern (a nicer signature) into the
+> *compatibility* layer — and then hid a hole in the layer it had displaced.
+
+### ⚠ Verification status
+
+**Built, not run.** `libGEM` now hard-exits without `gemd` (*"there is no single-process mode on
+XTOS"*), `gemd` is at **M4 of 7**, and qemu has issues. So no client can attach and **no Xtg test can
+run at all** — `test_chrome.xt` is written and waiting, along with the rest of the suite.
+
+That is the right call: a local-fallback path would be a lie, and it would hide exactly the bugs the
+split exists to surface. But it means everything from here is **verified by build, not on hardware**,
+and should be read that way until the suite runs again.
 
 ---
 
