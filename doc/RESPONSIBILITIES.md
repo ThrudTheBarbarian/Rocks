@@ -870,6 +870,35 @@ save-under §16).
 hit-testing, and the "a raw `MU_BUTTON` in the title span" special case **all go away**, replaced by
 one message. A change that makes both sides smaller is usually in the right place.
 
+### Are we losing any *standard* GEM calls?  No — and the change is a RETURN to GEM
+
+Every call being deleted is **our own invention**. And three of the four are inventions that
+**replaced a declarative classic-GEM mechanism with a callback**:
+
+| deleted | classic GEM equivalent |
+|---|---|
+| `wind_title(fn)` | `wind_set(h, **WF_NAME**, string)` — **a string** |
+| `wind_title_active()` | none — it exists *only* to serve `wind_title` |
+| `wind_titlebtns()` / `wind_titlebtn_rect()` | none |
+| `wind_info(fn)` | `wind_set(h, **WF_INFO**, string)` — **a string** |
+
+**Classic GEM's title and info line were always declarative strings.** `WF_NAME=2` is still sitting
+in our enum; `WF_INFO` — field 3 in classic GEM — **we never implemented at all**, and replaced with
+a draw callback.
+
+So this is not a deviation from GEM. **It is a return to it.** TOS drew the title and the info line
+from strings for forty years, and it was right to: *an app that cannot draw on the screen cannot
+draw its own chrome* — as true on a 68000 as it is across a socket.
+
+We are already halfway there: `wind_set_name(h, name)` **is** the declarative form, spelled more
+nicely than `wind_set(h, WF_NAME, ptr_hi, ptr_lo, 0, 0)`. We are not inventing a mechanism; we are
+extending one we already have.
+
+**Every classic AES window call survives untouched** — `wind_create`, `wind_open`, `wind_close`,
+`wind_delete`, `wind_get`, `wind_set`, `wind_calc`, `wind_find`. And our *other* inventions stay,
+because they are **additive rather than substitutive**: `wind_content`, `wind_redraw_win`/`_area`,
+`wind_content_size`, the scroll calls. None of those asks a client to draw in `gemd`'s pixels.
+
 ### The protocol
 
 ```
