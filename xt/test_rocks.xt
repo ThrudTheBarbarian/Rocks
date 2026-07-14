@@ -64,13 +64,42 @@ class Harness : Object <XGApplicationDelegate>
         rocks.onQuit((XGMenuItem@)0);               // the same call MN_SELECTED makes
         Stdio.printf("5. File>Quit, alert CANCELLED -> app still running\n");
 
-        bool ok = selected && marked && btn >= (i32)0;
+        // ---- 6. the STRUCTURE outline IS the resource's OBJECT tree -----------
+        // Nothing was converted: the outline walks the same ob_head/ob_next links the AES
+        // draws from, so an object cannot be in one view and not the other.
+        i32 rows0 = rocks.outline.rowCount();
+        Stdio.printf("6. structure, collapsed: %d row (object 0)\n", (i16)rows0);
+
+        rocks.outline.toggleRow((i32)0);
+        i32 kids = rocks.structure.childCount((i32)0);
+        i32 rows1 = rocks.outline.rowCount();
+        Stdio.printf("7. object 0 has %d children -> expanded to %d rows\n",
+                     (i16)kids, (i16)rows1);
+        bool expanded = (rows0 == (i32)1) && (rows1 == (i32)1 + kids) && (kids > (i32)0);
+
+        // ---- 8. SELECTION IS TWO-WAY -----------------------------------------
+        XGOutlineNode@ on = rocks.outline.nodeAt((i32)1);   // the root's first child
+        RNode@ rn = (RNode@ ?)on.item;
+        rocks.outline.selectRow((i32)1);
+        Stdio.printf("8. picked outline row 1 (object %d) -> canvas selection %d\n",
+                     (i16)rn.obj, (i16)rocks.sel);
+        bool o2c = (rocks.sel == rn.obj);
+
+        rocks.select((i32)0);                              // now go the other way
+        i32 hi = rocks.outline.selection();
+        Stdio.printf("9. selected object 0 on the canvas -> outline row %d\n", (i16)hi);
+        bool c2o = (hi == (i32)0) && (rocks.sel == (i32)0);   // and it did not bounce
+
+        bool ok = selected && marked && btn >= (i32)0 && expanded && o2c && c2o;
         if (ok) {
-            Stdio.printf("PASS: Rocks loaded a .rsc, rendered it as a LIVE view hierarchy,\n");
-            Stdio.printf("      hit-tested a real widget in it, selected it, and ran a\n");
-            Stdio.printf("      modal alert from a menu.  Linked against libXtg.so.\n");
+            Stdio.printf("PASS: Rocks is an EDITOR. The .rsc is a live canvas AND a live\n");
+            Stdio.printf("      outline of its own OBJECT tree — same ob_head/ob_next links,\n");
+            Stdio.printf("      no model, no conversion — and selection runs BOTH WAYS\n");
+            Stdio.printf("      between them.  All of it against libXtg.so.\n");
         } else {
-            Stdio.printf("FAIL: btn=%d sel=%d marked=%d\n", btn, rocks.sel, (i16)(marked?1:0));
+            Stdio.printf("FAIL: btn=%d sel=%d marked=%d expanded=%d o2c=%d c2o=%d\n",
+                         btn, rocks.sel, (i16)(marked?1:0),
+                         (i16)(expanded?1:0), (i16)(o2c?1:0), (i16)(c2o?1:0));
         }
         a.stop();
         return (i32)0;
