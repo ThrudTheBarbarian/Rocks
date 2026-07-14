@@ -1,0 +1,223 @@
+// XGTableView.xt — a table, as a datasource and a tree of real GEM objects.
+//
+// The AppKit split, kept: the table does not hold your data, it ASKS for it.  You
+// implement two methods and the table does the rest.
+//
+//     protocol XGTableDataSource {
+//         i32 numberOfRows(XGTableView@ t);
+//         u8@ valueForCell(XGTableView@ t, i32 row, i32 col);
+//     }
+//
+// WHAT THIS FILE DOES NOT CONTAIN, and why:
+//
+//   no scrollbar       the AES owns it.  The table reports its height (contentHeight)
+//                      and the window hands that to wind_content_size; gemd then draws a
+//                      themed bar, runs the thumb, the wheel and the arrows, narrows the
+//                      work area to fit it, and clamps the offset.  See test_scroll.
+//
+//   no hit-testing     objc_find does it.  Because a scrolled tree really has moved, a
+//                      click on a scrolled row lands on that row with no arithmetic.
+//
+//   no text drawing    a cell IS a G_STRING, so GEM draws it, in the themed font.
+//
+//   no click routing   a cell does not override mouseDown, so the responder chain carries
+//                      the click up to its row, which is what makes the ROW the selectable
+//                      thing even though the CELL is what got hit.
+//
+// What it DOES draw is one filled rectangle, for the selected row — and that is drawn
+// because a table row is CONTENT, not chrome.  (A themed "list.row.selected" slice would
+// be better still, and would move even this out of Xtg.  There isn't one yet.)
+//
+// LIFETIME: valueForCell returns a pointer that goes straight into ob_spec, and GEM reads
+// it on every draw.  The strings must outlive the table — a literal, or a buffer the
+// datasource owns.  Nothing is copied.
+
+#import <GEM>
+#import "XGGem.xt"
+#import "XGView.xt"
+#import "XGGraphics.xt"
+
+// No forward declaration: a protocol may name a class defined later in the file (which is
+// how XGApplicationDelegate names XGApplication), and xtc has no `class X;` form.
+protocol XGTableDataSource {
+    i32 numberOfRows(XGTableView@ t);
+    u8@ valueForCell(XGTableView@ t, i32 row, i32 col);
+}
+
+protocol XGTableDelegate {
+    optional void tableSelectionDidChange(XGTableView@ t, i32 row);
+}
+
+// The type of that optional method, so it can be taken as a `^` bound pointer and tested.
+typedef void XGTableSelFn(XGTableView@ t, i32 row);
+
+// A column: a title and a width.  Nothing else — the table lays cells out from these.
+class XGTableColumn : Object
+{
+    u8@ title;
+    i16 width;
+    void init(void) { title = ""; width = (i16)80; }
+}
+
+// A cell.  A G_STRING, so GEM draws the text and we write nothing.  It deliberately does
+// NOT override mouseDown: the click bubbles up the responder chain to the row.
+class XGTableCell : XGView
+{
+    void init(void) { super.init(); }
+    u16  gemType(void) { return (u16)G_STRING; }
+
+    void attachTo(XGViewTree@ t, XGRect frame) {
+        super.attachTo(t, frame);
+        // ob_spec IS the char* for a G_STRING.  Set by the table from the datasource.
+    }
+}
+
+// A row.  A G_USERDEF, because the one thing GEM will not draw for us is the selection
+// highlight (no object type honours OS_SELECTED with a background fill).
+class XGTableRow : XGView
+{
+    weak: XGTableView@ table;      // weak: the table owns the tree that owns us
+    i32   row;
+
+    void init(void) { super.init(); table = (XGTableView@)0; row = (i32)0; }
+    u16  gemType(void) { return (u16)G_USERDEF; }
+
+    // The selected background — the whole of this class's drawing.  The cells are
+    // G_STRINGs and GEM draws them on top of this, because draw_rec paints an object
+    // before it recurses into that object's children.  Pen 8 is light grey, so the
+    // cells' black text stays readable on it without our touching the text at all.
+    void drawRect(XGGraphics@ g, XGRect dirty) {
+        if (table != (XGTableView@)0) { table.drawCount = table.drawCount + (i32)1; }
+        if (!self.isSelected()) { return; }
+        g.fillRect(self.bounds(), (i32)XG_PEN_SELECT);   // bounds: XGGraphics converts
+    }
+
+    bool isSelected(void) {
+        return (owner.objects()[index].ob_state & (u16)OS_SELECTED) != (u16)0;
+    }
+
+    void mouseDown(XGEvent@ e) {
+        if (table != (XGTableView@)0) { table.selectRow(row); }
+    }
+}
+
+class XGTableView : XGView
+{
+    weak: XGTableDataSource@ dataSource;
+    weak: XGTableDelegate@   delegate;
+
+    Array@ columns;          // XGTableColumn
+    Array@ rows;             // XGTableRow, one per row currently materialised
+    i16    rowHeight;
+    i32    selectedRow;      // -1 = none
+    i32    nrows;
+
+    // How many rows the AES actually called back into.  This is the scaling number: a row
+    // that is scrolled out of sight is pruned by OF_CLIPCHILDREN *before* draw_obj runs, so
+    // it is never visited at all, and neither are its cells.  One i32 buys the ability to
+    // MEASURE that instead of believing it — see test_table.
+    i32    drawCount;
+
+    void init(void) {
+        super.init();
+        dataSource  = (XGTableDataSource@)0;
+        delegate    = (XGTableDelegate@)0;
+        columns     = new Array();
+        rows        = new Array();
+        rowHeight   = (i16)16;
+        selectedRow = (i32)-1;
+        nrows       = (i32)0;
+        drawCount   = (i32)0;
+    }
+
+    // A G_BOX: GEM paints the table's background.
+    u16 gemType(void) { return (u16)G_BOX; }
+
+    void setDataSource(XGTableDataSource@ d) { dataSource = d; }
+    void setDelegate(XGTableDelegate@ d)     { delegate = d; }
+    void setRowHeight(i16 h)                 { rowHeight = h; }
+    i16  rowHeightValue(void)                { return rowHeight; }
+    i32  numberOfColumns(void)               { return (i32)columns.count(); }
+    i32  rowCount(void)                      { return nrows; }
+    i32  selection(void)                     { return selectedRow; }
+
+    void addColumn(u8@ title, i16 width) {
+        XGTableColumn@ c = new XGTableColumn();
+        c.title = title;
+        c.width = width;
+        columns.add(c);
+    }
+
+    // How tall the table really is.  The window hands this to setContentSize, and the
+    // AES turns it into a scrollbar.  (The table cannot reach the window itself — an
+    // XGView -> XGWindow import would be a cycle — so the app wires the two together.)
+    i16 contentHeight(void) { return (i16)((i32)nrows * (i32)rowHeight); }
+
+    // Build the OBJECT tree from the datasource.  Every row and every cell becomes a real
+    // GEM object, so objc_draw draws them, objc_find hit-tests them, and OF_CLIPCHILDREN
+    // prunes the ones that are scrolled out of sight.
+    void reloadData(void) {
+        if (dataSource == (XGTableDataSource@)0) { return; }
+        nrows = dataSource.numberOfRows(self);
+
+        i32 ncols = (i32)columns.count();
+        for (i32 r = (i32)0; r < nrows; r++) {
+            XGTableRow@ rv = new XGTableRow();
+            rv.table = self;
+            rv.row   = r;
+            self.addSubview(rv, XGGeom.make((i16)0, (i16)(r * (i32)rowHeight),
+                                            self.frame().w, rowHeight));
+
+            // A row clips its children: a cell whose text overruns its column is cut at
+            // the column edge rather than scribbling over the next one — and, more
+            // importantly, an off-screen row costs ONE rect test instead of a walk
+            // through all of its cells.
+            OBJECT@ ro = &owner.objects()[rv.index];
+            ro.ob_flags = ro.ob_flags | (u16)OF_CLIPCHILDREN;
+
+            i16 cx = (i16)0;
+            for (i32 c = (i32)0; c < ncols; c++) {
+                XGTableColumn@ col = (XGTableColumn@ ?)columns.get((u16)c);
+                XGTableCell@ cell = new XGTableCell();
+                rv.addSubview(cell, XGGeom.make(cx, (i16)0, col.width, rowHeight));
+
+                OBJECT@ co = &owner.objects()[cell.index];
+                co.ob_spec = (pointer)dataSource.valueForCell(self, r, c);   // NOT copied
+                cx = (i16)(cx + col.width);
+            }
+            rows.add(rv);
+        }
+        self.setNeedsDisplay();
+    }
+
+    // Selection lives in the OBJECT's own state, so it survives a redraw, and a future
+    // themed row slice would pick it up with no change here.
+    void selectRow(i32 r) {
+        if (r == selectedRow) { return; }
+
+        if (selectedRow >= (i32)0 && selectedRow < nrows) {
+            XGTableRow@ old = (XGTableRow@ ?)rows.get((u16)selectedRow);
+            OBJECT@ oo = &owner.objects()[old.index];
+            oo.ob_state = oo.ob_state & (u16)$FFFE;      // clear OS_SELECTED
+            old.setNeedsDisplay();                        // repaint ONLY the old row
+        }
+
+        selectedRow = r;
+
+        if (r >= (i32)0 && r < nrows) {
+            XGTableRow@ nw = (XGTableRow@ ?)rows.get((u16)r);
+            OBJECT@ no = &owner.objects()[nw.index];
+            no.ob_state = no.ob_state | (u16)OS_SELECTED;
+            nw.setNeedsDisplay();                         // ...and ONLY the new one
+        }
+
+        // The delegate method is OPTIONAL, so it cannot be called directly — it might not
+        // exist.  Take it as a bound method and test it: `if (f)` is false both when the
+        // delegate never implemented it AND when the delegate has been deallocated (the
+        // `weak:` receiver zeroes).  One test, both hazards.
+        if (delegate != (XGTableDelegate@)0) {
+            XGTableSelFn^ f = &delegate.tableSelectionDidChange;
+            if (f) { f(self, r); }
+        }
+    }
+}

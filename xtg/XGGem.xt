@@ -65,3 +65,8 @@
 // It is only a recursion bound in draw_rec / find_rec, so raising it costs nothing but
 // stack, and 64 frames of a handful of words is noise.
 #define XG_DEPTH    64
+
+// The selected-row background.  Pen 8 is light grey, so a cell's black text stays
+// readable on it.  A themed "list.row.selected" slice would be better and would move
+// this out of Xtg entirely — there is not one yet.
+#define XG_PEN_SELECT 8
