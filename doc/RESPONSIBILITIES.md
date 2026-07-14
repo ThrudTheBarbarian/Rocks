@@ -806,7 +806,87 @@ An app that never calls `menu_bar()` never gets a strip surface, and costs nothi
 before handing it to a new owner. It simply hands over **a surface**, not a window onto the
 framebuffer.
 
-## 11. Buffer lifetime: refcount, do not handshake
+## 11. Chrome is declarative
+
+> ### If a client has to **draw** it, it is not chrome.
+> Chrome is **`gemd`'s**, drawn from a **model**. Anything that needs arbitrary drawing is
+> **content**, and content goes in a **view**.
+
+That single line decides every case below, including the ones that look awkward.
+
+### The old philosophy, and why the split ends it
+
+`aes.h` says it three times: *"window.c stays content-agnostic"* — GEM draws the boxes, and **the
+app draws the contents and hit-tests them itself** (`wind_title`, `wind_info`, and
+`wind_titlebtn_rect` + a raw `MU_BUTTON` in the title span).
+
+That was right in one process, where an app *could* draw on the screen. **In the split it is not a
+preference — it is impossible.** A client has no screen. Chrome lives in `gemd`'s pixels.
+
+### What each call becomes
+
+| today | becomes | why |
+|---|---|---|
+| `wind_set_name(h, name)` | **keep** | already declarative |
+| `wind_titlebtns(h, glyphs[], n)` | **keep** | already declarative — a list of glyph ids |
+| `wind_titlebtn_rect()` + app hit-tests | **delete** | `gemd` routes input, so a press is a **message**: `WM_TBUTTON(idx)`, the same shape as `WM_CLOSED` |
+| **`wind_title(h, fn, ud)`** — a draw callback | **delete** | → `wind_set_title(h, text, subtitle, icon_id, flags)` |
+| **`wind_title_active()`** | **delete** | it exists *only* so an app can pick a pen legible against `gemd`'s own bar. `gemd` knows its own bar. The app must never need to. |
+| **`wind_info(h, fn, ud)`** — a draw callback | **delete** | → `wind_set_info(h, text)` |
+
+A declarative title covers everything the callback was *for*: a proxy/document icon (an icon id), a
+modified indicator (a flag), middle-ellipsis truncation (**`gemd` does it** — `aes_label_fit`
+already exists), a path or subtitle (a second string). All model. No drawing.
+
+### The one that looks like a loss, and is not
+
+`W_INFO`'s footer is the only place the current API lets an app put **arbitrary drawing into
+chrome** — the header even says *"count/path/toolbar"*. A toolbar is not a string.
+
+**But a toolbar is not chrome either. It is content**, so it belongs in a view at the bottom of the
+content area. And that is strictly *more* capable: such a view is themable, hit-testable, gets
+target/action, and **draws into the client's own backing store**, so it costs `gemd` nothing. The
+only thing lost is the ability to draw badly in someone else's territory.
+
+### Why declarative, and not "a chrome surface per client"
+
+**1. Chrome is exactly the part that must survive the app being dead.** §9 promises a wedged app's
+windows still composite from their backing stores. If chrome were a client callback — or a client
+surface it had stopped updating — `gemd` could not repaint the title bar of a wedged app, and you
+would get a window compositing correctly with a **blank or stale title**. Declarative chrome means
+`gemd` redraws it from its own model. Always.
+
+**2. Dragging is the latency-critical path.** `gemd` repaints chrome every frame while a window
+moves. Client-drawn chrome means a **client round-trip per frame**, or a cached surface with
+invalidation. Declarative means `gemd` just draws it.
+
+**3. It is bytes, not surfaces.** The menu strip needs a surface because a menu is an arbitrary
+`OBJECT` tree (§10). **A title bar is ~64 bytes of model.** Making it a surface would be absurd —
+and it would be one more place a client writes into `gemd`'s pixels, which is the exact category
+this design has spent its life closing (`SEC_PLANE` §2, `menu.c`'s save-under §10, `form.c`'s
+save-under §16).
+
+**4. It deletes code.** `wind_title`, `wind_title_active`, `wind_titlebtn_rect`, the app-side chrome
+hit-testing, and the "a raw `MU_BUTTON` in the title span" special case **all go away**, replaced by
+one message. A change that makes both sides smaller is usually in the right place.
+
+### The protocol
+
+```
+    client -> gemd:   wind_set_title(h, text, subtitle, icon_id, flags)   ~64 bytes
+                      wind_set_info(h, text)
+                      wind_titlebtns(h, glyphs[], n)
+
+    gemd -> client:   WM_TBUTTON(h, idx)      a title button was pressed
+                      WM_CLOSED / WM_TOPPED / ...   as now
+```
+
+`gemd` owns the model, so a full repaint, a drag, a theme change or a wedged owner all redraw
+correctly with **no client involvement whatsoever.**
+
+---
+
+## 12. Buffer lifetime: refcount, do not handshake
 
 A surface is **reference-counted**. `gemd` holds one ref; each client that has it mapped
 holds one. It is freed when the count reaches zero and **not before** — no matter how
@@ -844,7 +924,7 @@ N+1 into a buffer `gemd` is compositing frame N from. Refcounting is *lifetime*,
 
 ---
 
-## 12. Surface memory: capacity, extent, and resize
+## 13. Surface memory: capacity, extent, and resize
 
 A backing store is the **elephant** in the memory budget, and the naive policy — "allocate
 exactly the window size, reallocate on every resize" — fails badly. This section is the policy.
@@ -992,7 +1072,7 @@ rather than a discovery. The normal path never does this.
 
 ---
 
-## 13. The blitter: how pixels actually get drawn
+## 14. The blitter: how pixels actually get drawn
 
 Everything above talks about "drawing" as if it were the CPU writing pixels. It is not.
 **Drawing is hardware**, and that changes three things: where surfaces live, how a client
@@ -1129,7 +1209,7 @@ fds sharing one slot, is what fairness means.
 
 ---
 
-## 14. Staging: what lands when
+## 15. Staging: what lands when
 
 Standing up `gemd`, splitting the client libraries, rewriting the toolkit **and** bringing up
 hardware blitting at once is too much in flight. It is staged. This section exists so the
@@ -1282,7 +1362,7 @@ nothing, and in phase 2 it costs a migration.)
 
 ---
 
-## 15. Not yet decided
+## 16. Not yet decided
 
 The honest list. Someone will have to make a call on each.
 
