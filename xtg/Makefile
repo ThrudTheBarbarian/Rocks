@@ -14,8 +14,8 @@
 #
 # Targets:
 #   make            build every demo/test .so for arm9
-#   make run-demo   run demo.so on the real XTOS loader under qemu
-#   make host       build the host-arm64 tests (no GEM, no loader)
+#   make host       run the HOST tests natively (no GEM, no gemd, no qemu)
+#   make run-demo   run demo.so on the XTOS loader (BLOCKED: see TESTING.md)
 
 XTC     ?= xtc
 LOADER  ?= $(HOME)/src/fpga-xt/loader
@@ -27,7 +27,7 @@ XTCFLAGS = -A $(ARCH) -I . -L $(GEMLIB)
 # The toolkit's own sources.  Not built standalone yet: xtc has no separate
 # compilation, so a program #imports the sources it needs.  When libXtg.so becomes a
 # real --emit-lib artefact, this list is what goes into it.
-SRCS = XGGeometry.xt XGResponder.xt XGViewTree.xt XGView.xt XGControl.xt \
+SRCS = XGLibc.xt XGGeometry.xt XGResponder.xt XGViewTree.xt XGView.xt XGControl.xt \
        XGWindow.xt XGApplication.xt XGEvent.xt XGGraphics.xt XGNib.xt \
        XGMenu.xt XGAlert.xt XGString.xt XGGem.xt XGGem.h.xt
 
@@ -51,6 +51,14 @@ all: $(PROGS)
 # The library passes an XGRect; the client's override reads a byte. So until that
 # lands, programs #import the sources directly (the PROGS above) and libXtg.so is
 # built only to keep the library path honest.
+# The only verification available while gemd is mid-build and qemu will not boot.
+# XGGeom and XGStr are pure logic and need neither, so they run natively.
+host: test_host
+	./test_host
+
+test_host: test_host.xt XGGeometry.xt XGString.xt XGLibc.xt
+	$(XTC) -A arm64 -I . $< -o $@
+
 lib: libXtg.so
 libXtg.so: Xtg.xt $(SRCS)
 	$(XTC) -A $(ARCH) --emit-lib -I . -L $(GEMLIB) Xtg.xt -o $@
@@ -63,6 +71,6 @@ run-nibdemo: nibdemo.so ; $(MAKE) -C $(LOADER) xtcrun XTC_SO=$(CURDIR)/nibdemo.s
 run-spine:   test_spine.so ; $(MAKE) -C $(LOADER) xtcrun XTC_SO=$(CURDIR)/test_spine.so
 run-window:  test_window.so ; $(MAKE) -C $(LOADER) xtcrun XTC_SO=$(CURDIR)/test_window.so
 
-clean: ; rm -f $(PROGS) libXtg.so
+clean: ; rm -f $(PROGS) libXtg.so test_host
 
-.PHONY: all lib clean run-demo run-nibdemo run-spine run-window
+.PHONY: all lib host clean run-demo run-nibdemo run-spine run-window

@@ -17,10 +17,8 @@
 #import "Array.xt"
 #import "XGGem.xt"
 #import "XGGeometry.xt"
+#import "XGLibc.xt"
 
-pointer malloc(u32 n);
-pointer realloc(pointer p, u32 n);
-void    free(pointer p);
 
 #define XG_NIL   (-1)
 

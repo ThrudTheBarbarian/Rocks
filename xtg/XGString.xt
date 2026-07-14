@@ -2,7 +2,7 @@
 //
 // Building a label, a status line or an alert means concatenating and formatting, and
 // xtc's Stdio has no snprintf.  Every app would otherwise write this, so it lives here.
-#import "XGGem.h.xt"
+#import "XGLibc.xt"
 
 class XGStr
 {

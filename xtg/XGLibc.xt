@@ -1,0 +1,9 @@
+// XGLibc.xt — the handful of libc calls the toolkit needs.
+//
+// Its own file so that a leaf like XGString does not have to #import the whole AES to
+// get malloc.  That matters for more than tidiness: XGGeometry and XGString are PURE
+// LOGIC, and keeping them free of <GEM> is what lets them be tested on the HOST — which
+// is the only verification available while gemd is mid-build.
+pointer malloc(u32 n);
+pointer realloc(pointer p, u32 n);
+void    free(pointer p);
