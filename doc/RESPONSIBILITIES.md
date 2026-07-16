@@ -25,7 +25,7 @@ running on hardware** — including tonight's menu strip, grabs and liveness.
 | 3 | `gemd` — the window server | ✅ | M1–M4 board-verified: window list, z-order, chrome, compositing, input routing, reaping. |
 | 4 | The desktop is an app | ✅ | `W_BOTTOM`; kill/restart the desktop under live apps — board-verified. |
 | 5 | `libGEM.so` in a client | ✅ | one library, two modes; AES signatures unchanged. |
-| 6 | Xtg — the toolkit | 🟡 | toolkit exists; `setNeedsDisplay` still a whole-window flag (§16.4) — 🔴 open. |
+| 6 | Xtg — the toolkit | ✅ | toolkit + the dirty-rect union (`setNeedsDisplay` overload → `markDirty`/`display`); §16.4 closed. |
 | 9 | When things go wrong | ✅ | wedge → still composites; **grab + §9 revoke land M4b, board-verified**. (Death = channel EOF, not SIGCHLD — the table's `SIGCHLD` wording is superseded by M0.) |
 | 10 | The menu strip | ✅ | **per-app strip surface, board-verified M4b**: desktop bar composites, dropdowns open under a grab. |
 | 11 | Chrome is declarative | ✅ | `wind_set` fields landed + board-verified. (The inline "⚠ Built, not run / M4 of 7" callouts are **stale**.) |
@@ -33,7 +33,7 @@ running on hardware** — including tonight's menu strip, grabs and liveness.
 | 13 | Surface memory: capacity/extent/resize | ✅ | capacity vs extent, the drag scratch, quantised shrink — M5 board-verified. |
 | 14 | The blitter | 🟡 | `/dev/blitter` + engine present **done, 777 MB/s board-verified**; the VDI blitter *backend* and `gemd`'s inner composite-via-engine are **designed, deferred to M7**. |
 | 15 | Staging | 🟡 | phase 1 ✅; phase 2's blitter ✅, its plv-backing-store + composite move deferred to M7; the `SEC_PLANE` flip (🔴 above) is the outstanding last commit. |
-| 16 | Not yet decided | 🔴 | open by design: tearing/double-buffer, `form_alert` modality, liveness constants (tunable), Xtg dirty-rects. |
+| 16 | Not yet decided | 🔴 | open by design: tearing/double-buffer, `form_alert` modality, liveness constants (tunable). (Xtg dirty-rects — item 4 — now ✅.) |
 
 ---
 
@@ -609,7 +609,7 @@ in server mode; `appl_init` puts it in client mode.
 
 ---
 
-## 6. Xtg — the toolkit 🟡
+## 6. Xtg — the toolkit ✅
 
 Xtg sits **on** the AES API, not underneath it. That is why moving to a client/server
 GEM costs it exactly one method (`XGApplication.boot()` → `.attach()`) and nothing else.
@@ -646,17 +646,26 @@ GEM costs it exactly one method (`XGApplication.boot()` → `.attach()`) and not
 - **Repaint more than changed.** A view that marks itself dirty must cost a repaint of
   *that view*, not of the window. See the known gap below.
 
-### ⚠ Known gap: `setNeedsDisplay` has no rect
+### ✅ CLOSED — `setNeedsDisplay` carries a rect (dirty-rect union landed)
 
-Today `setNeedsDisplay()` raises a **single global boolean**, and the run loop responds by
-redrawing the **whole window**. For a button changing state that is invisible. For a text
-editor inserting one character it is exactly backwards: it redraws every view and damages
-the entire window for one line.
+The fix is in Xtg, via the natural overload: **`setNeedsDisplay(void)` is sugar that calls
+`setNeedsDisplayInRect(self.absoluteFrame())`** — the whole-view rect — so the cheap "just
+mark me dirty" call still works, and code that knows better (a text view changing one line, a
+table scrolling one row) calls `setNeedsDisplayInRect(rect)` directly. xtc overloads by
+argument type, so both are `setNeedsDisplay` at the call site with the signature the caller
+wants. (Same idea `wind_set` uses — one name, the toolkit adds the typed convenience.)
 
-This is a defect in **Xtg**, not in the architecture — the AES's `objc_draw` already takes
-a clip rect, so the mechanism is there and Xtg simply is not using it. The fix is to
-accumulate a **union of dirty rects** per window and pass it both to `objc_draw` (as the
-clip) and to `gemd` (as the damage rect). Tracked in §15.
+The rect then flows all the way through:
+- `XGViewTree.markDirty(abs)` accumulates the **union** of every rect marked since the last
+  paint (`XGGeom.unite`), on the tree — not a global flag.
+- `XGWindow.display()` takes that union and posts it as the damage rect: `wind_redraw_area(d)`
+  (→ `client_paint` of exactly that rect under gemd), and hands the same rect to `objc_draw`
+  as the **clip**, so a one-line change repaints one line, not the window.
+- `gNeedsDisplay` survives only as the O(1) "is ANY window dirty?" pre-check the run loop does
+  before walking windows.
+
+So the old "single global boolean → whole-window redraw" is gone. (See §16 — this closes the
+last of its open items too.)
 
 ---
 
@@ -1593,10 +1602,10 @@ The honest list. Someone will have to make a call on each.
    quiet decision.
 3. **The liveness constants.** 2 s to the busy cursor and 7 s to grab revocation (§9) are
    a guess. They should be tunable, and felt on real hardware.
-4. **Xtg: dirty rects, not a dirty flag.** `setNeedsDisplay()` currently repaints the whole
-   window (§6). It must accumulate a union of dirty rects and pass it to `objc_draw` as the
-   clip and to `gemd` as the damage. Purely an Xtg change; no protocol impact. Needed
-   before any real text editing is usable.
+4. ~~**Xtg: dirty rects, not a dirty flag.**~~ ✅ **DONE (§6).** `setNeedsDisplay(void)` is an
+   overload that calls `setNeedsDisplayInRect(absoluteFrame())`; `XGViewTree.markDirty` unites
+   the rects; `XGWindow.display` posts that union to `gemd` (`wind_redraw_area`) and clips
+   `objc_draw` to it. One line changed repaints one line.
 
 ### Closed, and worth not reopening
 
