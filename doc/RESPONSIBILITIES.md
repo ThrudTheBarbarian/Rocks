@@ -1607,7 +1607,7 @@ The honest list. Someone will have to make a call on each.
    the rects; `XGWindow.display` posts that union to `gemd` (`wind_redraw_area`) and clips
    `objc_draw` to it. One line changed repaints one line.
 
-### Resolved: dialogs are always windows, and save-under retires
+### ✅ IMPLEMENTED (2026-07-16, board-verified) — dialogs are always windows, and save-under retires
 
 A dialog is a **gemd window**. Every dialog, always — `form_alert`, `form_do`, an Xtg
 `XGDialog`, all of them. There is no second path where a dialog draws into its parent's
@@ -1663,8 +1663,11 @@ modal-dialog→client — and both are already-built mechanisms.
 within its app nothing else is topped and all input comes to it; other apps keep running,
 because a client cannot reach across to freeze them even if it wanted to.
 
-*Owner: this is a `libGEM` `form.c` change (AES/`gemd` thread), and it is a net simplification
-of their code. Xtg's `XGDialog` is then just a modal `XGWindow` — the same object a classic
+**Landed:** `form_do_client` (client mode) opens the chromeless window, takes the grab, draws the
+tree at the surface origin and translates screen→local for `objc_find`/`want_move`; a drag moves the
+window via `wind_set(WF_CURRXYWH)`. The SDL host keeps `save-under` (no `gemd` there) — the §5 two-mode
+split, so those functions are not deleted, just bypassed on XTOS. Board-verified: Add Server opens
+centred, edits, and Cancel returns cleanly. *Owner: this was a `libGEM` `form.c` change. Xtg's `XGDialog` is then just a modal `XGWindow` — the same object a classic
 dialog compiles down to, so the two worlds do not diverge.*
 
 ### Closed, and worth not reopening
