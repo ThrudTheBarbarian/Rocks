@@ -33,7 +33,7 @@ running on hardware** — including tonight's menu strip, grabs and liveness.
 | 13 | Surface memory: capacity/extent/resize | ✅ | capacity vs extent, the drag scratch, quantised shrink — M5 board-verified. |
 | 14 | The blitter | 🟡 | `/dev/blitter` + engine present **done, 777 MB/s board-verified**; the VDI blitter *backend* and `gemd`'s inner composite-via-engine are **designed, deferred to M7**. |
 | 15 | Staging | 🟡 | phase 1 ✅; phase 2's blitter ✅, its plv-backing-store + composite move deferred to M7; the `SEC_PLANE` flip (🔴 above) is the outstanding last commit. |
-| 16 | Not yet decided | 🔴 | open by design: tearing/double-buffer, `form_alert` modality, liveness constants (tunable). (Xtg dirty-rects — item 4 — now ✅.) |
+| 16 | Not yet decided | 🔴 | open by design: tearing/double-buffer, liveness constants (tunable). (Xtg dirty-rects ✅; dialogs-are-windows + `form_alert` modality now ✅ — dialogs are chromeless `gemd` windows, drag by their background, save-under retires.) |
 
 ---
 
@@ -1595,17 +1595,77 @@ The honest list. Someone will have to make a call on each.
 1. **Tearing.** Refcounting (§11) gives a buffer's lifetime, not exclusive access — a
    client may paint frame N+1 while `gemd` composites frame N. Per-window double-buffer,
    or accept it? Costs one more surface per window if we care.
-2. **`form_alert`: system-modal or app-modal?** GEM says *system*. With multiple apps,
-   system-modal means one app can hold the whole machine hostage behind a dialog. It
-   probably has to become **app-modal** — which would be the first *semantic* change to a
-   GEM call rather than an implementation one, so it deserves an argument rather than a
-   quiet decision.
+2. ~~**`form_alert`: system-modal or app-modal?**~~ ✅ **Answered — app-modal, and not by
+   choice (see "Dialogs are always windows" below).** A client can only draw into its own
+   surface and hold its own grab; it has no way to touch another app's window, so
+   *system*-modal is not expressible under the split. app-modal falls out of the
+   architecture. GEM's promise changes, but nothing else could have honoured it anyway.
 3. **The liveness constants.** 2 s to the busy cursor and 7 s to grab revocation (§9) are
    a guess. They should be tunable, and felt on real hardware.
 4. ~~**Xtg: dirty rects, not a dirty flag.**~~ ✅ **DONE (§6).** `setNeedsDisplay(void)` is an
    overload that calls `setNeedsDisplayInRect(absoluteFrame())`; `XGViewTree.markDirty` unites
    the rects; `XGWindow.display` posts that union to `gemd` (`wind_redraw_area`) and clips
    `objc_draw` to it. One line changed repaints one line.
+
+### Resolved: dialogs are always windows, and save-under retires
+
+A dialog is a **gemd window**. Every dialog, always — `form_alert`, `form_do`, an Xtg
+`XGDialog`, all of them. There is no second path where a dialog draws into its parent's
+surface and saves the pixels underneath. The save-under machinery in `form.c` retires.
+
+**The reason this is not a trade-off: it is free.** `form.c`'s save-under *already* allocates
+a dialog-sized surface —
+
+```c
+gfx_surface *s = gfx_surface_alloc(t[0].ob_w, t[0].ob_h);   // sav_push
+```
+
+— so "draw-into-parent + save-under" and "open a transient window" cost the **same** one
+surface. The window spends that surface on something `gemd` understands, and for the same
+price it gets, for nothing:
+
+- **dragging** — `gemd` runs window moves already (§11);
+- **occlusion and recompositing** — `gemd` repaints what was underneath from the *real*
+  surfaces, instead of `form.c` blitting back a saved rectangle and hoping;
+- **correctness under a compositor** — save-under is what you do when you have one
+  framebuffer and *no* window server. We have a window server. save-under is `form.c`
+  reimplementing `gemd`, and by the same rule that says a client must not reimplement
+  `libGEM` (§5, §6), `libGEM` must not reimplement `gemd`.
+
+So this **deletes** code, it does not add it: the `g_sav[]` stack, `sav_blit`, `sav_push`,
+`sav_pop_restore`, and the pixel-blitting half of `drag_dialog` all go.
+
+**Classic apps never learn a window was involved.** An m68k program calls `form_do(tree,
+start)` and expects it to just work. It does: `form_do_dialog` opens the window *internally*
+— sized to `tree[0]`, runs the loop against its surface, closes it, returns the exit object.
+The `form_*` signatures do not move (§5 holds); only what happens inside them does. This also
+disposes of the handle-0 geometry question — a dialog window has its own real work area, so
+nothing has to centre on the ambiguous `WF_WORKXYWH(0)`.
+
+**Dialogs have no chrome, and drag by their background.** A dialog window is opened with **no
+title bar, closer, or mover** — that is what makes it read as a dialog and not a document
+window. It is still movable: **a drag that begins on any non-control area of the dialog moves
+it.** The logic that decides "non-control area" already exists — `form.c`'s `want_move`, which
+is true for the root, the empty background, and any inert object, and false for a button, an
+edit field, or a radio. Nothing new to compute.
+
+Who *runs* that drag is the interesting part, and it falls out of the grab (§0). A normal
+window is dragged by its title bar, and **`gemd`** runs that move because `gemd` owns the
+chrome and the client is not even involved. A modal dialog is the mirror image: the **client**
+holds the grab, so the client sees every `BTN_DOWN`, and when one lands on a `want_move` area
+the client runs the drag itself — moving its *own* window live via a position request per
+frame (`wind_set(WF_CURRXYWH)`), the exact live-drag path `gemd` already runs for a scrollbar
+thumb. So `drag_dialog` survives, but it stops blitting pixels and starts moving a window:
+smaller, and correct. **Whoever holds the grab drives the drag** — chrome→`gemd`,
+modal-dialog→client — and both are already-built mechanisms.
+
+**Modality is app-modal, by construction** (item 2). The dialog window holds the grab, so
+within its app nothing else is topped and all input comes to it; other apps keep running,
+because a client cannot reach across to freeze them even if it wanted to.
+
+*Owner: this is a `libGEM` `form.c` change (AES/`gemd` thread), and it is a net simplification
+of their code. Xtg's `XGDialog` is then just a modal `XGWindow` — the same object a classic
+dialog compiles down to, so the two worlds do not diverge.*
 
 ### Closed, and worth not reopening
 
