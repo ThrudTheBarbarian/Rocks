@@ -5,7 +5,18 @@ libGEM, running on XTOS/arm9. Xtg is a deliberately demanding client: it subclas
 library classes across a `.so` boundary, is called *back* by C (the AES), leans on ARC
 and `weak:`, and holds hundreds of live objects. It is meant to find the sharp edges.
 
-# 17. 🟠 An identical redeclaration of a **void** function crashes the compiler
+# 17. ✅ FIXED (phase-649) — An identical redeclaration of a **void** function crashed the compiler
+
+> **Fixed.** It wasn't the redefinition check — it was the overload **name mangler**. A redeclared
+> function is treated as overloaded (>1 in its group) and mangled by signature; the mangler's
+> pointer case cast the type to `XTPointerType` and read `.pointeeType`, but the bare `pointer`
+> keyword is a plain `XTType` with no pointee (only a typed `T@` is an `XTPointerType`) — hence the
+> unrecognized selector. The `void` return was a red herring: the non-void case reported cleanly
+> only because its param wasn't a bare pointer, so *it* never reached the mangler on that path.
+> The cast is now guarded (bare `pointer` mangles to `p`), so the two decls collide on their
+> mangled name and you get the proper **"Redefinition of 'X' with same parameter types"** at the
+> right file:line. Verified against the `malloc`/`free` shape that found it. Guard fixture
+> `redecl_void_fn.xt`.
 
 **Reproducer: `spikes/redecl-ice.xt`.** Eight lines. Not chased further — the compiler thread is
 working in this area, so this is filed, not pursued.
