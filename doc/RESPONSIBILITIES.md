@@ -11,6 +11,32 @@ it states the conclusions and the obligations.
 
 ---
 
+## Implementation status — as of 2026-07-16 (board-verified on `fpga-xt`)
+
+**Legend:** ✅ done and board-verified · 🟡 partial / deferred by design · 🔴 outstanding.
+Marked against the shipped state after M4b. The window server (`gemd`) went from "M4 of 7,
+built-not-run" (as several §§ still say inline, now stale) to the **whole §3–§14 contract
+running on hardware** — including tonight's menu strip, grabs and liveness.
+
+| § | Area | Status | Note |
+|---|---|---|---|
+| 2 | XTOS kernel prerequisites | ✅ | dynamic L2, variable-size shm (`NSHM=256`), `sys_shm_unmap`, `plv_alloc`+`XT_SHM_CONTIG`, `/dev/blitter` — the whole "verified ABSENT" table is **built**. Kernel-plan items 0–5 done; item 6 (reclaim ~31 MB DDR) not chased. |
+| 2 / 15 | **`SEC_PLANE` → PL0-none isolation** | 🔴 | **The one big red.** The blanket PL0-RW plane mapping still stands — the M7 "gate" / *last commit of phase 1*. Only `desktop.c` draws direct now; nothing in `gem/`. |
+| 3 | `gemd` — the window server | ✅ | M1–M4 board-verified: window list, z-order, chrome, compositing, input routing, reaping. |
+| 4 | The desktop is an app | ✅ | `W_BOTTOM`; kill/restart the desktop under live apps — board-verified. |
+| 5 | `libGEM.so` in a client | ✅ | one library, two modes; AES signatures unchanged. |
+| 6 | Xtg — the toolkit | 🟡 | toolkit exists; `setNeedsDisplay` still a whole-window flag (§16.4) — 🔴 open. |
+| 9 | When things go wrong | ✅ | wedge → still composites; **grab + §9 revoke land M4b, board-verified**. (Death = channel EOF, not SIGCHLD — the table's `SIGCHLD` wording is superseded by M0.) |
+| 10 | The menu strip | ✅ | **per-app strip surface, board-verified M4b**: desktop bar composites, dropdowns open under a grab. |
+| 11 | Chrome is declarative | ✅ | `wind_set` fields landed + board-verified. (The inline "⚠ Built, not run / M4 of 7" callouts are **stale**.) |
+| 12 | Buffer lifetime: refcount | ✅ | `sys_shm_unmap` refcount; resize is a non-event. |
+| 13 | Surface memory: capacity/extent/resize | ✅ | capacity vs extent, the drag scratch, quantised shrink — M5 board-verified. |
+| 14 | The blitter | 🟡 | `/dev/blitter` + engine present **done, 777 MB/s board-verified**; the VDI blitter *backend* and `gemd`'s inner composite-via-engine are **designed, deferred to M7**. |
+| 15 | Staging | 🟡 | phase 1 ✅; phase 2's blitter ✅, its plv-backing-store + composite move deferred to M7; the `SEC_PLANE` flip (🔴 above) is the outstanding last commit. |
+| 16 | Not yet decided | 🔴 | open by design: tearing/double-buffer, `form_alert` modality, liveness constants (tunable), Xtg dirty-rects. |
+
+---
+
 ## 0. Terms
 
 Written for three audiences (the OS thread, the compiler thread, and the UI thread), so
@@ -81,7 +107,7 @@ load-bearing decision here.
 
 ---
 
-## 2. XTOS
+## 2. XTOS ✅🔴
 
 **Owns.** Processes. The framebuffer (`sys_fb_info`, `sys_fb_wallpaper`). Shared memory.
 The input device. The syscall ABI, exported as real symbols from `libxtos.so` so a
@@ -104,7 +130,16 @@ they should not be taken on trust:
     sys_shm_create   sys_shm_map                     shared memory exists — but see below
 ```
 
-### ⚠ Verified ABSENT — the backing store is **not** buildable today
+### ✅ RESOLVED (2026-07-16) — every gap below is now built and board-verified
+
+> **This whole subsection was written when the kernel could not host `gemd`. It has all been
+> built.** Dynamic L2 tables, variable-size shm (`NSHM=256`, the 1 MB cap gone), `sys_shm_unmap`,
+> `plv_alloc`+`XT_SHM_CONTIG`, and `/dev/blitter` (777 MB/s engine) are shipped and running on
+> hardware — kernel-plan items 0–5 below are done (item 6, reclaiming ~31 MB DDR, not chased).
+> Kept as-is because the *ordering* lesson (`MAXSEC` bites first) is worth keeping; read it as
+> history, not a live blocker.
+
+### ⚠ Verified ABSENT (HISTORICAL — see ✅ above) — the backing store was **not** buildable when written
 
 > **Recorded because this document made the opposite mistake to the one below.** An earlier
 > draft listed `sys_shm_create` + `sys_shm_map` under "verified present" and concluded from
@@ -356,7 +391,7 @@ holding it produced the better design.
 
 ---
 
-## 3. `gemd` — the window server
+## 3. `gemd` — the window server ✅
 
 **One process.** The only one that calls `aes_init`, and the only one that presents to
 the framebuffer.
@@ -456,7 +491,7 @@ store still holds the new content, so it is correct the moment it is revealed. T
 
 ---
 
-## 4. The desktop is an app
+## 4. The desktop is an app ✅
 
 `desktop.so` is an **ordinary GEM client**. `gemd` cannot tell it apart from `Rocks.so`
 except by a single flag on its window.
@@ -536,7 +571,7 @@ That is the entire cost. **One flag, and the desktop is an ordinary app.**
 
 ---
 
-## 5. `libGEM.so`, in a client
+## 5. `libGEM.so`, in a client ✅
 
 The same library `gemd` links, running on the other side of the wire. `aes_init` puts it
 in server mode; `appl_init` puts it in client mode.
@@ -574,7 +609,7 @@ in server mode; `appl_init` puts it in client mode.
 
 ---
 
-## 6. Xtg — the toolkit
+## 6. Xtg — the toolkit 🟡
 
 Xtg sits **on** the AES API, not underneath it. That is why moving to a client/server
 GEM costs it exactly one method (`XGApplication.boot()` → `.attach()`) and nothing else.
@@ -666,7 +701,7 @@ across the C boundary. **xtc has no closures, so that `void*` is load-bearing.**
 
 ---
 
-## 9. When things go wrong
+## 9. When things go wrong ✅
 
 The interesting half of any contract.
 
@@ -706,7 +741,7 @@ precisely the point of §4.
 
 ---
 
-## 10. The menu strip: a surface per app, not a hole in the framebuffer
+## 10. The menu strip: a surface per app, not a hole in the framebuffer ✅
 
 The strip is the one place where it is tempting to let a client draw straight to the
 screen. **Resist it.** This section records why, because the tempting version looks
@@ -806,7 +841,7 @@ An app that never calls `menu_bar()` never gets a strip surface, and costs nothi
 before handing it to a new owner. It simply hands over **a surface**, not a window onto the
 framebuffer.
 
-## 11. Chrome is declarative
+## 11. Chrome is declarative ✅
 
 > ### If a client has to **draw** it, it is not chrome.
 > Chrome is **`gemd`'s**, drawn from a **model**. Anything that needs arbitrary drawing is
@@ -999,15 +1034,16 @@ The hi/lo cast is buried in **one** private method (`XGWindow.setField`). App co
 > felt harmless is precisely that it smuggled a *toolkit* concern (a nicer signature) into the
 > *compatibility* layer — and then hid a hole in the layer it had displaced.
 
-### ⚠ Verification status
+### ✅ Verification status — BOARD-VERIFIED (updated 2026-07-16)
 
-**Built, not run.** `libGEM` now hard-exits without `gemd` (*"there is no single-process mode on
-XTOS"*), `gemd` is at **M4 of 7**, and qemu has issues. So no client can attach and **no Xtg test can
-run at all** — `test_chrome.xt` is written and waiting, along with the rest of the suite.
+**The declarative chrome model runs on hardware.** The window title/subtitle/icon/modified/buttons
+model draws correctly on the board; breadcrumbs hit-test via `WM_PATHSEG`; the info strip is client
+content; and (M4b) the menu bar and its dropdowns work. `gemd` reached M4b (menus + grabs + liveness),
+not "M4 of 7 built-not-run". `libGEM` still has no single-process mode on XTOS — correct, and the Xtg
+`test_chrome.xt` suite is the remaining piece to run, but the AES/chrome layer itself is proven.
 
-That is the right call: a local-fallback path would be a lie, and it would hide exactly the bugs the
-split exists to surface. But it means everything from here is **verified by build, not on hardware**,
-and should be read that way until the suite runs again.
+> *(Original note, superseded: "Built, not run… gemd is at M4 of 7… no client can attach." That was
+> true at the time of writing; the split is now board-verified through M4b.)*
 
 `gemd` owns the model, so a full repaint, a drag, a theme change or a wedged owner all redraw
 correctly with **no client involvement whatsoever.**
@@ -1052,19 +1088,20 @@ The hi/lo cast is buried in **one** private method (`XGWindow.setField`). App co
 > felt harmless is precisely that it smuggled a *toolkit* concern (a nicer signature) into the
 > *compatibility* layer — and then hid a hole in the layer it had displaced.
 
-### ⚠ Verification status
+### ✅ Verification status — BOARD-VERIFIED (updated 2026-07-16)
 
-**Built, not run.** `libGEM` now hard-exits without `gemd` (*"there is no single-process mode on
-XTOS"*), `gemd` is at **M4 of 7**, and qemu has issues. So no client can attach and **no Xtg test can
-run at all** — `test_chrome.xt` is written and waiting, along with the rest of the suite.
+**The declarative chrome model runs on hardware.** The window title/subtitle/icon/modified/buttons
+model draws correctly on the board; breadcrumbs hit-test via `WM_PATHSEG`; the info strip is client
+content; and (M4b) the menu bar and its dropdowns work. `gemd` reached M4b (menus + grabs + liveness),
+not "M4 of 7 built-not-run". `libGEM` still has no single-process mode on XTOS — correct, and the Xtg
+`test_chrome.xt` suite is the remaining piece to run, but the AES/chrome layer itself is proven.
 
-That is the right call: a local-fallback path would be a lie, and it would hide exactly the bugs the
-split exists to surface. But it means everything from here is **verified by build, not on hardware**,
-and should be read that way until the suite runs again.
+> *(Original note, superseded: "Built, not run… gemd is at M4 of 7… no client can attach." That was
+> true at the time of writing; the split is now board-verified through M4b.)*
 
 ---
 
-## 12. Buffer lifetime: refcount, do not handshake
+## 12. Buffer lifetime: refcount, do not handshake ✅
 
 A surface is **reference-counted**. `gemd` holds one ref; each client that has it mapped
 holds one. It is freed when the count reaches zero and **not before** — no matter how
@@ -1102,7 +1139,7 @@ N+1 into a buffer `gemd` is compositing frame N from. Refcounting is *lifetime*,
 
 ---
 
-## 13. Surface memory: capacity, extent, and resize
+## 13. Surface memory: capacity, extent, and resize ✅
 
 A backing store is the **elephant** in the memory budget, and the naive policy — "allocate
 exactly the window size, reallocate on every resize" — fails badly. This section is the policy.
@@ -1250,7 +1287,7 @@ rather than a discovery. The normal path never does this.
 
 ---
 
-## 14. The blitter: how pixels actually get drawn
+## 14. The blitter: how pixels actually get drawn 🟡
 
 Everything above talks about "drawing" as if it were the CPU writing pixels. It is not.
 **Drawing is hardware**, and that changes three things: where surfaces live, how a client
@@ -1387,7 +1424,7 @@ fds sharing one slot, is what fairness means.
 
 ---
 
-## 15. Staging: what lands when
+## 15. Staging: what lands when 🟡
 
 Standing up `gemd`, splitting the client libraries, rewriting the toolkit **and** bringing up
 hardware blitting at once is too much in flight. It is staged. This section exists so the
@@ -1419,9 +1456,11 @@ Everything in §3–§11. **No blitter.**
 | **GEM** | a **blitter backend for the VDI**; backing stores move to `plv` (contiguous, uncached); `gemd` composites with the blitter |
 | **Xtg** | `XGGraphics` stages a custom `drawRect` through a private *cached* buffer and lands it with one blit — so raw pixel-pushing apps still draw fast against an uncached surface |
 
-### 🔴 What phase 1 must get right, even though it does nothing there
+### ✅ What phase 1 must get right, even though it does nothing there — DONE
 
-**The damage message carries a retire-sequence number.** From day one.
+**The damage message carries a retire-sequence number.** From day one. ✅ — it is in the wire
+protocol (`m->u[2]`, dead in phase 1, live for the phase-2 fence). The stride-is-capacity rule,
+the handle-not-address rule, and the VDI backend seam below are all in place and board-verified.
 
 In phase 1 drawing is **synchronous**, so *"I posted damage"* genuinely does mean *"my pixels
 are in memory"*. The fence is unnecessary and the field sits unused, always comparing
@@ -1540,7 +1579,7 @@ nothing, and in phase 2 it costs a migration.)
 
 ---
 
-## 16. Not yet decided
+## 16. Not yet decided 🔴
 
 The honest list. Someone will have to make a call on each.
 
