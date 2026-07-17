@@ -644,3 +644,180 @@ renames, and the board-verified code keeps the names it already has.
 **Net effect on §12.7:** drop item 5 entirely; the prefix is `XG*`, unchanged. Everything else
 in §12.7 (and §13.5 items 1–2) stands. This is the rare convergence step where the answer is
 "do nothing," and doing nothing is also the clash-free option.
+
+## 15. Addendum — convergence, compiler / hosts side (closing round)
+
+Response to §13 / §14. Convergence reached: §13.1, §13.2, §13.4 and §14 are all adopted;
+§14 in particular I can confirm is the *correct* call, not just the convenient one, on a
+compiler fact §13.3 asked for. One forward-looking coverage note to raise, per the request.
+
+### 15.1 `GtkColumnView` (GTK4) — adopted (§13.1), and it also settles the datasource bridge
+
+Correct and adopted: `GtkTreeView` cannot host an arbitrary widget as a cell, so a table
+whose cells can be `custom` must realize on **`GtkColumnView` / `GtkListView`** (GTK4). Two
+consequences worth carrying into the final body:
+
+- It pins a **GTK4 floor** for the GTK backend the moment custom cells are in scope. A GTK3
+  realization silently caps `custom` cells at what `GtkCellRenderer` supports — §13.1's exact
+  trap, now a version requirement, not a preference.
+- `GtkColumnView`'s **`GtkListItemFactory`** (`setup`/`bind` signal callbacks) is *also* the
+  cleaner realization of §12.1's datasource bridge on GTK: it is C **signal callbacks with a
+  context word** (`g_signal_connect(factory, "bind", cb, ctx)`), not a `GtkTreeModel`
+  subclass — which would mean implementing a GObject vtable in C, the hard path. So the same
+  choice §13.1 forces for custom cells hands the datasource bridge its easy mechanism. One
+  decision, both problems.
+
+### 15.2 On GEM, `views[]` is the reverse map only — adopted (§13.2), corrects my §12.2
+
+Adopted verbatim; §13.2 fixes a real sloppiness in my §12.2 wording. The three homes on GEM
+are **ownership** = the new generic strong-ref array, **structure** = `OBJECT[]` ob-links
+(driver-read for `childAt`/`hitTest`), **reverse map** = `views[]` (index→XGView, driver-read),
+and `views[]` is *not* in the structure column. Keeping it out is what stops a later reader
+enumerating children through it and re-introducing the second structural source the rule
+exists to kill.
+
+### 15.3 The prefix stays `XG*` — adopted (§14), and it's the correct call, not just cosmetic
+
+Adopted. And the compiler fact §13.3 asked for makes §14 the *right* engineering answer, not
+merely the convenient one: **xtc has no import aliasing.** `#import` accepts only `"file"` or
+`<lib>` — there is no rename-on-import — and a name clash between an imported type and a
+defined one is a hard `Redefinition` error on an **exact-identifier** match (not a prefix or
+fuzzy match). Two things follow:
+
+- The escape hatch §13.3 hoped for (import GLib's `GString` under a local alias) **does not
+  exist**; had the rename to `G*` gone through, the only remedies for the `{GApplication,
+  GString}` clash would have been discipline or a C shim. §14 removes the need for either.
+- Because the clash test is exact-identifier, `XG*` collides with **nothing** external: no
+  GLib/GTK type — nor any Xlib `XG…` token the GTK stack sits on, e.g. `XGCValues` — is
+  literally named `XGString` / `XGView` / `XGWindow`. So "keep `XG*`" is provably clash-free
+  at the level xtc actually checks. §11.5 / §12.5 / §13.3 are closed.
+
+### 15.4 The one coverage note to raise: the datasource bridge needs a *multi-arg* callback
+
+Everything above is settled; this is the single thing I'd add to the spike coverage, and it
+is compiler-side so it falls to this thread to flag. The callback-with-context proof
+(`tests/interop/callback-context`) exercised the **one-argument** shape — `void cb(void*)`.
+The datasource bridge (§12.1 / §15.1) does not: every native realization calls back with
+**real toolkit arguments plus context** —
+
+- GTK `GtkListItemFactory` `bind`: `void cb(GtkSignalListItemFactory*, GtkListItem*, gpointer ctx)`
+- Win32 `LVN_GETDISPINFO`: through the parent `WndProc(HWND, UINT, WPARAM, LPARAM)` + `GWLP_USERDATA`
+- AppKit view-based `NSTableView`: an ObjC IMP `(self, _cmd, NSTableView*, NSTableColumn*, NSInteger)` (Spike 2)
+
+The SysV / Win64 / AAPCS register analysis says multi-pointer/int callbacks land in the same
+argument registers xtc reads from, so this *should* be as clean as the one-arg case — but it
+is **not yet proven**. So **Spike 0 / Spike 1 should include one multi-argument
+callback-with-context** (the GTK `bind` shape is the cleanest to test first), rather than
+inheriting the one-arg proof and assuming the rest. It is almost certainly fine; "almost
+certainly" is exactly what a spike is for.
+
+### 15.5 Converged — net delta from §13.5
+
+With §14, every open item is closed. For the final fold-in of §11–§15 into the body:
+
+1. §13.5#1 stands — GTK `table`/`outline` with custom cells realize on **`GtkColumnView`
+   (GTK4)**; the same factory is the GTK datasource-bridge mechanism (§15.1).
+2. §13.5#2 stands — GEM `views[]` is the **reverse map only** (§15.2).
+3. §13.5#3 is **closed by §14** — prefix stays `XG*`; no clash, no aliasing question (§15.3).
+4. **New:** Spike 0 / Spike 1 add a **multi-argument callback-with-context** to their coverage
+   (§15.4).
+
+Nothing further from this side. The doc is ready for the single final pass — fold §11–§15 into
+§1–§10 and drop the addendum scaffolding.
+
+## 16. Addendum — coverage gaps before the final pass (A9 / Rocks side)
+
+The §11–§15 *decisions* all stand; I'm not reopening any. But the seam rounds argued the
+widget/driver model and never checked what the model doesn't *cover*, and from having built the
+actual A9 widgets I can see two subsystems and one driver method that have no home in it yet.
+Better to absorb these into the consolidation as scoped-known items than to hit them as
+surprises at M2/M3. Two are significant; two are one-liners. Plus a reconciliation checklist,
+because the body (§0–10) is now stale against the addenda in specific places.
+
+### 16.1 Menus (and alerts) are a whole subsystem with no home in the model — the biggest gap
+
+The model is entirely about the **view hierarchy**: `GKind`, `create`/`attach`, the reverse
+map. A menu is *not* in that hierarchy — `NSMenu` is not an `NSView`, `HMENU` is not an `HWND`,
+`GtkMenuBar`'s model (`GMenuModel`) is separate, GEM's menu is its own tree
+(`XTG-DESIGN.md` §10). So `XGMenu` — which exists and works on the A9 — is covered by *nothing*
+in §2–§4, and menus are the **single most divergent subsystem across the four backends**:
+
+- **AppKit:** one *global* menu bar owned by `NSApplication`, not by any window.
+- **Win32:** a *per-window* `HMENU` on the `HWND`.
+- **GTK:** per-window `GtkMenuBar` — or a desktop-global app-menu; GTK4 pushes `GMenuModel` + popovers.
+- **GEM:** the per-*app* menu strip.
+
+That "global vs per-window vs per-app" split is a real API question, not just a realization one:
+on the Mac the menu belongs to the **application**, everywhere else it attaches to a **window**.
+The original `cross-platform-gui.md` flagged this (its §10 open-q c, "the framework owns menu
+placement"); **this doc dropped it.** The shape that fits the rest of the design: the **neutral
+part is the menu model** (items, submenus, separators, actions via bound methods — `XGMenu`
+already is exactly this), and the **realization is a second small driver vocabulary**
+(`menuCreate` / `menuAddItem` / `menuAttach(to: app | window)`) so the driver decides global vs
+per-window. It needs a home in the model and a milestone; alerts (`XGAlert`, native `NSAlert` /
+`MessageBox` / `GtkMessageDialog`, with **platform-ordered OK/Cancel** — the original doc's M4
+headline, also dropped) ride in the same "native subsystems beyond the view hierarchy" bucket.
+Decision needed, not just wording.
+
+### 16.2 The layout engine needs an intrinsic-size driver op the protocol doesn't have
+
+§2's `GViewDriver` has `setFrame`/`frameOf` but **no way to ask a control its natural size** —
+and the neutral box/stack layout engine (M2) cannot place native controls without it. "Native
+look" is not only the control's *appearance*; it is its *size*: a native button is as wide as
+its title rendered **in the native font plus the native padding**, and that width differs per
+platform *and per locale* (a German "Abbrechen" is wider than "Cancel"). Without an intrinsic
+size, the engine must hardcode widths — which clips or over-pads on some host, i.e. the M3
+"same app, native on two hosts" headline looks wrong on one of them.
+
+Every backend already exposes this and the protocol just omits it:
+`NSView.intrinsicContentSize` / `[NSControl sizeThatFits:]`, `gtk_widget_get_preferred_size`,
+`GetTextExtentPoint32` + button metrics on Win32, `vqt_extent` on GEM. Add one op —
+`GSize intrinsicSize(GHandle h)` (or `sizeThatFits(GHandle h, GSize constraint)` if wrapping is
+wanted later) — to `GViewDriver`. It is load-bearing for M2 and painful to retrofit, because it
+changes the layout engine's contract.
+
+### 16.3 Name the coordinate-origin invariant, or AppKit y-flip becomes a scattered bug
+
+GEM, Win32 and GTK/Cairo are all **top-left origin, y-down**. AppKit is **bottom-left, y-up**
+by default. If the neutral `GRect` isn't pinned to one convention, that flip leaks into app
+code and the layout engine as scattered off-by-height bugs. Pin it: **the neutral coordinate
+system is top-left origin, y-down** (matches three of four and the existing A9 code), and **the
+AppKit driver flips y in `setFrame`/`frameOf`/`hitTest`** — one place, one driver. One sentence
+in the body prevents a classic porting bug. (Same note for units: `GRect` is in **points**, the
+driver maps to device pixels — HiDPI/Retina/GTK-scale — but that can stay a one-liner since
+i18n/scaling is a stated non-goal for now.)
+
+### 16.4 The memory gate reads a driver-instrumented counter, not an OS query (minor, refines §12.3)
+
+§12.3's "assert the native object count returns to baseline" has no uniform OS query behind it
+(GTK has no global widget count; AppKit/Win32 differ). The workable form is a **debug counter
+in the driver itself** — increment in `create`, decrement in `destroy` — so the gate asserts
+*the driver's own* native-object count and the xtc allocator baseline, both to zero. Small, but
+it decides how the gate is actually written.
+
+### 16.5 Consolidation reconciliation checklist — body (§0–10) stale against the addenda
+
+The final pass folds §11–§16 into §1–§10; these are the spots where the **body currently
+contradicts a settled decision** and must be rewritten, not just appended to:
+
+1. **§3 + the §3 realization table + §9 M2** say compound controls are **not** kinds and are
+   "neutral compositions of primitive handles." **Reversed by §12.1/§13.1:** `table`/`outline`/
+   `scroll` **are** kinds; realization is the driver's choice (native compound, or GEM
+   composition); custom cells are `custom` sub-handles; GTK realizes on `GtkColumnView` (GTK4).
+   Update §3, add the compound rows to the realization table, rewrite M2's "compositions."
+2. **§7 first bullet** ("subview tree may exist twice … to settle") is **settled by §12.2/§13.2**
+   — generic owns lifetime, driver owns structure + reverse map, `views[]` is reverse-map-only.
+   Replace "to settle" with the rule.
+3. **§9 milestones** carry **no memory gate**; §12.3 puts one on **every** milestone from M1.
+   Add it (as §16.4's driver-counter form).
+4. **§6 proven-list** should lead with **`libtable`/`libdemo`** (§11.4/§12.4), and **Spike 0's
+   gate** is "reproduce that A9 oracle on the hosts" — plus §15.4's **multi-arg** callback.
+5. **Prefix:** the body (§2 diagram, §2 `GViewDriver`, §3, §4) is written in `G*`
+   (`GView`/`GHandle`/`GKind`/`GContext`/`GRect`/`GEvent`/`GViewDriver`…). **§14 keeps `XG*`.**
+   Sweep the body to `XG*` — note §2's protocol *already* mixes in `XGString@`, so the body is
+   internally inconsistent today and the sweep fixes that too.
+6. **New subsystems (§16.1) and the intrinsic-size op (§16.2)** need a home: `XGMenu`/`XGAlert`
+   as a "native subsystems" section + a milestone; `intrinsicSize` added to `XGViewDriver`.
+
+With §16 folded, the model covers what the toolkit actually has (menus, alerts, sized layout),
+not only what the seam argument reached. Nothing here reopens §11–§15.
