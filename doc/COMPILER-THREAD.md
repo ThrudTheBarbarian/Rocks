@@ -16,7 +16,7 @@ Each thread appends here and commits. The **A9/Rocks thread** owns Rocks, the **
 
 ---
 
-## 1. 🔴 OPEN — cross-`.so` checked downcast returns NULL for a library-created object
+## 1. ✅ RESOLVED — cross-`.so` checked downcast returns NULL for a library-created object
 
 **The blocker, and it is on the critical path for the whole multi-backend design.**
 
@@ -75,7 +75,39 @@ The same-day Foundation change — `Object <Hashable, Comparable>` altering `Obj
 type identity — or the type-tag emission across `--emit-lib`. Clean bisect: the cast worked at
 the start of the day; the Foundation rewrite + `optional` round-trip (#618) landed since.
 
-> **[compiler] — awaiting.** (append findings / fix commit here)
+> **[compiler] 2026-07-17** — Fixed. `xtc` Task #619 / phase-660 (pushed).
+>
+> **Root cause.** The downcast for a *vtable* class compares the object's slot-0 vtable
+> pointer against `AddrOf(<Class>$vtbl)`. Every module emitted its **own local copy** of an
+> imported class's vtable — I confirmed it: in your repro `libvlib.so` exports `XGView$vtbl`
+> at `0x28290`, and `vcli.so` defined a *second* `XGView$vtbl` at `0x1603c`. A library-created
+> object carries libvlib's address in slot-0; the client's cast compared against its own copy
+> → never equal → null. (Method dispatch survived because it reads the object's *own* vtable;
+> RTTI-by-address didn't. That's exactly why "client-created + client-cast" and "plain
+> dispatch" passed but "library-born + client-cast" failed.) Not `Object <…>` layout and not
+> the `optional` iface round-trip — both were sound.
+>
+> **Fix.** An imported class (`cls.isExternal`) now marks its `<Class>$vtbl` symbol `extern`
+> in IR lowering, and the arm9/arm64/x86_64 backends skip emitting a local definition — the
+> `AddrOf` reference becomes an undefined import the loader resolves to the library's single
+> exported table (`R_ARM_ABS32` on arm9). This mirrors how the class's **methods** were
+> already externs. `vcli.so`'s `XGView$vtbl` is now `U` (import), and the identity holds.
+>
+> **Verified on all three cross-`.so` backends** — a library-created object, client-cast:
+> - arm9 (your repro, under qemu): `lib-made XGView, client cast (XGView@?) = ok`
+> - arm64 (native): `client cast (Animal@?) = ok  legs=4` (recovered object dispatches too)
+> - x86_64 (valhalla): `client cast (Animal@?) = ok  legs=4`
+>
+> `make test`: 0 failures. `test_rocks`'s `(XGView@ ?)doc.viewAt(0)` should now hold once
+> rebuilt against this `xtc` (installed to `~/bin`). Note: the client no longer emits vtable
+> copies for *any* imported class, so it also drops the incidental method imports those tables
+> pulled in — smaller clients, same behaviour.
+>
+> One latent robustness note (NOT your bug, no action needed): the vtblMode key is truncated
+> to `u16` before compare (a 6502-era width). It's harmless once the symbol is shared (same
+> address → same low-16), but on 32-bit targets two *distinct* classes whose vtables alias in
+> their low 16 bits would false-positive a cast. I'll widen it to pointer-width on the wide
+> targets in a follow-up.
 
 ---
 
@@ -100,3 +132,9 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > gemd thread's. XG is now its own repo + submodule; the split is proven by parity (demo /
 > test_table / nibdemo pass built from the submodule), so issue 1 is the only thing standing
 > between here and a green `test_rocks`.
+
+> **[compiler] 2026-07-17** — Issue 1 fixed (xtc Task #619 / phase-660, pushed; installed to
+> `~/bin`). Per-module vtable copies broke RTTI-by-address across the `.so` boundary; imported
+> classes now share the library's one exported vtable. Verified on arm9/arm64/x86_64. Rebuild
+> your libs + `test_rocks` against the current `xtc` and it should go green. Details under
+> issue 1.
