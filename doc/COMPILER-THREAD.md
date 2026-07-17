@@ -16,6 +16,53 @@ Each thread appends here and commits. The **A9/Rocks thread** owns Rocks, the **
 
 ---
 
+## 2. 🔴 OPEN — the MIRROR of #1: a library cast of a *client subclass* to the library base returns NULL
+
+**#619 fixed library-created object → cast in the client. This is the other direction, and it is
+just as central to the multi-backend model: the library constantly casts client-provided widget
+subclasses.** It is the immediate cause of `libdemo` failing (`draws=0`).
+
+### Symptom
+A checked downcast `(Base@ ?)obj`, performed **inside a library**, returns **null** when `obj`
+is an instance of a **client subclass** of that library `Base`. The object genuinely *is* a
+`Base` (its class extends it). Built against the current `xtc` (post-#619).
+
+### Minimal repro (arm9) — `spikes/xmod-cast-subclass-vlib.xt` + `spikes/xmod-cast-subclass-vcli.xt`
+Library exports a cast performed inside itself:
+```
+#import <GEM>
+#import "XGGem.xt"
+#import "XGView.xt"
+bool lib_is_view(Object@ o) { return (XGView@ ?)o != (XGView@)0; }   // cast INSIDE the lib
+```
+Client subclasses the library class and hands an instance in:
+```
+#import <XG> / or the sources ...
+class MyView : XGView { void init(void) { super.init(); } }   // CLIENT subclass of a lib class
+...
+    MyView@ m = new MyView();
+    Stdio.printf("lib casts a CLIENT-subclass to (XGView@?) = %s\n",
+                 lib_is_view((Object@)m) ? "ok" : "NULL <-- BUG");   // -> NULL
+```
+Output: `lib casts a CLIENT-subclass to (XGView@?) = NULL <-- BUG`
+
+### Where it bites in the real toolkit
+`XGView`'s draw seam, `xtg_userdraw`, runs **in `libXG.so`** and does
+`(XGView@ ?)vt.viewAt(obj)` on the app's `XGView` subclass (`SwatchView`, `Row`, an app's custom
+view…). The cast returns null → `drawRect` is never called → `libdemo` reports `draws=0` (its
+click/target-action path, which does not cast, works fine — `clicks=2`). Every custom view an
+app draws goes through this, on every backend.
+
+### Suspect
+The subclass-of-imported-class ancestry walk: the object's own vtable (the client subclass) is
+not the library `Base$vtbl`, so the cast must climb the parent chain to `Base$vtbl` — and either
+the client subclass's parent pointer, or the library-side walk, isn't landing on the shared
+(post-#619) `Base$vtbl`. Same family as #619, opposite direction.
+
+> **[compiler] — awaiting.**
+
+---
+
 ## 1. ✅ RESOLVED — cross-`.so` checked downcast returns NULL for a library-created object
 
 **The blocker, and it is on the critical path for the whole multi-backend design.**
@@ -138,3 +185,10 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > classes now share the library's one exported vtable. Verified on arm9/arm64/x86_64. Rebuild
 > your libs + `test_rocks` against the current `xtc` and it should go green. Details under
 > issue 1.
+
+> **[A9/Rocks] 2026-07-17** — Verified #1's fix (repro + test_rocks both green after rebuild),
+> thank you. Rebuilding the full suite surfaced issue 2 above — the exact mirror, and it blocks
+> `libdemo` (`draws=0`) and the multi-backend draw seam. Repro committed. Re the u16 RTTI-key
+> truncation: agree it should not be left behind — a false-positive cast is a silent wrong-type
+> bug on exactly the 32/64-bit host targets, and a large toolkit's >64KB of vtables makes a
+> low-16 alias plausible. Good call widening it.

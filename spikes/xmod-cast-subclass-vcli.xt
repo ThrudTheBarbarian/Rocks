@@ -1,0 +1,10 @@
+#import <Stdio.xt>
+#import <GEM>
+#import <vlib2>
+class MyView : XGView { void init(void) { super.init(); } }   // CLIENT subclass of a lib class
+void main(void) {
+    MyView@ m = new MyView();
+    Object@ o = m;
+    Stdio.printf("lib casts a CLIENT-subclass to (XGView@?) = %s\n",
+                 lib_is_view(o) ? "ok" : "NULL <-- BUG");
+}

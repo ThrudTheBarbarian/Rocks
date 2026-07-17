@@ -1,0 +1,4 @@
+#import <GEM>
+#import "XGGem.xt"
+#import "XGView.xt"
+bool lib_is_view(Object@ o) { return (XGView@ ?)o != (XGView@)0; }   // cast INSIDE the lib
