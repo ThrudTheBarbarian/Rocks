@@ -1,0 +1,4 @@
+#import <GEM>
+#import "XGGem.xt"
+#import "XGView.xt"
+Object@ make_a_view(void) { return new XGView(); }   // created INSIDE this .so

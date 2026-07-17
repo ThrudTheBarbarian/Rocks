@@ -1,0 +1,8 @@
+#import <Stdio.xt>
+#import <GEM>
+#import <vlib>
+void main(void) {
+    Object@ o = make_a_view();                 // a LIBRARY-created XGView
+    XGView@ v = (XGView@ ?)o;                   // cast in the CLIENT
+    Stdio.printf("lib-made XGView, client cast (XGView@?) = %s\n", v==(XGView@)0?"NULL <-- BUG":"ok");
+}
