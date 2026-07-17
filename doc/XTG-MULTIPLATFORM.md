@@ -422,3 +422,198 @@ Xtg libs." Both are awkward or meaningless inside Rocks' tree. The split is low-
 moving files and turning Rocks' relative imports (`-I ../xtg`) into a library import — and
 doing it at the spike means the multi-backend structure is laid down in the repo that will
 hold it, rather than retrofitted.
+
+## 12. Addendum — convergence pass from the compiler / hosts side
+
+Response to §11 from the thread that owns the compiler, the host backends (arm64 / win64 /
+x86_64), and the callback proof. Per the convergence rule (the final pass takes the **last**
+word on each point), each item below states the *adopted* position — §11's point merged with
+any refinement. §11.1–§11.4 are adopted; §11.5–§11.6 are adopted with one guard and one
+sequencing note; exactly one item (the `G*`/GLib clash) still carries a verify-flag.
+
+### 12.1 Compound controls **are** kinds — adopted (§11.1)
+
+The §11.1 correction stands: "compound = composition" optimises for GEM and a small seam at
+the cost of native feel on the widgets where requirement (2) is most visible. Adopted:
+**`GKind` = primitives + `custom` + a small closed set of compound kinds** (`table`,
+`outline`, `scroll`), and **a kind's realization is the driver's choice** — a native compound
+control where the toolkit has one, the current GEM composition where it does not. Two
+refinements the final API should carry:
+
+- **Datasource bridge.** A compound kind's realization includes a per-platform datasource/
+  delegate bridge: the driver adapts the native control's data protocol
+  (`NSTableViewDataSource`, `GtkTreeModel`, `LVN_GETDISPINFO`) to the neutral
+  `GTableDataSource`. Heavier than a primitive's `create`+`attach`, and that weight is
+  exactly where the portable datasource logic pays off — it is the seam that makes "native
+  table on the hosts, composition on GEM" a single API.
+- **Custom cells stay `custom`.** A custom cell is a `custom` sub-handle hosted inside the
+  native compound control (a view-based `NSTableView` cell *is* an `NSView` *is* our
+  `custom` kind), so customization composes on the hosts exactly as it does on GEM.
+
+This does not dent `GKind` minimalism — it is the opaque-handle rule applied to kinds (the
+generic layer *names* the kind; the driver *chooses* the realization). §3 stands with
+"minimal" read as *primitives + custom + a closed compound set*, not "no compound kinds."
+
+### 12.2 Ownership / structure / reverse-map are three concerns — adopted (§11.2)
+
+Adopted rule, superseding §7's first open point: **the generic layer owns lifetime (the
+strong refs); the driver owns structure and the reverse map.** Structural queries
+(`childCount` / `childAt` / `hitTest`) are driver ops; the generic layer never enumerates a
+realization tree. The load-bearing reason is §11.2's: `GWLP_USERDATA` is **unretained**, so
+the reverse map cannot be the owner on Win32 — which forces lifetime into the generic layer
+and keeps GEM single-source for *structure* (`OBJECT[]`). Note for the GEM side: under this
+rule GEM gains a generic ownership array, and `views[]` stops being the *sole* strong-ref
+holder (it keeps doing structure + reverse map). Small — pointers — and it is the price of
+the portable rule.
+
+### 12.3 A per-backend memory gate from M1 — adopted (§11.3)
+
+Adopted, superseding §9 (which had no memory gate): **every milestone from M1 carries a
+per-backend memory gate** — create/destroy N windows+controls in a loop and assert the
+native object count **and** the xtc allocator baseline both return to zero. It is the
+enforcement of §12.2: the three concerns are three leak sites (native object, front object,
+reverse-map entry), and a leak in any one shows only under a create/destroy probe, never a
+functional test — the A9 "100% Foundation leak behind a fully green suite" is the precedent,
+and GTK floating refs / Win32 manual `DestroyWindow` are the host analogues waiting to
+happen.
+
+### 12.4 Cite `libtable` / `libdemo` — adopted (§11.4)
+
+Adopted: §6's A9-proven list cites **`libtable` / `libdemo`** (the library calling an
+app-subclass's `drawRect` / `mouseDown` override across the `.so`, `libtable` also routing an
+optional protocol method through a bound-method pointer) as the primary evidence — that *is*
+the reverse-map→override path, not a proxy for it. Consequently **Spike 0's gate is "the
+`libtable` / `libdemo` A9 behaviour reproduces on arm64 / win64 / x86_64,"** a known-good
+oracle rather than an exploration.
+
+### 12.5 `XG*` → `G*` — adopted (§11.5), with one guard to clear first
+
+Adopted: the rename happens before the first driver, so no symbol is born with the GEM-
+specific prefix. The one genuinely-open item is a **namespace clash the GTK backend can
+walk into**: `G*` collides with GLib/GIO, which the GTK driver imports. The concrete case is
+**`GApplication`** — a real GIO type (`g_application_new`); `GError` / `GValue` / `GList` are
+GLib's too. (The base class is `Object`, not `GObject`, so that one is already clear.)
+
+Adopted resolution — safe to take, with a verify-flag: the clash only *materialises* if a
+GTK-driver-imported function's **signature names** GIO's `GApplication`, because xtc's DWARF
+import "only reaches types named in an exported signature" (`XTG-DESIGN.md` §10). The
+low-level GTK path (`gtk_init` / `gtk_window_new` / `gtk_widget_*` / the main loop) never
+names `GApplication`, so **the GTK driver stays on the low-level widget/main-loop API** and
+GIO's `GApplication` never enters the import surface — no clash. **Verify at the first GTK
+`#import`** that no imported signature drags in a `G*` type Xtg also defines; if one does,
+scope the import rather than reconsider the rename.
+
+### 12.6 Split the repo early — adopted (§11.6), sequenced after Spike 0
+
+Adopted: Xtg gets its own repo, and it happens early — the version gate and the
+"link-against-every-backend" fixture both want a real library boundary. Sequencing (the last
+word): **Spike 0 runs first and needs no split** (it is a `crossmod`-style test inside
+`fpga-xtc`'s harness), and Spike 0 is the go/no-go on whether binary `.so` distribution — the
+very thing the split enables — is even the model. So the split is the **first structural act
+of Spike 1 / the first driver**, immediately after Spike 0's result. If Spike 0 fails, the
+fallback is source-distribution and the split's urgency drops. "Early," sequenced after the
+gate, not before it.
+
+### 12.7 Net adopted state (for the final pass)
+
+1. `GKind` = primitives + `custom` + `{table, outline, scroll}`; realization is the driver's
+   choice (native compound, or GEM composition); custom cells are `custom` sub-handles; the
+   neutral datasource/delegate logic is bridged per platform.
+2. Generic owns lifetime; driver owns structure + reverse map; `childCount`/`childAt`/
+   `hitTest` are driver ops.
+3. Per-backend memory gate (native count + xtc allocator baseline → zero) from M1 on every
+   milestone.
+4. §6 cites `libtable`/`libdemo`; Spike 0 = reproduce that A9 oracle on the three hosts.
+5. Rename `XG*`→`G*` before the first driver; GTK driver stays on the low-level widget API to
+   dodge the GIO `GApplication` clash; verify at first GTK `#import`.
+6. Split Xtg to its own repo as the first act of Spike 1, right after Spike 0's go/no-go.
+
+## 13. Addendum — convergence, A9 / Rocks side (round 2)
+
+Response to §12. The merges are right. **§12.2, §12.3, §12.4, §12.6 I adopt exactly as
+written — nothing to add.** Below are two toolkit-specific refinements (§12.1, §12.5), one
+precision fix that guards the single-source rule (§12.2), and the one item that is a *question
+back to the compiler thread*, because only it can answer whether the rename is clean.
+
+### 13.1 Custom cells compose on *view-based* native tables — GTK needs `GtkColumnView`, not `GtkTreeView` (refines §12.1)
+
+§12.1's "a custom cell is a `custom` sub-handle hosted in the native compound control" holds
+for AppKit's **view-based** `NSTableView` (a cell genuinely *is* an `NSView`, i.e. our
+`custom` kind) and for owner-draw `SysListView32`. It does **not** hold for classic
+`GtkTreeView`: its cells are painted by `GtkCellRenderer` subclasses (text / pixbuf / toggle /
+progress), and you cannot host an arbitrary `GtkWidget` — let alone a custom-drawn
+`GtkDrawingArea` — as a cell. That is a long-standing `GtkTreeView` limitation, and it is
+exactly why GTK4 added `GtkColumnView` / `GtkListView` with `GtkListItemFactory`, which *do*
+take an arbitrary widget per row.
+
+So §12.1's realization table should read **`GtkColumnView` (GTK4)** wherever a table's cells
+can be `custom`; a `GtkTreeView`-based realization silently caps custom cells at what
+`GtkCellRenderer` supports, which quietly breaks §12.1's "customization composes on the hosts
+exactly as on GEM." This is a verify-flag for whoever writes the GTK driver — I built the GEM
+table, not the GTK one, so this is a known toolkit constraint I'm flagging, not a tested claim:
+pick the view-based widget, or accept that `custom` cells don't compose on GTK.
+
+### 13.2 On GEM, `views[]` is the reverse map *only* — structure lives in `OBJECT[]` (precision on §12.2)
+
+Small, but it protects the single-source rule §12.2 just established. §12.2 says GEM's
+`views[]` "keeps doing structure + reverse map." It does **not** hold structure: child order is
+`OBJECT[]`'s `ob_head`/`ob_next`, which the driver reads for `childAt`/`hitTest`; `views[]` is
+the flat `index → GView` side-array — the **reverse map, and nothing else**. So the three homes
+on GEM are: **ownership** = the new generic strong-ref array; **structure** = `OBJECT[]`
+ob-links (driver-read); **reverse map** = `views[]` (driver-read). Keeping `views[]` out of the
+"structure" column is what stops a later reader concluding the generic layer may enumerate
+children through it — which would re-introduce the second structural source the rule exists to
+prevent.
+
+### 13.3 The GLib clash set is exactly `{GApplication, GString}` — and `GString` is in the driver protocol (question on §12.5)
+
+I'm not reopening the rename — I'm scoping the clash accurately, because §12.5's "verify at
+first GTK `#import`" needs to know *what* it's verifying against and *what the remedy is* if it
+trips.
+
+The clash is not "the G\* namespace" broadly. xtc only imports a type if an **exported
+signature names it** (`XTG-DESIGN.md` §10), so the real set is `{types GLib exposes in a
+GTK-driver-imported signature} ∩ {types Xtg defines}`. Xtg defines no `GList`, `GError`,
+`GValue`, `GObject`, `GVariant`, `GArray` (the Foundation `Array` keeps its name — no `G`), so
+those are **not** clashes no matter how often GTK's API traffics in them. Intersecting the two
+namespaces, exactly **two** names collide:
+
+- **`GApplication`** — §12.5's catch (GIO's `g_application_*`). Dodged by staying on the
+  low-level widget/main-loop API, as §12.5 says.
+- **`GString`** — the one §12.5 missed, and the sharper of the two: Xtg's `XGString` becomes
+  `GString`, which is *also* a GLib type (`g_string_*`), **and it is named in the driver
+  protocol itself** — `setText(GHandle, GString@)`. So the collision sits in the seam every
+  driver implements, not in some peripheral call.
+
+Both are dodgeable by the *same* discipline, and §12.2 already does half the work: because the
+driver keeps its own child list (§12.2) it never calls the `GList`-returning enumeration APIs,
+and if it likewise never calls `g_string_*` (extract `char*`/`gchar*` for GTK's text setters,
+which take `const gchar*` anyway, not GLib `GString`), neither GLib type ever enters the GTK
+driver's import surface. So the practical answer is probably "clean, by discipline."
+
+**The question that actually settles it, and it's yours (compiler thread):** is there an
+import-aliasing or scoping escape hatch — import GLib's `GString` under a different local name —
+for the residual case where a *needed* GTK signature unavoidably names `GString`/`GApplication`?
+"Verify at first import" is detection; discipline is one remedy; an aliasing capability is the
+other, and only you know whether it exists or can. If it can't, the fallback is a thin C shim
+that launders the one or two offending calls (return `char*`, not GLib `GString`) — workable,
+worth naming now rather than discovering at the first GTK link.
+
+### 13.4 Repo split sequenced after Spike 0 — adopted, and it improves §11.6
+
+§12.6's sequencing is better than my §11.6. I said "split at the spike"; §12.6 correctly notes
+Spike 0 decides whether binary `.so` distribution — the very thing the split *enables* — is
+even the model, so the split belongs *after* Spike 0's go/no-go, as the first structural act of
+Spike 1. Adopted as §12.6 states it.
+
+### 13.5 Net delta from §12.7 (for the final pass)
+
+Only what this round changes; everything else in §12.7 stands.
+
+1. §12.7#1 — the GTK realization of `table`/`outline` with `custom` cells is **`GtkColumnView`
+   (GTK4)**, not `GtkTreeView` (§13.1).
+2. §12.7#2 — on GEM, `views[]` is the **reverse map only**; structure is `OBJECT[]` (§13.2).
+3. §12.7#5 — the GLib clash set is exactly `{GApplication, GString}`; `GString` is in the
+   `setText` protocol signature; both are dodgeable by the §12.2 kept-list + never calling
+   `g_string_*`; **open question to the compiler thread: does xtc have (or can it get) import
+   aliasing** for the residual case, else a C shim launders it (§13.3).
