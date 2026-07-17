@@ -58,3 +58,26 @@ Separately: the **Comparable-on-import** error WAS stale-library skew — `libXt
 moments before a compiler reinstall had a `.xtc.iface` the newer binary rejected. Rebuilding
 the library against the current `xtc` clears it. That one is not a compiler bug; the runtime
 `0x33xxxxxx` regression is.
+
+## RESOLVED — root cause found, and it is NOT the compiler (I misdiagnosed)
+
+Diagnosed by the compiler thread via gdb; recording the correction because this file's earlier
+conclusion was **wrong**.
+
+`0x33000000` is **`WALLPAPER_BASE`**, read *correctly* from `sys_fb_wallpaper` — not a corrupted
+pointer, and the `'3'` is just its high byte. The `DATA-ABORT` is because a **same-day kernel
+change** — commit `23f74b4`, "gemd: M7 — the engine composite and the SEC_PLANE gate" (14:05) —
+flipped the wallpaper region to `SEC_PLANE_CK` = **PL1-RW / PL0-none** (descriptor `0x1C12 →
+0x141E`, matching `L1[sec]=0x3300141e` exactly), granting PL0-RW only to the display owner
+(gemd). `test_clip`/`test_alert` draw **directly into the wallpaper** from a non-owner process,
+so the write faults. The regression merely *coincided* with the Foundation rewrite; the cause was
+the M7 plane-isolation gate.
+
+**My two red herrings, retracted:** (1) the "deterministic miscompile / layout-sensitivity" was
+me toggling whether the stripped test *drew into the plane* at all, not register allocation; (2)
+"`0x33` = string bytes" was coincidence — it is `WALLPAPER_BASE`. Confirmed from the test side:
+pointing `bb.px` at a PL0-RW **heap** buffer instead of the wallpaper makes `test_clip` pass.
+
+**The gate is correct** — it enforces "only gemd touches the plane" (RESPONSIBILITIES rule 1),
+which `test_clip`/`test_alert` were quietly violating. The fix is on the toolkit side: a client
+must draw into a surface it owns, never the plane.
