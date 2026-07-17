@@ -13,7 +13,7 @@
 // so an object must be the same Object@ every time it is asked for. RNode is that identity:
 // one per object index, made once, cached.
 #import <GEM>
-#import <Xtg>
+#import <XG>
 
 // A stable identity for object index `obj`. Handed to the outline as the item.
 class RNode : Object

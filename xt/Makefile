@@ -1,22 +1,22 @@
 # Rocks.app — the resource editor, on the XT.
 #
-# An APPLICATION: it #imports <Xtg> and LINKS libXtg.so.  It does not compile the
+# An APPLICATION: it #imports <Xtg> and LINKS libXG.so.  It does not compile the
 # toolkit in.  That is the whole proof — a real app against a real shared library.
 XTC    ?= xtc
 LOADER ?= $(HOME)/src/fpga-xt/loader
 GEMLIB ?= $(LOADER)/build
-XTG    ?= ../xtg
+XTG    ?= ../XG
 ARCH   ?= arm9
 
 all: Rocks.app test_rocks.app
 
-Rocks.app: Rocks.xt RocksApp.xt $(XTG)/libXtg.so
+Rocks.app: Rocks.xt RocksApp.xt $(XTG)/libXG.so
 	$(XTC) -A $(ARCH) -I . -I $(XTG) -L $(XTG) -L $(GEMLIB) Rocks.xt -o $@
 
-test_rocks.app: test_rocks.xt RocksApp.xt $(XTG)/libXtg.so
+test_rocks.app: test_rocks.xt RocksApp.xt $(XTG)/libXG.so
 	$(XTC) -A $(ARCH) -I . -I $(XTG) -L $(XTG) -L $(GEMLIB) test_rocks.xt -o $@
 
-$(XTG)/libXtg.so:
+$(XTG)/libXG.so:
 	$(MAKE) -C $(XTG) lib
 
 # ---- install: put Rocks where BOTH media can find it ----------------------------
@@ -24,12 +24,12 @@ $(XTG)/libXtg.so:
 # the romfs — and the loader's `sdstage` also ships romfs-overlay/bin/* to the card's
 # /OS/bin. So one install target serves qemu AND the board: `rocks` becomes a command.
 #
-# libXtg.so goes with it. A client and its library must be deployed TOGETHER — ship one
+# libXG.so goes with it. A client and its library must be deployed TOGETHER — ship one
 # without the other and the app dies at load, which is exactly what the version gate in
 # xtg/VERSION now catches by name instead of as a PC=0 jump.
 install: Rocks.app
 	@mkdir -p $(LOADER)/romfs-overlay/bin $(LOADER)/romfs-overlay/Library
-	cp $(XTG)/libXtg.so $(LOADER)/romfs-overlay/Library/
+	cp $(XTG)/libXG.so $(LOADER)/romfs-overlay/Library/
 	cp Rocks.app        $(LOADER)/romfs-overlay/bin/rocks
 
 # See it in qemu: 200x120, dumped to the console as ASCII art (there is no display device

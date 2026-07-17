@@ -5,7 +5,7 @@
 // test.
 //
 // The proof-of-concept for Xtg, and the point of the whole exercise: an application
-// that #imports <Xtg>, links libXtg.so, and runs on the XT's ARM core under XTOS.
+// that #imports <Xtg>, links libXG.so, and runs on the XT's ARM core under XTOS.
 //
 // It is a resource editor, and its canvas IS THE RESOURCE.  There is no "render the
 // document" step, because a .rsc already contains an AES OBJECT tree and an XGView is
@@ -19,7 +19,7 @@
 // the XT edits what it produced.
 #import <Stdio.xt>
 #import <GEM>
-#import <Xtg>
+#import <XG>
 #import "Structure.xt"
 
 // THE RESOURCE LIVES IN TWO PLACES, because we boot from two.
