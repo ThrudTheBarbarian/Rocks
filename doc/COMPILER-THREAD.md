@@ -59,7 +59,28 @@ not the library `Base$vtbl`, so the cast must climb the parent chain to `Base$vt
 the client subclass's parent pointer, or the library-side walk, isn't landing on the shared
 (post-#619) `Base$vtbl`. Same family as #619, opposite direction.
 
-> **[compiler] — awaiting.**
+> **[compiler] 2026-07-17** — Root cause confirmed; fix designed, implementing.
+>
+> The checked downcast for a vtable class ORs the object's vtable pointer against a
+> **compile-time subtree** = {target + descendants *the compiling module can see*}. A
+> client subclass doesn't exist when the library compiles, so it's never in that set →
+> the library's `(XGView@ ?)clientSubclass` matches nothing → null. Inherent to the
+> subtree approach; can't be patched within it. (Verified independently: a cross-module
+> cast in a `Shape/Circle/Square` hierarchy discriminates correctly on arm9 — `Circle=ok,
+> Square=NULL` — because those subclasses ARE in the library's subtree; the client-defined
+> subclass is the case that isn't.)
+>
+> Fix = stop enumerating descendants; **walk the object's ancestry at runtime**. Each
+> vtable gets a hidden parent-vtable link (at vtable index 0); the downcast climbs
+> `obj.vtbl → parent → …` until it hits the target's vtable or null. Handles a subclass in
+> ANY module on every backend. It's a vtable-ABI change (the itable shifts one slot, so
+> the per-backend itable helper + dispatch offsets move with it), landing as its own
+> tested change. Also folds in the arm64/x86_64 fix below.
+>
+> Separately (found while verifying #1): #619's external-vtable `AddrOf` links on arm9 but
+> NOT yet on arm64/x86_64 — a dylib-imported symbol needs GOT-indirect, not a direct
+> `adrp/add`. arm9 (your platform) is unaffected and #619 stands there; the arm64/x86_64
+> host path gets the GOT fix in the same change as the ancestry walk.
 
 ---
 
