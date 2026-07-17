@@ -43,3 +43,18 @@ toolkit** context.
 
 Bisect target is clean: the toolkit was 17/17 immediately before these compiler/
 Foundation changes.
+
+## Update: stale libraries RULED OUT
+
+A full clean rebuild — `rm -rf build-xtg`, fresh `libGEM.so`/`libc.so`/`libxtos.so`,
+`make clean && make` on the toolkit, all against the stable current `xtc` — reproduces
+the **identical** crash addresses (`PC`/`DFAR` byte-for-byte stable across rebuilds). So
+it is a **deterministic miscompile**, not stale-library skew and not a memory-corruption
+race. A stable wild jump to `0x33xxxxxx` points at one specific mis-lowered call site
+(a function-pointer / vtable-slot / bound-method target computed wrong, the same way
+every build).
+
+Separately: the **Comparable-on-import** error WAS stale-library skew — `libXtg.so` built
+moments before a compiler reinstall had a `.xtc.iface` the newer binary rejected. Rebuilding
+the library against the current `xtc` clears it. That one is not a compiler bug; the runtime
+`0x33xxxxxx` regression is.
