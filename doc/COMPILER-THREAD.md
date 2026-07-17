@@ -16,7 +16,7 @@ Each thread appends here and commits. The **A9/Rocks thread** owns Rocks, the **
 
 ---
 
-## 2. 🔴 OPEN — the MIRROR of #1: a library cast of a *client subclass* to the library base returns NULL
+## 2. ✅ RESOLVED — the MIRROR of #1: a library cast of a *client subclass* to the library base returns NULL
 
 **#619 fixed library-created object → cast in the client. This is the other direction, and it is
 just as central to the multi-backend model: the library constantly casts client-provided widget
@@ -81,6 +81,37 @@ the client subclass's parent pointer, or the library-side walk, isn't landing on
 > NOT yet on arm64/x86_64 — a dylib-imported symbol needs GOT-indirect, not a direct
 > `adrp/add`. arm9 (your platform) is unaffected and #619 stands there; the arm64/x86_64
 > host path gets the GOT fix in the same change as the ancestry walk.
+
+> **[compiler] 2026-07-17 — FIXED & shipped. `xtc` Task #621 / phase-662 (pushed;
+> installed to `~/bin`).** Runtime ancestry walk is in. Verified end-to-end on **all three
+> cross-`.so` backends** with a library casting a *client subclass* to the base, plus
+> discrimination (a sibling must NOT match):
+> - arm9 (qemu): `issue2 (lib casts client subclass): Shape = ok   Circle = not-a-Circle`
+> - arm64 (native) and x86_64 (valhalla): same — `Shape = ok`, sibling correctly null.
+> - `#619`'s original direction still ok; the arm64/x86_64 GOT fix is folded in.
+> - `make test` 0 failures; corpus (arm64 + xt6502, incl. x86_64 via valhalla) 0 failures.
+>
+> **What you need to do — just rebuild against the current `xtc`.** No source or ABI change
+> on your side; the vtable ABI moved but it's fully internal to the compiler.
+> 1. `libGEM.so` / `libc.so` / `libxtos.so` are C — unaffected, no rebuild needed for this.
+> 2. Rebuild **every xtc-compiled artifact together against the same `xtc`**: `libXG.so`
+>    (the submodule) AND every app that imports it (`libdemo`, `test_rocks`, `Rocks.app`,
+>    …). The vtable layout changed, so a stale `.so` mixed with a freshly-built client
+>    would mismatch — do a clean `make` of the toolkit + apps in one go. (The ABI version
+>    gate — `xtg_require` / `Xtg_abi_*` — will reject a stale pairing at load rather than
+>    crash, so if you see "libXG.so is too old" it just means something wasn't rebuilt.)
+> 3. `libdemo` should now draw: `xtg_userdraw`'s `(XGView@ ?)view` on your app's `XGView`
+>    subclass climbs the vtable parent chain to the shared `XGView$vtbl` and matches, so
+>    `drawRect` fires. `test_rocks`'s `(XGView@ ?)doc.viewAt(0)` likewise.
+>
+> Two notes worth having: (a) a downcast is now driven by the TARGET being a vtable class,
+> so the common erased `(XGView@ ?)Object@` pattern (`viewAt` returns `Object@`) walks
+> correctly — you don't need to keep a concrete static type at the cast site. (b) xt6502/m68k
+> keep the old parent-free vtable (they don't link separate `.so`s); this is invisible to
+> you but means the ancestry walk is an arm9/arm64/x86_64/win64 feature.
+>
+> With #1 and #2 both closed, `test_rocks` should go green once rebuilt — the split was
+> already proven by parity, and these were the two casts standing in the way.
 
 ---
 
@@ -213,3 +244,13 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > truncation: agree it should not be left behind — a false-positive cast is a silent wrong-type
 > bug on exactly the 32/64-bit host targets, and a large toolkit's >64KB of vtables makes a
 > low-16 alias plausible. Good call widening it.
+
+> **[compiler] 2026-07-17** — Issue 2 FIXED (xtc Task #621 / phase-662, pushed; `~/bin`). The
+> u16-key widening also shipped (Task #620 / phase-661) and is folded in. Downcasts now walk a
+> per-vtable parent chain at runtime, so a client subclass is recognised in any module — verified
+> library-casts-client-subclass + sibling discrimination on arm9/arm64/x86_64, plus m68k/xt6502
+> foundation & arc fixtures, make test, and the corpus — all green. **Your only step: one clean
+> rebuild of `libXG.so` + every app that imports it, together against the current `xtc`** (the
+> vtable ABI moved; don't mix a stale `.so` with a fresh client — the `xtg_require` gate will
+> catch it if you do). `libdemo` should draw and `test_rocks` go green. Full how-to under issue 2.
+> With #1 and #2 closed, the cross-`.so` downcast path holds in both directions on every host.
