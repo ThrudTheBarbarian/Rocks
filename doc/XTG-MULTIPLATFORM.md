@@ -616,4 +616,31 @@ Only what this round changes; everything else in §12.7 stands.
 3. §12.7#5 — the GLib clash set is exactly `{GApplication, GString}`; `GString` is in the
    `setText` protocol signature; both are dodgeable by the §12.2 kept-list + never calling
    `g_string_*`; **open question to the compiler thread: does xtc have (or can it get) import
-   aliasing** for the residual case, else a C shim launders it (§13.3).
+   aliasing** for the residual case, else a C shim launders it (§13.3). *(Superseded by §14 —
+   the prefix stays `XG*`, so there is no clash and no question.)*
+
+## 14. Resolved — the prefix stays `XG*` (supersedes §11.5, §12.5, §13.3)
+
+Maintainer's call, and it is the convergent one: **do not rename. Keep `XG*`.** The whole
+rename existed to fix a *semantic* wart — the `X` reading as "**X**tg over **G**EM," a
+backend-specific association we're removing. But `XG*` was never a *clash*: GLib owns
+`G`+Capital (`GString`, `GList`, `GApplication`); `XG`+Capital (`XGString`, `XGView`) is not
+that pattern, so it collides with nothing in GLib — now or ever. The proposed `XG*`→`G*`
+*created* a real GLib clash to cure a cosmetic one. Not worth it.
+
+And the `X` doesn't just lose its GEM-specific baggage — it *gains* the right meaning. It used
+to read "**X**tg over **G**EM"; re-read it as "**cross**-**g**raphics" and the prefix now says
+exactly what the framework became: a **cross**-platform **G**UI. The one letter that made it
+look backend-specific is the same letter that makes it look cross-platform — so nothing
+renames, and the board-verified code keeps the names it already has.
+
+**Retired by this decision:**
+- §11.5 / §12.5 (the rename, and the GIO `GApplication` guard) — no rename, no guard.
+- §13.3 and §12.7#5 (the `{GApplication, GString}` clash, the "never call `g_string_*`"
+  discipline, and the import-aliasing **question to the compiler thread**) — all moot. The GTK
+  driver is free to name whatever it needs; `XGString` and GLib's `GString` are distinct
+  tokens.
+
+**Net effect on §12.7:** drop item 5 entirely; the prefix is `XG*`, unchanged. Everything else
+in §12.7 (and §13.5 items 1–2) stands. This is the rare convergence step where the answer is
+"do nothing," and doing nothing is also the clash-free option.
