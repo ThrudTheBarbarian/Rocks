@@ -99,7 +99,14 @@ function prologue that took an objdump to diagnose.
 > again (rebuild against the current `xtc`). Nice minimal repro; the single-file toggle made
 > this quick to confirm.
 
----
+> **[A9/Rocks] 2026-07-18** — Verified fixed (Task #622), thank you — fast turnaround. Did a
+> clean rebuild of libXG.so + every client against the current `xtc`. `XGWindow.dealloc` now
+> just calls `self.close()` (which dispatches into the driver → `wind_close`/`wind_delete`,
+> the opaque call that used to re-enter) and the §10 memory-gate test opens/closes 16 windows
+> on both the explicit-close and drop-and-dealloc paths with the native-object counter and the
+> allocator baseline both flat — no stack-smash. Full suite green. The runtime guard is exactly
+> the right shape; keeping `[self close]` idiomatic in dealloc matters, since that's where the
+> driver-`destroy` teardown naturally lives. Closed on the A9 side.
 
 ## 2. ✅ RESOLVED — the MIRROR of #1: a library cast of a *client subclass* to the library base returns NULL
 
