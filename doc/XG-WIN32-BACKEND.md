@@ -46,7 +46,9 @@ output, and verifies it. All skip cleanly when Wine is absent.
 | `win32-check` | a **checkbox** (custom-drawn neutral control) toggling on click |
 | `win32-radio` | **radio buttons** — mutual exclusion in a group |
 | `win32-alert` | modal **alerts** — a native `MessageBox`, result mapped to the neutral button index (dismissed via a WH_CBT hook for the headless test) |
-| `win32-scroll` | vertical **scrolling** — a native `WS_VSCROLL` bar drives the neutral offset, so the tree and hit-testing scroll for free (§11) |
+| `win32-scroll` | **scrolling** on both axes — native `WS_VSCROLL`/`WS_HSCROLL` bars drive the neutral offset, so the tree and hit-testing scroll for free (§11) |
+| `win32-enabled` | a **disabled** control drops a real hit (the neutral `isEnabled` rule); its title greys |
+| `win32-hidden` | a **hidden** control is neither drawn nor hit (the paint walk and hit test skip it) |
 | `win32-kitchensink` | the **capstone**: a whole form (menu + label + field + checkbox + radio group + Submit button) composed in one window and driven end to end |
 | `win32-memgate` | the §10 **memory gate**: open/close N forms, native-object counter AND heap baseline both return to zero on the close() and dealloc paths |
 | `win64-lib` | a compile gate: the **entire** neutral toolkit (views, controls, window, menu, alert, `XGApplication`) compiles for win64 — nothing above the driver names a GEM type |
@@ -61,8 +63,10 @@ a swappable protocol, injecting the backend into `XGApplication`, and moving the
 string formats out of the neutral layer) is complete: `make win64-lib` gates it.
 
 **Stubbed / not yet done:** popup/dropdown control; per-window *distinct* menus (the app-level
-menu is realized per-window, which is the common case); timers (`XGTimer`). Scrolling covers
-both axes.
+menu is realized per-window, which is the common case); timers (`XGTimer`); multi-window mouse
+routing (`windowAtPoint` assumes a single window — every demo is single-window, and correct
+multi-window routing needs `WindowFromPoint` plus a client/screen coordinate pass that the
+neutral event model would have to agree on across backends). Scrolling covers both axes.
 
 **Known issues:**
 - **#6 (blocks AppKit):** xtc has no way to link a system library that isn't a `#import <Lib>`
