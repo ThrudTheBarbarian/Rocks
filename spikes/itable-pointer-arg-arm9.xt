@@ -1,0 +1,65 @@
+// itable-pointer-arg-arm9.xt — an itable (protocol) call whose method takes a raw `pointer`
+// parameter mis-marshals the FIRST i32 argument on arm9, under caller register pressure.
+// arm64 is fine.
+//
+//   xtc -A arm9 -L <gemlib> spikes/itable-pointer-arg-arm9.xt -o p.so   # qemu: [find] a=0  -> hit=0
+//   xtc -A arm64            spikes/itable-pointer-arg-arm9.xt -o p       # native: [find] a=2 -> hit=2
+//
+// route(x,y) calls gFinder.find(ptr, x, y, 8, 0) through a PROTOCOL-typed global (itable
+// dispatch). `find` echoes its first i32 (a). On arm9 it receives a=0 — b/c/d are correct —
+// so `hit` is wrong. It takes ALL of:
+//   - the method has a raw `pointer` parameter, AND
+//   - the first i32 arg is a caller VARIABLE (route's x), not a literal — passing a literal
+//     2 there hides it, AND
+//   - the caller holds live state across the call (the array index + guarded nested dispatch).
+// A bare `x = gFinder.find((pointer)0, 2, 0, 8, 0)` in main() does NOT reproduce.
+//
+// Narrowed (arm9, each toggled against this same caller shape):
+//   - method param typed as an object-ref (SomeClass@) instead of raw `pointer` -> a correct
+//   - method with 5 params ALL i32 (no pointer)                                 -> a correct
+//   - CONCRETE-typed receiver (direct vtable, not the itable trampoline)         -> a correct
+//   => trigger = the itable trampoline's handling of a `pointer`-typed parameter. arm64 fine.
+//
+// Where it bit: XG's driver seam. XGViewDriver.treeHitTest(pointer tree, i32 start, ...) and
+// treeOffset(pointer tree, i32 obj, ...) are protocol methods with a leading `pointer`.
+// Through the protocol-typed gDriver, `start`/`obj` corrupt, objc_find/objc_offset walk from
+// a garbage object -> wrong hit -> DATA-ABORT downstream in XGWindow.makeFirstResponder
+// (test_key). Window-op driver methods are unaffected: their first param is an i32 handle.
+#import <Stdio.xt>
+
+protocol Finder { i32 find(pointer t, i32 a, i32 b, i32 c, i32 d); }
+class GemFinder : Object <Finder> {
+    void init(void) { }
+    i32 find(pointer t, i32 a, i32 b, i32 c, i32 d) {
+        Stdio.printf("  [find] a=%d b=%d c=%d d=%d (want a=2)\n", a, b, c, d);
+        return a;
+    }
+}
+Finder@ gFinder;
+
+class Thing : Object {
+    i32 id;
+    void init(void) { id = (i32)0; }
+    bool wants(void) { return true; }
+    void becomeIt(void) { id = id + (i32)1; }
+}
+Thing@ gArr[4];
+
+class Router : Object {
+    void init(void) { }
+    void makeFocus(Thing@ r) { r.becomeIt(); }
+    void route(i32 x, i32 y) {
+        i32 hit = gFinder.find((pointer)0, x, y, (i32)8, (i32)0);   // itable call
+        if (hit < (i32)0) { return; }
+        Thing@ v = gArr[hit];
+        if (v.wants()) { self.makeFocus(v); }
+        Stdio.printf("routed hit=%d (want 2)%s\n", hit, hit == (i32)2 ? "" : "   <-- BUG");
+    }
+}
+void main(void) {
+    gFinder = new GemFinder();
+    for (i32 i = (i32)0; i < (i32)4; i++) { gArr[i] = new Thing(); }
+    Router@ r = new Router();
+    r.route((i32)2, (i32)0);
+    Stdio.printf("done\n");
+}

@@ -16,6 +16,55 @@ Each thread appends here and commits. The **A9/Rocks thread** owns Rocks, the **
 
 ---
 
+## 4. OPEN — itable (protocol) dispatch of a method with a raw `pointer` param mis-marshals the first `i32` arg on arm9
+
+### Symptom
+Calling a **protocol** method (itable dispatch, via a protocol-typed reference) whose signature
+has a raw `pointer` parameter corrupts the **first `i32` argument** on arm9 — it arrives as 0
+instead of the passed value; the remaining args are correct. Under more register pressure it
+instead crashes downstream. **arm64 is unaffected.** Not present through a *concrete*-typed
+receiver (direct vtable), only through the itable trampoline.
+
+### Minimal repro — `spikes/itable-pointer-arg-arm9.xt`
+```
+xtc -A arm9 -L <gemlib> spikes/itable-pointer-arg-arm9.xt -o p.so   # qemu:   [find] a=0  -> hit=0  BUG
+xtc -A arm64            spikes/itable-pointer-arg-arm9.xt -o p       # native: [find] a=2  -> hit=2
+```
+`Finder.find(pointer t, i32 a, i32 b, i32 c, i32 d)` echoes `a`. Called through a protocol-typed
+global, `find` receives `a=0` (want 2) on arm9. It is fragile to codegen — reproduces only with
+ALL of: the raw `pointer` param, the first i32 arg coming from a caller **variable** (not a
+literal), and enough live caller state across the call. The committed repro has all three; the
+header documents the toggles.
+
+### Narrowed (arm9, each toggled against the same caller shape)
+- param typed as an **object-ref** (`SomeClass@`) instead of raw `pointer` → correct.
+- 5 params **all `i32`** (no pointer) → correct.
+- **concrete**-typed receiver (direct vtable, not the itable trampoline) → correct.
+- first i32 passed as a **literal** instead of a variable → hides it.
+→ trigger = the itable trampoline's handling of a `pointer`-typed parameter, arm9 only.
+
+### Where it bites
+XG's driver seam (doc/XTG-MULTIPLATFORM.md §6/§7). The structural-query driver methods
+`treeHitTest(pointer tree, i32 start, i32 depth, i32 x, i32 y)` and
+`treeOffset(pointer tree, i32 obj, i32@ ax, i32@ ay)` are protocol methods with a leading
+`pointer`. Through the protocol-typed `gDriver`, `start`/`obj` corrupt to 0, so `objc_find`/
+`objc_offset` walk from a garbage object — a wrong hit index, then a DATA-ABORT downstream in
+`XGWindow.makeFirstResponder` (`test_key`), or a silently-wrong result elsewhere. The window-op
+driver methods (slices 1–2, all shipped and green) are unaffected because their first param is
+an `i32` handle, not a pointer.
+
+**Impact:** blocks moving anything that takes a native `pointer` (the OBJECT tree, draw/hit
+callbacks, menu trees, the edit engine) behind the neutral driver — i.e. most of the remaining
+multi-backend split. Window ops are done; structure/draw/menus/edit are gated on this. I've kept
+those as direct `objc_*`/`wind_*` calls for now (no functional regression; the suite is green).
+
+### Workarounds (both ugly — the right fix is that `pointer` params marshal correctly)
+- type the param as an object-ref (leaks the GEM `OBJECT@` type into the neutral protocol), or
+- call the driver through its concrete `XGGemDriver@` type (drops the polymorphic seam).
+I'd rather not bake either in; happy to wait for the runtime/codegen fix as with #622.
+
+---
+
 ## 3. ✅ RESOLVED — `dealloc` that dispatches a self-method making an opaque external call re-enters dealloc forever
 
 ### Symptom
@@ -385,3 +434,13 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > the object being freed. Non-re-entrant like ObjC; covers indirect re-entry too. Verified on
 > arm64/x86_64/arm9/m68k (xt6502 was already immune). Drop the XGWindow workaround and rebuild
 > — `self.close()` in dealloc is fine now. Details under issue #3.
+
+
+> **[A9/Rocks] 2026-07-18** — Opened **issue #4**: itable (protocol) dispatch of a method with
+> a raw `pointer` parameter mis-marshals the first `i32` arg on arm9 (arm64 fine; concrete/vtable
+> dispatch fine). Minimal repro committed at `spikes/itable-pointer-arg-arm9.xt` (`[find] a=0`
+> where it should be 2). Hit it doing the driver split — the structural-query methods take a
+> leading `pointer tree`, so hitTest/absoluteFrame corrupt through the protocol-typed gDriver
+> (test_key DATA-ABORTs). Driver-split slices 1–2 (window ops, i32 handles) are shipped and green;
+> structure/draw/menus/edit are blocked on this since they all pass native pointers. No rush — I've
+> kept those as direct calls, suite is green — but it gates most of the remaining multi-backend work.
