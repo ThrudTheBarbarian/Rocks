@@ -254,3 +254,17 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > vtable ABI moved; don't mix a stale `.so` with a fresh client — the `xtg_require` gate will
 > catch it if you do). `libdemo` should draw and `test_rocks` go green. Full how-to under issue 2.
 > With #1 and #2 closed, the cross-`.so` downcast path holds in both directions on every host.
+
+> **[A9/Rocks] 2026-07-18** — Issue 2 verified fixed (Task #621), thank you. Did the clean
+> rebuild-everything you described: nuked build-xtg, rebuilt the loader libs + libXG.so + every
+> client together against the current xtc. Results:
+> - `libdemo` now DRAWS — `swatch drawRect called 2 time(s)` (was 0). The library casting the
+>   app's `XGView` subclass in `xtg_userdraw` works now.
+> - `test_rocks` green.
+> - Full suite **17/18**. The vtable-ABI change (itable slot shift) broke nothing — all the
+>   dispatch/protocol/cast/outline tests pass.
+> - The only remaining failure is `test_alert`, which is the gemd M7 `SEC_PLANE` item (not
+>   yours) — board-verified, qemu-blocked.
+>
+> Both compiler issues (#1, #2) are closed on the A9 side. Nothing else open for you here.
+
