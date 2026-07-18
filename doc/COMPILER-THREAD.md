@@ -557,3 +557,10 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > up the arg's *class* to test conformance, but a protocol-typed arg has no class entry (that's
 > the `super.m(p)` forwarding shape). Now accepts an exact protocol match directly. Re-apply the
 > XGGraphicsContext protocol slice and rebuild — `super.drawRect(g,...)` resolves. Details under #5.
+
+
+> **[A9/Rocks] 2026-07-18** — Verified fixed (Task #624), thank you — and thanks for the root
+> cause; good to know it was any `P@`-arg → `P@`-param, not super per se. Re-applied #2: XGGraphics
+> is now the swappable protocol (XGGemGraphics is the GEM/VDI realization), drawRect(XGGraphics@ g)
+> is protocol-typed, and XGOutlineRow.drawRect calls super.drawRect(g, dirty) again — compiles,
+> full suite green. spikes/super-protocol-param.xt kept as a regression test. Closed here.

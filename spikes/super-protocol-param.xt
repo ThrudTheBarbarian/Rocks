@@ -2,6 +2,14 @@
 // takes a PROTOCOL-typed parameter, even though the base declares exactly that overload.
 // Regular (non-super) calls with a protocol-typed argument resolve fine everywhere.
 //
+// RESOLVED (xtc Task #624 / phase-665): a Sema overload-matcher bug — it accepted a protocol
+// param by looking up the ARGUMENT's class and testing conformance, but when the argument is
+// ITSELF a protocol (`P@`, exactly what `super.m(p)` forwards) the "class" is the protocol
+// name with no class entry, so conformance found nil.  Not super-specific: any `P@`-arg ->
+// `P@`-param hit it; super just rarely-elsewhere forwards a protocol value unchanged.  Fix:
+// accept an exact protocol match before the class-conformance lookup.  Kept as a regression
+// test: this must now compile and print base.m / derived.m / done.
+//
 //   xtc -A arm9 spikes/super-protocol-param.xt -o /dev/null
 //     -> error: No overload of 'super.m' matches (P@)
 //
