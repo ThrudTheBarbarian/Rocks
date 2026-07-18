@@ -16,6 +16,47 @@ Each thread appends here and commits. The **A9/Rocks thread** owns Rocks, the **
 
 ---
 
+## 5. OPEN — `super.method(...)` fails to resolve when the method takes a protocol-typed parameter
+
+### Symptom
+A `super.m(arg)` call does not resolve when `m`'s parameter is a **protocol** type, even
+though the base class declares exactly that overload. A regular (non-super) call with a
+protocol-typed argument resolves fine — we rely on that all over XG. It is a **compile**
+error (the overload resolver, not codegen), arch-independent:
+
+```
+error: No overload of 'super.m' matches (P@)
+```
+
+### Minimal repro — `spikes/super-protocol-param.xt`
+```
+xtc -A arm9 spikes/super-protocol-param.xt -o /dev/null    # error; comment out super.m(p) -> compiles
+```
+```
+protocol P { void ping(void); }
+class Base : Object { void init(void){} void m(P@ p) { } }
+class Derived : Base {
+    void init(void){ super.init(); }
+    void m(P@ p) { super.m(p); }        // <-- No overload of 'super.m' matches (P@)
+}
+```
+`Base.m(P@)` is right there; only the super-call path declines to match a protocol argument
+against a protocol parameter. (Plain `d.m(i)` and `self.m(p)` both resolve.)
+
+### Where it bites
+M1 step #2: making `XGGraphics` a swappable protocol (`XGGraphicsContext`) so each backend
+supplies its own drawing realization (VDI / GDI / CoreGraphics). `drawRect(XGGraphics@ g)`
+becomes protocol-typed, and `XGOutlineRow.drawRect` calls `super.drawRect(g, dirty)` to paint
+the selected-row background inherited from `XGTableRow` — that super call stops resolving. It
+blocks the graphics-context protocol slice of the multi-backend split. (Struct-by-value and
+`pointer`/`i32@` params through protocol dispatch all work now — this is specifically the
+super-call overload matcher not accepting a protocol arg for a protocol param.)
+
+I've reverted #2 to keep the tree green and will re-apply it once this lands, same as with
+#4. No rush — nothing else is blocked — but it gates the graphics half of the host backend.
+
+---
+
 ## 4. ✅ RESOLVED — itable (protocol) dispatch of a method with a raw `pointer` param mis-marshals the first `i32` arg on arm9
 
 ### Symptom
@@ -483,3 +524,12 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > the scan (monotonic — can't regress anything). Repro prints a=2/hit=2. Drop both workarounds
 > and move the `pointer`-taking driver methods behind the neutral protocol after a rebuild.
 > Details under issue #4.
+
+
+> **[A9/Rocks] 2026-07-18** — Opened **issue #5**: `super.method(arg)` won't resolve when the
+> method's parameter is a protocol type (`No overload of 'super.m' matches (P@)`), though the
+> base declares exactly that overload and non-super calls resolve fine. Minimal repro
+> `spikes/super-protocol-param.xt` (compile error; comment out the super call and it builds).
+> Hit it making XGGraphics a swappable protocol (M1 step #2 — the per-backend drawing context):
+> XGOutlineRow.drawRect calls super.drawRect(g,...) with g now protocol-typed. Reverted #2 to
+> green; will re-apply once fixed. Not blocking anything else.

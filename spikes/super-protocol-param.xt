@@ -1,0 +1,36 @@
+// super-protocol-param.xt — a `super.method(...)` call fails to resolve when the method
+// takes a PROTOCOL-typed parameter, even though the base declares exactly that overload.
+// Regular (non-super) calls with a protocol-typed argument resolve fine everywhere.
+//
+//   xtc -A arm9 spikes/super-protocol-param.xt -o /dev/null
+//     -> error: No overload of 'super.m' matches (P@)
+//
+// Comment out the `super.m(p)` line and it compiles. It is a COMPILE error, arch-independent
+// (the overload resolver, not codegen). Base.m(P@) is right there; only the super-call path
+// declines to match a protocol argument against a protocol parameter.
+//
+// Where it bit: making XGGraphics a swappable protocol (XGGraphicsContext, M1 step #2).
+// drawRect(XGGraphics@ g) becomes protocol-typed; XGOutlineRow.drawRect calls
+// super.drawRect(g, dirty) to paint the selected-row background from XGTableRow, and that
+// super call stops resolving. It blocks the graphics-context protocol slice of the
+// multi-backend split.
+#import <Stdio.xt>
+
+protocol P { void ping(void); }
+
+class Base : Object {
+    void init(void) { }
+    void m(P@ p) { Stdio.printf("base.m\n"); }
+}
+class Derived : Base {
+    void init(void) { super.init(); }
+    void m(P@ p) { super.m(p); Stdio.printf("derived.m\n"); }   // <-- error: no super.m matches (P@)
+}
+class Impl : Object <P> { void init(void) { } void ping(void) { } }
+
+void main(void) {
+    Derived@ d = new Derived();
+    Impl@ i = new Impl();
+    d.m(i);
+    Stdio.printf("done\n");
+}
