@@ -394,6 +394,16 @@ same neutral Xtg code path as GEM.
 > (structure relocated into the driver; `XGGraphics` is a swappable protocol; no GEM type
 > reaches the neutral layer). Files: `XGWin32.h.xt`, `XGGdiGraphics.xt`, `XGWin32Driver.xt`,
 > `test_win32_real.xt`. The one Win32-aware line in an app is `new XGWin32Driver()`.
+>
+> **Also done: the run loop.** `XGMenu` and `XGApplication` were the last GEM-coupled
+> pieces above the driver; both are neutral now (the backend is *injected* — `gDriver` /
+> `XGApplication.setDriver()` — not chosen inside `XGApplication`), so `make win64-lib`
+> gates the **entire** neutral toolkit. `make win32-loop` runs a real app under
+> `XGApplication.run()` on Win32: a posted `WM_LBUTTONDOWN` travels `nextEvent` (the
+> message pump) → `dispatchEvent` → the window → `XGView.mouseDown`, and `WM_QUIT` ends
+> the loop. The neutral event loop — not just paint and hit-test — now runs on a second
+> backend. Remaining M1 work is breadth: the stock control set beyond button/label, and
+> the menu / field-editor driver ops (stubbed on Win32 today).
 
 **Spike 2 — AppKit / Objective-C bridge** (the go/no-go on Mac-native). Drive
 `objc_msgSend` to open an `NSWindow` + `NSButton`, register a class with a callback
