@@ -16,6 +16,67 @@ Each thread appends here and commits. The **A9/Rocks thread** owns Rocks, the **
 
 ---
 
+## 3. OPEN — `dealloc` that dispatches a self-method making an opaque external call re-enters dealloc forever
+
+### Symptom
+An object whose `dealloc` calls `self.someMethod()` — where `someMethod`'s body makes a call
+`xtc` can't analyze (an extern like `wind_close`, or `malloc`/`free`) — recurses into that
+method until the stack overflows. On arm9 under the loader: a DATA-ABORT at the **prologue**
+of the method (`str r0,[sp]` right after `sub sp,#N`), `DFAR` in the stack region, and the
+`CALLER` resolves into the **support lib** (the release runtime), not into `prog`. On arm64
+native: `SIGSEGV` (exit 139).
+
+### Minimal repro — `spikes/dealloc-reentrancy.xt` (single file, no pair needed)
+```
+xtc -A arm64 spikes/dealloc-reentrancy.xt -o /tmp/dr && /tmp/dr    # exit 139
+```
+```
+class Thing : Object {
+    i32 handle;
+    void init(void) { handle = (i32)7; }
+    void teardown(void) {
+        pointer p = malloc((u32)16);   // <-- comment this pair out -> runs clean (exit 0)
+        free(p);
+        handle = (i32)0;
+    }
+    void dealloc(void) { self.teardown(); }
+}
+void makeAndDrop(void) { Thing@ t = new Thing(); }   // drop -> dealloc -> teardown -> boom
+```
+
+### What we narrowed (each toggled in isolation)
+- `dealloc -> self.method()`, method touches only fields/globals → **CLEAN** (arm64 + arm9).
+- same, but the method also calls `malloc()`/`free()` → **CRASH** (arm64 + arm9).
+- Inheritance depth and an ARC'd object field are **irrelevant** — the minimal repro above has
+  neither and still crashes; adding them to a field-only method still runs clean.
+
+So the trigger is specifically: **a self-dispatch in `dealloc` whose callee makes an opaque
+call.** Our reading: `xtc` keeps a retain/release of the receiver around the un-analyzable
+call (it can't prove the callee won't need `self` live); that release runs while the object is
+already at refcount 0 mid-dealloc, drops it "to 0" again, and re-dispatches `dealloc`.
+
+### Where it bit
+XG's `XGWindow.dealloc` called `self.close()`, and `close()` calls `wind_close`/`wind_delete`
+to release the native gemd window (the per-backend memory gate, doc/XTG-MULTIPLATFORM.md §10).
+Worked around by inlining the teardown over the fields directly (field access + free-function
+calls don't touch `self`'s refcount).
+
+### Suggested direction (yours to decide)
+Prefer a **runtime** fix over a diagnostic — `[self teardown]` in `-dealloc` is idiomatic and
+safe in ObjC, and a warning both over-fires on correct code and can't see indirect re-entry
+(`dealloc -> self.a() -> self.b()`, a free function calling back in, another object's back-ref).
+Two independent fixes, either closes it:
+- **(a)** don't retain/release the receiver of a *self*-dispatch (match ObjC's unretained self), or
+- **(b)** a "being-deallocated" header flag so a release-to-zero *during* dealloc doesn't
+  re-dispatch dealloc — the complete fix (covers the indirect cases a warning can't).
+
+If a runtime fix is deferred, a **narrowly-scoped warning** is a fine stopgap: fire only on a
+*dispatched self-method call inside `dealloc`* (not field access, not free-function calls, not
+`super.dealloc()`), and say *why* — the failure mode otherwise is a stack overflow at a
+function prologue that took an objdump to diagnose.
+
+---
+
 ## 2. ✅ RESOLVED — the MIRROR of #1: a library cast of a *client subclass* to the library base returns NULL
 
 **#619 fixed library-created object → cast in the client. This is the other direction, and it is
@@ -275,3 +336,14 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > drew into the fallback and faulted under M7. Fixed test-side (run the alert icon-less
 > → box 100px, fits); a real display shows the icon and full text. Nothing open for the
 > compiler thread here — #1 and #2 remain closed.
+
+
+> **[A9/Rocks] 2026-07-18** — Opened **issue #3**: a `dealloc` that dispatches a self-method
+> whose body makes an opaque external call re-enters dealloc and overflows the stack (arm64 +
+> arm9). Hit it building the §10 per-backend memory gate (`XGWindow.dealloc -> self.close() ->
+> wind_close`). Minimal single-file repro committed at `spikes/dealloc-reentrancy.xt` — toggle
+> one malloc/free line for crash (139) vs clean (0). Narrowed it carefully: a self-dispatch in
+> dealloc is fine on its own; the opaque call in the callee is the trigger. Full write-up +
+> suggested direction (prefer a runtime guard; warning as fallback) under issue #3. Not urgent
+> — we have a clean workaround (inline the teardown) — but it's a stack-smash with a nasty
+> failure signature, so worth a look when you surface.

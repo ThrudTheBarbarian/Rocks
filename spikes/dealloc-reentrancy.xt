@@ -1,0 +1,59 @@
+// dealloc-reentrancy.xt — a dealloc that dispatches a self-method which makes an opaque
+// external call re-enters dealloc forever and overflows the stack.
+//
+// Build+run (arch-independent — reproduced on arm64 native AND arm9 under the loader):
+//     xtc -A arm64 spikes/dealloc-reentrancy.xt -o /tmp/dr && /tmp/dr    # SIGSEGV (139)
+//
+// THE TRIGGER IS THE EXTERNAL CALL. Comment out the malloc/free line in teardown() and it
+// runs clean ("after" prints). So it is NOT "self-method-in-dealloc" per se — that alone is
+// fine (see below). It is: dealloc -> self.method() where the method makes a call xtc can't
+// analyze. We believe xtc then keeps a retain/release of the receiver around that call (it
+// can't prove the opaque callee won't need self alive); the release runs while the object is
+// already at refcount 0 mid-dealloc, dropping it "to 0" again and re-dispatching dealloc ->
+// self.method() -> ... unbounded recursion.
+//
+// Evidence it goes through the runtime release path: on arm9 the DATA-ABORT is at the
+// PROLOGUE of teardown() (`str r0,[sp]` after `sub sp,#N`, DFAR in the stack region) and the
+// CALLER resolves into the support lib (the release runtime), not into prog.
+//
+// Cases we tested:
+//   - dealloc -> self.method(), method only touches fields/globals  -> CLEAN (arm64 + arm9)
+//   - same but method also does malloc()/free()                     -> CRASH (arm64 + arm9)
+//   - inheritance depth and an ARC'd object field change nothing on their own (neither is
+//     present in this minimal repro, and it still crashes).
+//
+// Safe in every other ARC system: `[self teardown]` in ObjC -dealloc is idiomatic — self is
+// unretained in a message send and the runtime won't re-enter dealloc on an object already
+// being freed. Two independent fixes, either closes it:
+//   (a) don't retain/release the receiver of a self-dispatch (match ObjC's unretained self), or
+//   (b) a "being-deallocated" header flag so a release-to-zero during dealloc doesn't
+//       re-dispatch dealloc (also covers indirect re-entry: dealloc -> self.a() -> self.b(),
+//       or a free function that calls back in, or another object's back-reference).
+//
+// Workaround in XG today (XGWindow.dealloc): inline the teardown over the fields directly.
+#import <Stdio.xt>
+
+pointer malloc(u32 n);
+void    free(pointer p);
+
+class Thing : Object
+{
+    i32 handle;
+    void init(void) { handle = (i32)7; }
+
+    void teardown(void) {
+        pointer p = malloc((u32)16);   // <-- comment this pair out and the crash goes away
+        free(p);
+        handle = (i32)0;
+    }
+
+    void dealloc(void) { self.teardown(); }
+}
+
+void makeAndDrop(void) { Thing@ t = new Thing(); }   // drop -> dealloc -> self.teardown() -> boom
+
+void main(void) {
+    Stdio.printf("before\n");
+    makeAndDrop();
+    Stdio.printf("after: dealloc's self-dispatch did NOT re-enter (fixed).\n");
+}
