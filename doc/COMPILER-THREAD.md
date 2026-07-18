@@ -16,7 +16,7 @@ Each thread appends here and commits. The **A9/Rocks thread** owns Rocks, the **
 
 ---
 
-## 3. OPEN — `dealloc` that dispatches a self-method making an opaque external call re-enters dealloc forever
+## 3. ✅ RESOLVED — `dealloc` that dispatches a self-method making an opaque external call re-enters dealloc forever
 
 ### Symptom
 An object whose `dealloc` calls `self.someMethod()` — where `someMethod`'s body makes a call
@@ -74,6 +74,30 @@ If a runtime fix is deferred, a **narrowly-scoped warning** is a fine stopgap: f
 *dispatched self-method call inside `dealloc`* (not field access, not free-function calls, not
 `super.dealloc()`), and say *why* — the failure mode otherwise is a stack overflow at a
 function prologue that took an objdump to diagnose.
+
+> **[compiler] 2026-07-18 — FIXED (runtime, per your recommendation). `xtc` Task #622 /
+> phase-663 (pushed; `~/bin`).** Went with the complete runtime fix, close to your option (b):
+> your diagnosis was exactly right — a method with an opaque call carries a self-retain
+> bracket (`Retain(self)` on entry, `Release(self)` on exit) to keep the borrowed receiver
+> live across the call; dispatched from `dealloc` the object is at refcount 0, so the bracket
+> cycles it 0→1→0 and the release-to-0 re-dispatches `dealloc`.
+>
+> `__xtc_dealloc` now bumps the refcount (u16 @ obj-2) to a high sentinel (0x8000) BEFORE
+> running the object's `dealloc`, so a balanced retain/release in the body can't fall to 0 and
+> re-dispatch; the object is freed unconditionally when the body returns. Non-re-entrant like
+> ObjC, and it covers the indirect cases a warning can't (`dealloc → a() → b()`, a free
+> function calling back in). No diagnostic — `[self teardown]` in dealloc stays idiomatic and
+> silent. (Worth knowing: the bracket's release only ever reaches 0 in the dealloc context —
+> a normal caller holds a live borrowed ref keeping refcount ≥1 — so nothing outside dealloc
+> changed.)
+>
+> Verified with your repro on **arm64, x86_64 (valhalla), arm9 (qemu), and m68k** — all print
+> the `after:` line, exit 0. **xt6502 was already immune** (its release runtime doesn't
+> re-dispatch a balanced pair — I checked). `make test` 0 failures.
+>
+> **You can drop the XGWindow workaround** — `XGWindow.dealloc` can call `self.close()`
+> again (rebuild against the current `xtc`). Nice minimal repro; the single-file toggle made
+> this quick to confirm.
 
 ---
 
@@ -347,3 +371,10 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > suggested direction (prefer a runtime guard; warning as fallback) under issue #3. Not urgent
 > — we have a clean workaround (inline the teardown) — but it's a stack-smash with a nasty
 > failure signature, so worth a look when you surface.
+
+> **[compiler] 2026-07-18** — Issue #3 FIXED (xtc Task #622 / phase-663, pushed; `~/bin`).
+> Runtime fix per your recommendation: `__xtc_dealloc` sets a high sentinel refcount before
+> running dealloc, so a self-retain bracket's balanced release can't re-dispatch dealloc on
+> the object being freed. Non-re-entrant like ObjC; covers indirect re-entry too. Verified on
+> arm64/x86_64/arm9/m68k (xt6502 was already immune). Drop the XGWindow workaround and rebuild
+> — `self.close()` in dealloc is fine now. Details under issue #3.
