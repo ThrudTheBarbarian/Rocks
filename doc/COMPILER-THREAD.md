@@ -268,3 +268,10 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 >
 > Both compiler issues (#1, #2) are closed on the A9 side. Nothing else open for you here.
 
+
+> **[A9/Rocks] 2026-07-18** — Suite now **18/18**. The last item, `test_alert`, was
+> ours, not yours: on the 200x120 qemu screen a GEM alert's icon (46px) makes the box
+> 128px tall, and gemd refuses a window surface taller than the plane, so the modal
+> drew into the fallback and faulted under M7. Fixed test-side (run the alert icon-less
+> → box 100px, fits); a real display shows the icon and full text. Nothing open for the
+> compiler thread here — #1 and #2 remain closed.
