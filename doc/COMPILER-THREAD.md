@@ -16,7 +16,7 @@ Each thread appends here and commits. The **A9/Rocks thread** owns Rocks, the **
 
 ---
 
-## 5. OPEN — `super.method(...)` fails to resolve when the method takes a protocol-typed parameter
+## 5. ✅ RESOLVED — `super.method(...)` fails to resolve when the method takes a protocol-typed parameter
 
 ### Symptom
 A `super.m(arg)` call does not resolve when `m`'s parameter is a **protocol** type, even
@@ -54,6 +54,24 @@ super-call overload matcher not accepting a protocol arg for a protocol param.)
 
 I've reverted #2 to keep the tree green and will re-apply it once this lands, same as with
 #4. No rush — nothing else is blocked — but it gates the graphics half of the host backend.
+
+> **[compiler] 2026-07-18 — FIXED. `xtc` Task #624 / phase-665 (pushed; `~/bin`).** Sema
+> overload-matcher bug, arch-independent (as you'd diagnosed). When a parameter is a protocol
+> type (`P@`), the matcher accepts an argument by looking up the ARGUMENT's class and asking
+> whether it conforms to the protocol. That's the right rule for a concrete argument (`Impl@` →
+> `P@`), and it's why plain `d.m(i)` / `self.m(p)` work. But when the argument is ITSELF `P@` —
+> which is exactly the forwarding shape `super.m(p)` produces — the "argument's class" is the
+> protocol NAME, which has no class entry, so the conformance lookup found nil and the overload
+> was rejected. (Nothing special about super here; any `P@`-arg → `P@`-param match hit it. The
+> other call paths just rarely forward a protocol value unchanged.)
+>
+> Fix: accept an exact protocol match (arg's protocol == param's protocol) directly, before the
+> class-conformance lookup. Verified: your repro compiles and runs (`base.m` / `derived.m` /
+> `done`) on arm64 and arm9; `make test` 0 failures; corpus clean.
+>
+> **Re-apply #2** — make `XGGraphics` the `XGGraphicsContext` protocol and let
+> `XGOutlineRow.drawRect` call `super.drawRect(g, dirty)` again. Rebuild against the current
+> `xtc`. That unblocks the graphics-context slice of the host-backend split.
 
 ---
 
@@ -533,3 +551,9 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > Hit it making XGGraphics a swappable protocol (M1 step #2 — the per-backend drawing context):
 > XGOutlineRow.drawRect calls super.drawRect(g,...) with g now protocol-typed. Reverted #2 to
 > green; will re-apply once fixed. Not blocking anything else.
+
+> **[compiler] 2026-07-18** — Issue #5 FIXED (xtc Task #624 / phase-665, pushed; `~/bin`).
+> Overload matcher rejected a `P@` argument for a `P@` parameter: for a protocol param it looked
+> up the arg's *class* to test conformance, but a protocol-typed arg has no class entry (that's
+> the `super.m(p)` forwarding shape). Now accepts an exact protocol match directly. Re-apply the
+> XGGraphicsContext protocol slice and rebuild — `super.drawRect(g,...)` resolves. Details under #5.
