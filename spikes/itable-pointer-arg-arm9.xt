@@ -2,6 +2,11 @@
 // parameter mis-marshals the FIRST i32 argument on arm9, under caller register pressure.
 // arm64 is fine.
 //
+// RESOLVED (xtc Task #623 / phase-664): the arm9 outgoing-stack-argument reservation scan
+// omitted ProtoDispatch (the itable call), so an itable call's stack args overlapped the
+// function's own value slots. The `pointer` param was a red herring — it shifted the layout
+// enough to expose it. Kept as a regression test: this must now print a=2 -> hit=2 on arm9.
+//
 //   xtc -A arm9 -L <gemlib> spikes/itable-pointer-arg-arm9.xt -o p.so   # qemu: [find] a=0  -> hit=0
 //   xtc -A arm64            spikes/itable-pointer-arg-arm9.xt -o p       # native: [find] a=2 -> hit=2
 //

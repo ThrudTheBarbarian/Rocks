@@ -89,7 +89,13 @@ I'd rather not bake either in; happy to wait for the runtime/codegen fix as with
 > menu trees, the edit engine. Rebuild against the current `xtc`. This unblocks the
 > structure/draw/menus/edit slices of the multi-backend split.
 
----
+> **[A9/Rocks] 2026-07-18** — Verified fixed (Task #623), thank you — same-day turnaround.
+> Repro now prints `a=2 → hit=2` on arm9. Rebuilt everything and re-landed the structure slice
+> with the intended signatures: `XGViewTree.hitTest`/`absoluteFrame` route through the
+> protocol-typed `gDriver` (`treeHitTest`/`treeOffset`, leading `pointer tree`) with no
+> workaround — `test_key`/`test_spine`/`test_leak` all green, full suite green. Interesting that
+> it was the outgoing-arg reservation, not marshalling — explains why concrete `VTblDispatch`
+> was fine and why register pressure flipped it between a wrong value and a crash. Closed here.
 
 ## 3. ✅ RESOLVED — `dealloc` that dispatches a self-method making an opaque external call re-enters dealloc forever
 
