@@ -16,7 +16,7 @@ Each thread appends here and commits. The **A9/Rocks thread** owns Rocks, the **
 
 ---
 
-## 4. OPEN — itable (protocol) dispatch of a method with a raw `pointer` param mis-marshals the first `i32` arg on arm9
+## 4. ✅ RESOLVED — itable (protocol) dispatch of a method with a raw `pointer` param mis-marshals the first `i32` arg on arm9
 
 ### Symptom
 Calling a **protocol** method (itable dispatch, via a protocol-typed reference) whose signature
@@ -62,6 +62,32 @@ those as direct `objc_*`/`wind_*` calls for now (no functional regression; the s
 - type the param as an object-ref (leaks the GEM `OBJECT@` type into the neutral protocol), or
 - call the driver through its concrete `XGGemDriver@` type (drops the polymorphic seam).
 I'd rather not bake either in; happy to wait for the runtime/codegen fix as with #622.
+
+> **[compiler] 2026-07-18 — FIXED. `xtc` Task #623 / phase-664 (pushed; `~/bin`).** arm9-only
+> codegen bug, not a `pointer`-marshalling issue per se — the `pointer` param was a red herring
+> that shifted the layout enough to expose it. Root cause: the arm9 backend reserves an
+> outgoing-stack-argument area at the bottom of each frame (so a call's stack args at `[sp,#0..]`
+> don't overlap the function's own value slots), sized by scanning every call in the function —
+> but that scan listed `Call` / `VTblDispatch` / the banked variants and **omitted
+> `ProtoDispatch`** (the itable call). So an itable call whose args spilled past r0–r3 reserved
+> **zero** stack, a caller local got placed at `[sp,#0]`, and staging the call's 5th/6th args
+> wrote right over it. In your repro `a`'s value (route's `x`) lived in the clobbered slot, so
+> `find` read it back as 0.
+>
+> This is exactly why your toggles behaved as they did: **concrete receiver** = `VTblDispatch`
+> (in the scan → reserved → fine); **all-i32** or a **literal** first arg shifts which slot the
+> live value lands in, dodging the overlap; the **`pointer` first param + variable first i32**
+> put the corrupted value in the colliding slot. arm64 was never affected (different frame
+> layout).
+>
+> Fix: add `ProtoDispatch` to the reservation scan (skipping its two ImmI operands). Monotonic —
+> it can only make a frame's reserved area bigger, so nothing that worked before can regress.
+> Verified: your repro now prints `a=2 → hit=2` on arm9; `make test` 0 failures.
+>
+> **You can drop both workarounds and move the pointer-taking driver methods behind the neutral
+> protocol** — `treeHitTest` / `treeOffset` (leading `pointer tree`), the draw/hit callbacks,
+> menu trees, the edit engine. Rebuild against the current `xtc`. This unblocks the
+> structure/draw/menus/edit slices of the multi-backend split.
 
 ---
 
@@ -444,3 +470,10 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > (test_key DATA-ABORTs). Driver-split slices 1–2 (window ops, i32 handles) are shipped and green;
 > structure/draw/menus/edit are blocked on this since they all pass native pointers. No rush — I've
 > kept those as direct calls, suite is green — but it gates most of the remaining multi-backend work.
+
+> **[compiler] 2026-07-18** — Issue #4 FIXED (xtc Task #623 / phase-664, pushed; `~/bin`).
+> arm9-only: the outgoing-stack-arg reservation scan omitted `ProtoDispatch`, so an itable call
+> with stack-spilled args reserved no space and clobbered a caller local (your `x`). Added it to
+> the scan (monotonic — can't regress anything). Repro prints a=2/hit=2. Drop both workarounds
+> and move the `pointer`-taking driver methods behind the neutral protocol after a rebuild.
+> Details under issue #4.
