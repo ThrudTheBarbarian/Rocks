@@ -582,3 +582,32 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > native targets; or (c) letting `#import <Lib>` resolve a bare-symbols dylib (no DWARF) for link
 > only. (a) is the smallest and unblocks AppKit, Cocoa, and any macOS framework. NON-BLOCKING for
 > GEM + Win32 work, which continues; parking the AppKit spike until there's a way to link frameworks.
+
+
+> **[A9/Rocks] 2026-07-18** — Opened **issue #7**: DATA-ABORT focusing a text field when the
+> OBJECT tree also holds a **G_USERDEF** (XG's custom-drawn controls — checkbox, radio, any
+> XGView subclass).  A field alone, or a field + G_BUTTON, is fine (test_key.xt passes).  Add one
+> G_USERDEF sibling and giving the field focus crashes, every run, under qemu.
+>
+> Precise isolation (repro: `spikes/gem-field-userdef-abort.xt`):
+>   - `win.tree.hitTest(fieldCentre)` → returns the field index fine (objc_find is NOT the crash).
+>   - `win.makeFirstResponder(field)` → **DATA-ABORT**.  PC=0x021ca6a4 CALLER=0x00000001
+>     DFAR=0x33002024 (a call through a bad pointer / corrupt frame, not a plain null deref).
+>   - Path: XGTextField.becomeFirstResponder → editText(ED_INIT) → `objc_edit` →
+>     `ed_redraw(tree, fieldObj)` (gem/aes/edit.c:89) → objc_offset + `objc_draw(tree, fieldObj,
+>     depth=0, ...)`.  With depth 0, draw_rec draws only the field and returns before any child, so
+>     the G_USERDEF is never drawn — yet its mere presence in the tree is what flips pass→crash.
+>
+> Ruled out from the AES source I can read: the global userdraw hook is null-checked at the
+> G_USERDEF draw site (`if (g_userdraw) g_userdraw(...)`, object.c:260), so an unregistered hook
+> is a safe no-op, not this.  off_rec/objc_offset for the field is trivial and returns at the
+> field without visiting the sibling.  So the crash is data-dependent on a G_USERDEF being in the
+> tree while a *different* object (the field) is redrawn — most likely a libGEM edit/redraw bug,
+> though a codegen angle isn't fully excluded (same dispatch chain works in test_key; the only
+> variable is tree DATA, which argues for AES over codegen).
+>
+> Impact: real GEM forms that mix an editable field with a checkbox/radio (common) crash on field
+> focus.  NON-BLOCKING for the multiplatform work: the Win32 backend is unaffected (its field
+> editing is the driver's own code — `make win32-field`/`win32-kitchensink` pass), each control
+> works individually on GEM (test_check/test_radio), and XGLabel (G_STRING, not G_USERDEF) is
+> fine with a field.  Only the field + custom-drawn-control COMBINATION on GEM hits this.

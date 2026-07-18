@@ -1,0 +1,39 @@
+// spikes/gem-field-userdef-abort.xt — minimal repro of a GEM AES crash (COMPILER-THREAD #7).
+//
+// Focusing an editable text field DATA-ABORTs when the object tree also contains a G_USERDEF
+// (XG's custom-drawn controls: checkbox, radio, any XGView subclass).  A field alone, or a field
+// + G_BUTTON, is fine (test_key.xt).  The click's objc_find succeeds; the crash is in the field-
+// focus path: XGTextField.becomeFirstResponder -> editText(ED_INIT) -> objc_edit -> ed_redraw
+// (gem/aes/edit.c).  Fault: PC=0x021ca6a4 CALLER=0x00000001 DFAR=0x33002024 (a call through a
+// bad pointer / corrupt frame).  Reproduces every run under qemu.
+//
+//   make spikes/... ; run under the loader.  (Isolated; imports the XG sources.)
+#import <Stdio.xt>
+#import "../XG/XGApplication.xt"
+#import "../XG/XGGemDriver.xt"
+#import "../XG/XGWindow.xt"
+#import "../XG/XGView.xt"
+#import "../XG/XGControl.xt"
+#import "../XG/XGBoot.xt"
+
+class C : Object <XGApplicationDelegate> {
+    XGWindow@ win; XGTextField@ name;
+    i32 applicationDidStart(XGApplication@ a) {
+        XGView@ content = new XGView();
+        name = new XGTextField();
+        XGRadioButton@ email = new XGRadioButton(); email.setTitle("Email");   // a G_USERDEF sibling
+        win = new XGWindow(); a.addWindow(win);
+        win.open("k", XGGeom.make((i16)4,(i16)4,(i16)220,(i16)160), content);
+        content.addSubview(name,  XGGeom.make((i16)56,(i16)10,(i16)120,(i16)20));
+        content.addSubview(email, XGGeom.make((i16)10,(i16)40,(i16)90,(i16)16));
+        win.tree.finalise(); win.displayAll();
+
+        XGRect r = name.absoluteFrame();          // click the field to focus it -> objc_edit ED_INIT
+        XGEvent@ e = new XGEvent();
+        e.kind = (u8)XGEventMouseDown; e.x = (i16)(r.x + r.w/(i16)2); e.y = (i16)(r.y + r.h/(i16)2);
+        win.dispatchMouse(e);                     // <-- DATA-ABORT here (remove `email` and it is fine)
+        Stdio.printf("survived (unexpected)\n");
+        a.stop(); return (i32)0;
+    }
+}
+void main(){ if(!XGBoot.ensureWindowServer()){return;} gDriver=new XGGemDriver(); XGApplication@ app=new XGApplication(); app.setDelegate(new C()); app.run(); }
