@@ -382,6 +382,19 @@ go/no-go, which decides whether binary `.so` distribution is even the model) is 
 cheap time. **Gate:** a native window with a custom-drawn view that reports a click,
 same neutral Xtg code path as GEM.
 
+> **DONE (2026-07-18).** `XGWin32Driver` realizes the full `XGViewDriver` protocol over
+> Win32/GDI: a shadow-tree structure model (the driver owns structure, as §6 requires —
+> no `OBJECT[]`), a `WndProc` whose `WM_PAINT` flows *backend → the neutral draw seam*
+> (`xtg_window_draw → treeDraw → xtg_userdraw → XGView.drawRect`, painting through
+> `XGGdiGraphics`), a `GWLP_USERDATA` reverse map, and a message pump. `make win32-real`
+> compiles the **actual** `XGWindow`/`XGView`/`XGViewTree` (not the seed's mini-toolkit)
+> for win64 and runs them under Wine: `drawRect` paints via GDI and an injected click
+> routes through the *same* `tree.hitTest` the GEM backend uses. The neutral layer now
+> **runs** on a second backend, not just compiles — the seed's gap list is closed
+> (structure relocated into the driver; `XGGraphics` is a swappable protocol; no GEM type
+> reaches the neutral layer). Files: `XGWin32.h.xt`, `XGGdiGraphics.xt`, `XGWin32Driver.xt`,
+> `test_win32_real.xt`. The one Win32-aware line in an app is `new XGWin32Driver()`.
+
 **Spike 2 — AppKit / Objective-C bridge** (the go/no-go on Mac-native). Drive
 `objc_msgSend` to open an `NSWindow` + `NSButton`, register a class with a callback
 IMP, receive a click into an xtc method; native on the dev Mac. *If it passes*, AppKit
