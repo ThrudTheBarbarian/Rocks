@@ -61,7 +61,8 @@ a swappable protocol, injecting the backend into `XGApplication`, and moving the
 string formats out of the neutral layer) is complete: `make win64-lib` gates it.
 
 **Stubbed / not yet done:** popup/dropdown control; per-window *distinct* menus (the app-level
-menu is realized per-window, which is the common case); horizontal scrolling; timers (`XGTimer`).
+menu is realized per-window, which is the common case); timers (`XGTimer`). Scrolling covers
+both axes.
 
 **Known issues:**
 - **#6 (blocks AppKit):** xtc has no way to link a system library that isn't a `#import <Lib>`
