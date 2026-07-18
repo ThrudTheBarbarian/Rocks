@@ -564,3 +564,21 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > is now the swappable protocol (XGGemGraphics is the GEM/VDI realization), drawRect(XGGraphics@ g)
 > is protocol-typed, and XGOutlineRow.drawRect calls super.drawRect(g, dirty) again — compiles,
 > full suite green. spikes/super-protocol-param.xt kept as a regression test. Closed here.
+
+
+> **[A9/Rocks] 2026-07-18** — Opened **issue #6** (feature request, not a bug): no way to link a
+> system library that isn't a `#import <Lib>` DWARF `.so`. This gates Spike 2 (the AppKit/ObjC
+> backend, doc/XTG-MULTIPLATFORM.md). The ObjC runtime is plain C ABI, so xtc *binds* it fine —
+> `pointer objc_getClass(u8@)`, `sel_registerName`, `objc_msgSend` all compile — but the native
+> arm64 link fails: `ld: _sel_registerName ... symbol(s) not found`. xtc auto-links a platform's
+> system libs (Win32 user32/gdi32/kernel32 for win64 — that's how the whole Win32 backend links;
+> libSystem for arm64) but not libobjc, and macOS keeps libobjc in the dyld shared cache, so there
+> is no `libobjc.so` with DWARF to put on `-L`. Repro: any xtc program that declares an objc extern
+> and calls it, `xtc -A arm64 x.xt -o x` (link error). `-lobjc` passed to xtc is not forwarded to
+> the clang link line, and there's no `-Xlinker`/`-framework`/env passthrough in `--help`.
+>
+> What would unblock it (any one): (a) a linker passthrough — `-Xlinker <arg>` or an
+> `XTC_LDFLAGS` env the clang link line honours; (b) `-framework <F>` / `-l<name>` forwarding on
+> native targets; or (c) letting `#import <Lib>` resolve a bare-symbols dylib (no DWARF) for link
+> only. (a) is the smallest and unblocks AppKit, Cocoa, and any macOS framework. NON-BLOCKING for
+> GEM + Win32 work, which continues; parking the AppKit spike until there's a way to link frameworks.
