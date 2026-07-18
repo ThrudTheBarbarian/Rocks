@@ -402,8 +402,21 @@ same neutral Xtg code path as GEM.
 > `XGApplication.run()` on Win32: a posted `WM_LBUTTONDOWN` travels `nextEvent` (the
 > message pump) → `dispatchEvent` → the window → `XGView.mouseDown`, and `WM_QUIT` ends
 > the loop. The neutral event loop — not just paint and hit-test — now runs on a second
-> backend. Remaining M1 work is breadth: the stock control set beyond button/label, and
-> the menu / field-editor driver ops (stubbed on Win32 today).
+> backend. The neutral event loop — not just paint and hit-test — now runs on a second
+> backend.
+>
+> **Also done: live controls, text editing, menus, and the §10 gate.** The Win32 driver
+> is no longer stubbed above paint/click. `make win32-field` types into a real
+> `XGTextField` through the message pump — `WM_CHAR → nextEvent → XGEventKeyDown →
+> XGTextField.keyDown → driver.editText`, the driver being the edit engine that `objc_edit`
+> is on GEM. `make win32-menu` builds an app-level `XGMenuBar` that the driver realizes as
+> a per-window `HMENU`; a pick fires `WM_COMMAND`, decoded to a neutral `XGEventMenuSelect`
+> and routed to the bound method — the same path GEM takes from `MN_SELECTED`. `make
+> win32-memgate` is the Win32 instance of the §10 gate: open/close N forms (window + button
+> + field), native-object counter **and** heap baseline both return to zero on the close()
+> and dealloc paths. **M1 is met on Win32** for button/label/field + menus; remaining
+> breadth is checkbox/radio/popup (new neutral controls, not yet in the toolkit) and
+> per-character field validation.
 
 **Spike 2 — AppKit / Objective-C bridge** (the go/no-go on Mac-native). Drive
 `objc_msgSend` to open an `NSWindow` + `NSButton`, register a class with a callback
