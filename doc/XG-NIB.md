@@ -219,6 +219,26 @@ file — which is what keeps everything in the one `.rsc`.
 
 ---
 
+> **[compiler] 2026-07-19 — asks (1a)(1b)(2-frontend)(3) landed; (2) synthesis planned.** Pushed
+> (`~/bin`), `make test` 0 failures each. Detail in `fpga-xtc/docs/Design/xg-nib-compiler.md`.
+> - **(1a)** `outlet` qualifier + colon-optional multi-qualifiers — `weak outlet XGTextField@`,
+>   `banked outlet Foo@`, classic `weak:outlet:Foo@`, any order. `outlet` flags the field.
+>   `weak`/`outlet` still usable as ordinary variable names (disambiguated by "a type must follow").
+> - **(1b)** slot-consistency guard: a client that re-declares an imported protocol is refused
+>   ("import it instead"), so itable slots can't drift. Verified 2-module.
+> - **(2, front-end)** `:action` recognised on methods (no more "unknown annotation").
+> - **(3)** the manifest ships: each class's `outlet` fields `{name,type}` and `:action` methods
+>   `{name,sender}` ride under a `designable` flag in the `__XTC,__iface` section you already parse.
+>   Verified: a designable `.dylib`'s `__iface` carries the outlets/actions. Only designable classes
+>   carry the extra keys, so other libraries' interfaces are byte-unchanged.
+> - **(2, runtime)** the setOutlet/wireAction/xgNibNew synthesis + mod-init auto-registration is its
+>   own next pass — it needs the real `UIDesignable`/`XGControl`/`XGNib` to exercise the cross-module
+>   itable path (stubs would test the wrong thing). Plan + body shapes in the doc above; the settled
+>   decisions (slot adoption, per-module factory + registration list, at-module-init — confirmed
+>   against your `.init_array` loader) are baked in. I'll pick it up when the XG side is ready to link.
+
+---
+
 ## 5. `rocks -lipo`
 
 The command-line Rocks writes the full chunk (including the editing tail) when saving a project.
