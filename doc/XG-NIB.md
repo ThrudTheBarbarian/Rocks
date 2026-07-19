@@ -102,9 +102,10 @@ Flow:
    `G_CHECKBOX -> XGCheckbox`, etc.).
 4. **Instantiate top-level objects**: per `topObjects` → `xgNibNew(className)`, into an `id ->`
    `Object@` map. Bind `space 2` to `owner`.
-5. **Wire connections**, resolving each `Ref`:
-   - OUTLET: `(XGNibReflectable@ ?)resolve(src)).nibSetValue(member, resolve(dst))`
-   - ACTION: `((XGControl@ ?)resolve(src)).setAction( (XGAction^)(resolve(dst) as reflectable).nibAction(member) )`
+5. **Wire connections**, resolving each `Ref` (both go through the `UIDesignable` protocol §4):
+   - OUTLET: `((UIDesignable@ ?)resolve(src)).setOutlet(member, resolve(dst))`  — `src.member = dst`
+   - ACTION: `((UIDesignable@ ?)resolve(dst)).wireAction(member, (XGControl@ ?)resolve(src))`  — the
+     target (`dst`) binds its named method to the source control's action
 6. Optional `owner.awakeFromNib(vt)` hook after wiring.
 7. Return the tree.
 
@@ -113,76 +114,83 @@ itself contains no per-app knowledge.
 
 ---
 
-## 4. The compiler contract  ← review this
+## 4. The compiler contract  ← settled with the compiler author, 2026-07-19
 
-Two annotations, adopting xtc's existing shapes (a field *qualifier* like `weak:`, a method
-*annotation* on the definition line):
+Two decorations, in xtc's existing shapes — a field *qualifier* and a method *annotation*:
 
 ```
-class SignupController : Object :nib          // class annotation: nib may construct + reflect it
+class SignupController : Object                 // <UIDesignable> is auto-applied (see below)
 {
-    weak: outlet: XGTextField@ nameField;     // an outlet (qualifier; composes with weak:)
-    outlet:       XGCheckbox@  subscribe;
+    weak outlet XGTextField@ nameField;         // qualifiers, colon-free; compose in any order
+    outlet      XGCheckbox@  subscribe;
 
-    void submit(XGControl@ sender) :action {  // an action target (annotation)
+    void submit(XGControl@ sender) :action {     // an action target
         ...
     }
 }
 ```
 
-- **`outlet:`** — a field qualifier. The field is a nib-settable outlet; its declared type is the
-  binding type. Composes with `weak:` (outlets are frequently weak).
-- **`:action`** — a method annotation. The method is a nib action target. Constraint: `void` return,
-  exactly one object parameter (the sender). (Different toolkit senders — `XGControl@`,
-  `XGMenuItem@` — are ABI-identical, one pointer; see the erasure note below.)
-- **`:nib`** — a class annotation: the loader may construct this class by name and reflect it.
-  Classes that are only ever File's Owner (app-constructed) still get reflected because they carry
-  `outlet:`/`:action`; `:nib` additionally allows *nib construction*. Every wired class carries it.
+- **`outlet`** — a field qualifier, exactly like `weak`. Compiler change (in flight): it becomes a
+  qualifier, and multiple qualifiers no longer need the trailing `:` (which got hard to scan past
+  one). Both `weak outlet Object@ p;` and `weak:outlet:Object@ p;` are accepted.
+- **`:action`** — a method annotation, as written. `void` return, one object parameter (the sender).
+- **No class annotation.** xtc has no class annotations yet, and doesn't need one here: a class that
+  declares any `outlet`/`action` member **auto-conforms to the `UIDesignable` protocol** (below) —
+  the compiler adds the conformance and fills the bodies. `: Object <UIDesignable>` written by hand
+  is equivalent; the auto-apply is just so app code carries no boilerplate.
 
-### What xtc emits
+### `UIDesignable` — the runtime binding protocol
 
-**(a) A design-time manifest** — the reflectable surface, machine-readable, emitted beside the
-`.so` (a sidecar text/JSON, or a named section — your call). Per `:nib` class: its name, its
-outlets `(name, declared-type)`, its actions `(name, sender-type)`. Rocks reads this to populate
-the connection palette and to *validate every wire at save time* (an outlet typed `XGButton@`
-cannot be dropped on a label; an action name must exist). This is where a renamed member is caught
-in the Rocks/build step, replacing the app-compile error the generated-code approach would have
-given.
-
-**(b) Runtime binding hooks** — so the generic loader binds by name against a live `Object@`. The
-cleanest shape is a compiler-known protocol that xtc **auto-conforms** `:nib` classes to, filling
-the bodies from the annotations:
+The generic loader binds by name against a live `Object@` cast to this protocol. The compiler
+generates both bodies from the decorations:
 
 ```
-typedef pointer XGBoundMethod;            // erased (receiver, code); cast to the concrete action^
-protocol XGNibReflectable {
-    bool          nibSetValue(u8@ outlet, Object@ value);   // checked-cast assign; false if unknown/mismatch
-    XGBoundMethod nibAction(u8@ name);                      // the :action method bound to self, or 0
+protocol UIDesignable {
+    // Assign a named `outlet` field with a CHECKED cast.  false = unknown name or type mismatch,
+    // so a bad wire is a soft no-op, never a smash.
+    bool setOutlet(u8@ name, Object@ value);
+    // Bind the named `:action` method to a control's action, IN this method.  false = unknown name.
+    bool wireAction(u8@ name, XGControl@ control);
 }
 ```
 
-Generated `nibSetValue` is a switch over the `outlet:` fields doing a **checked** assignment
-(`field = (DeclaredType@ ?)value`), returning false on an unknown name or a failed cast — so a
-type-wrong wire that slipped past Rocks is a soft failure, not a smash. Generated `nibAction` is a
-switch over the `:action` methods returning `&self.method` erased to `XGBoundMethod`. Plus one
-global:
+Generated `setOutlet` is a switch over the outlets: `field = (DeclaredType@ ?)value; return field
+!= 0 || value == 0;`. Generated `wireAction` is a switch over the actions: `control.setAction(&self
+.method); return true;`. Plus one generated global for construction:
 
 ```
-Object@ xgNibNew(u8@ className);          // construct a :nib class by name; 0 if unknown
+Object@ xgNibNew(u8@ className);          // construct a UIDesignable class by name; 0 if unknown
 ```
 
-### The two decisions I need from you
+**Why `wireAction` binds instead of returning the bound method.** I tried the obvious
+`actionNamed(name) -> Act^` and an `Act^@` out-param (your "bound methods are first-class"). Result,
+verified on arm64: a bound method works perfectly **as a local value** — `Act^ a = &self.onOK;
+a(sender)` runs with the receiver captured — but a `T^` **return type doesn't parse**
+(`Unexpected token 'void'`), and a `T^@` **reference out-param compiles then SIGBUSes** (the fat
+`(receiver, code)` value doesn't round-trip through the reference). So the working shape is to keep
+the bound method a local: `wireAction` creates `&self.onOK` and hands it straight to
+`control.setAction(...)` inside the method — no return, no reference. If you later make `T^`
+returns parse, `actionNamed -> Act^` becomes a cleaner option, but `wireAction` needs nothing new
+and is arguably tidier (the designable object wires *itself*).
 
-1. **`XGBoundMethod` representation.** All toolkit action types are `void(SomeObject@)^` — one
-   pointer sender, ABI-uniform — so a bound `:action` method erases to the same `(receiver, code)`
-   pair regardless of declared sender type. I've written it as an opaque `pointer` the loader casts
-   to `XGAction^`/`XGMenuAction^`. If xtc's bound-method value is already a first-class movable
-   type, expose *that* as the return instead and we skip the cast. Either works; I need to know
-   which so `setAction` on the loader side is written correctly.
-2. **Auto-conformance vs declared.** I'd prefer xtc auto-conform a class to `XGNibReflectable`
-   the moment it sees `outlet:`/`:action` (no boilerplate in app code). If you'd rather the
-   developer write `: Object <XGNibReflectable>` and xtc only *fills the bodies*, that's fine too —
-   say which and I'll match the loader.
+### The design-time manifest — a DWARF section, not a companion file
+
+Rocks needs the reflectable surface (which classes are designable, their outlets `(name, type)`,
+their actions `(name, sender-type)`) to offer connections and validate every wire at save time — an
+outlet typed `XGButton@` can't be dropped on a label; a renamed method drops the wire on the next
+save. Per your call, this rides in a **custom DWARF section in the `.so`** (no sidecar), so the
+library stays one self-describing file — the same DWARF Rocks already parses for types. A wire that
+references a member the current `.so` no longer has is caught in the Rocks/build step (which the
+command-line Rocks runs), the data-driven equivalent of the compile error we'd have got from
+generated code.
+
+**Net asks to the compiler**, smallest first:
+1. `outlet` as a qualifier + colon-free multi-qualifier syntax. *(you have this in flight)*
+2. Auto-conform any class with `outlet`/`action` members to `UIDesignable`, generating `setOutlet`
+   / `wireAction` / the `xgNibNew` arm from the decorations.
+3. Emit the design-time manifest into a named DWARF section.
+4. *(optional, later)* make `T^` a legal return type so `actionNamed` becomes available — not
+   needed for v1.
 
 Nothing here is dynamic reflection: every name in `nibSetValue`/`nibAction`/`xgNibNew` resolves to
 a member the compiler validated at its declaration, so a typo is a compile error at the source, and
