@@ -1,0 +1,15 @@
+#import <Stdio.xt>
+struct NSRange { pointer location; pointer length; }
+pointer objc_getClass(u8@ name);
+pointer sel_registerName(u8@ name);
+pointer objc_msgSend(pointer self, pointer sel, pointer a);
+typedef NSRange RangeMsg(pointer self, pointer sel, pointer a);   // struct-return messenger
+void main(void) {
+    pointer NSString = objc_getClass((u8@)"NSString");
+    pointer hay = objc_msgSend(NSString, sel_registerName((u8@)"stringWithUTF8String:"), (pointer)"hello world");
+    pointer nee = objc_msgSend(NSString, sel_registerName((u8@)"stringWithUTF8String:"), (pointer)"world");
+    RangeMsg@ mr = (RangeMsg@)&objc_msgSend;
+    NSRange r = mr(hay, sel_registerName((u8@)"rangeOfString:"), nee);
+    Stdio.printf("rangeOfString('world') in 'hello world' = {loc=%d, len=%d}  (expect {6, 5})\n",
+                 (i32)r.location, (i32)r.length);
+}

@@ -640,3 +640,25 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > registering a custom class with an IMP that's an xtc function (objc_allocateClassPair /
 > class_addMethod for the view's draw + the action target), and struct-return messages (NSRect
 > frames) — but those are backend work, not toolchain blockers.  Closed here.
+
+
+> **[A9/Rocks] 2026-07-19** — Opened **issue #8** (follow-on to #6, for the AppKit backend): can't
+> get a struct-by-value out of `objc_msgSend`.  On arm64 `objc_msgSend` is one symbol with many
+> signatures, so the C way to call it for an `NSRect`/`NSRange`-returning selector is to cast a
+> fn-pointer to the struct-returning prototype.  That cast — `(RangeMsg@)&objc_msgSend` — dies at
+> LINK, not compile:
+>
+>     ld: fixup error (kind=arm64_adrp_lo12) ... target '_objc_msgSend' does not have address
+>
+> Root cause: taking the **address of a dyld-shared-cache function** emits a direct ADRP/ADD
+> (assumes a link-time address); a dylib symbol has none until bound, so `&<external-fn>` must go
+> through the GOT/stub. #6 fixed the *call* path; the *address-of* path still assumes local. Repro:
+> `spikes/objc-struct-return.xt` (`xtc -A arm64 -framework Foundation`).  A local-function address
+> works (the trampoline spike), so it's specifically external symbols.
+>
+> Either fix unblocks it: (a) route `&<external-fn>` through the GOT so the cast trick links, or
+> (b) let the same extern symbol carry a second, struct-returning signature (so `NSRect
+> objc_msgSend(...)` can be declared and called with the x0:x1 / x8-indirect convention xtc picks
+> from the return type). This gates struct-by-value messages — `NSView.frame` (returns NSRect),
+> `-setFrame:` (takes one) — so it's the next thing before a real AppKit view driver, but NOT a
+> Spike-2 blocker: the scalar/pointer bridge is proven (#6), and a driver tracks its own geometry.
