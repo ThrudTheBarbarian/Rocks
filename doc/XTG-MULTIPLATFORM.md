@@ -448,6 +448,13 @@ unaffected (Spike 1 already proved a non-GEM driver).
 > so **struct-by-value never crosses into xtc** and the driver is unblocked *today*. #8 remains a
 > cleanup (drive `objc_msgSend` structs directly, no shim), not a prerequisite. Spike 2 is not merely
 > GO — its hardest loop (window → custom view → xtc `drawRect:` → xtc paint) is working code.
+>
+> **Both halves of the loop now run.** Output is `spikes/appkit-drawrect.*` (above). Input is
+> `spikes/appkit-action.*`: an `NSButton` with a target/action wired to an xtc function — AppKit
+> sends the action into xtc on `performClick:` (headless, no user). So the two things a UI backend
+> must do — *paint on demand* and *deliver input* — both dispatch into xtc across the ObjC boundary.
+> What's left for a real `XGViewDriver` is engineering (map XG's driver seam onto these shim calls,
+> integrate the run loop), not risk: every mechanism it depends on is demonstrated working code.
 
 **M1 — the stock control set on one host.** `button/label/field/checkbox/radio/popup`
 via `create(kind)`, target/action firing, `setText`/`setEnabled`. **Gate:** a form

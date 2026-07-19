@@ -1,0 +1,33 @@
+// Build: cc -c appkit-action-shim.m -o shim.o
+//        xtc -A arm64 appkit-action.xt -Xlinker shim.o -framework Cocoa -o demo
+// Input half of the AppKit backend: NSButton target/action dispatched into an xtc function.
+// Proven 2026-07-19 (performClick:, headless): AppKit sends the button action into xtc.
+
+#import <Stdio.xt>
+void    xg_init(void);
+void    xg_set_action_cb(pointer cb);
+pointer xg_make_target(void);
+pointer xg_make_button(i32 w, i32 h);
+void    xg_wire_button(pointer btn, pointer target);
+void    xg_click(pointer btn);
+
+i32 gClicks;
+// The xtc action target — runs when AppKit sends the button's action.
+void onClick(pointer self, pointer sender) {
+    gClicks = gClicks + (i32)1;
+    Stdio.printf("  -> xtc action: onClick self=%s sender=%s\n",
+        self!=(pointer)0?(u8@)"ok":(u8@)"null", sender!=(pointer)0?(u8@)"button":(u8@)"nil");
+}
+void main(void) {
+    gClicks = (i32)0;
+    xg_init();
+    xg_set_action_cb((pointer)&onClick);
+    pointer target = xg_make_target();
+    pointer btn    = xg_make_button((i32)80, (i32)24);
+    xg_wire_button(btn, target);
+    Stdio.printf("target=%s button=%s; sending performClick:...\n",
+        target!=(pointer)0?(u8@)"ok":(u8@)"null", btn!=(pointer)0?(u8@)"ok":(u8@)"null");
+    xg_click(btn);                                  // -> AppKit -> onClick: -> xtc
+    Stdio.printf("action fired %d time(s) -> %s\n", gClicks,
+        gClicks>(i32)0?(u8@)"PASS: AppKit sent a button action into xtc":(u8@)"FAIL");
+}
