@@ -184,19 +184,38 @@ references a member the current `.so` no longer has is caught in the Rocks/build
 command-line Rocks runs), the data-driven equivalent of the compile error we'd have got from
 generated code.
 
-**Net asks to the compiler**, smallest first:
-1. `outlet` as a qualifier + colon-free multi-qualifier syntax. *(you have this in flight)*
-2. Auto-conform any class with `outlet`/`action` members to `UIDesignable`, generating `setOutlet`
-   / `wireAction` / the `xgNibNew` arm from the decorations.
-3. Emit the design-time manifest into a named DWARF section.
-4. *(optional, later)* make `T^` a legal return type so `actionNamed` becomes available — not
-   needed for v1.
+**Net asks to the compiler**, smallest first (all settled with the compiler author 2026-07-19):
+1. `outlet` as a qualifier + colon-free multi-qualifier syntax. *(in flight)*
+2. A **redeclaration guard**: register an imported protocol in the client's type scope so a local
+   `protocol UIDesignable {…}` is refused ("redeclares imported protocol; import it instead") —
+   makes the single-declaration/slot-consistency rule (#1) hold by construction.
+3. Auto-conform any class with `outlet`/`action` members to `UIDesignable`, generating `setOutlet`
+   / `wireAction` and a per-module `xgNibNew` factory from the decorations.
+4. Auto-register each module's factory via a per-module `.init_array` entry calling
+   `XGNib.registerObjectFactory(&xgNibNew)` — app-invisible. The XTOS loader already runs
+   `.init_array` deps-first before entry (`xtld_run_init`), so arm9 needs no loader work; native
+   uses `__mod_init_func` / `.init_array` under dyld. (Explicit registration is the fallback the
+   loader also supports.)
+5. Emit the design-time manifest into a named DWARF section.
+6. **#9 — an `Object@` ↔ protocol bridge** (runtime downcast `(P@ ?)Object@` + `P@`→`Object@`
+   upcast). With it, the two factories collapse to one `xgNibNew(name) -> Object@` and the v1
+   restrictions (below) lift. *(optional for v1)*  ·  (Also optional: `T^` return types, which
+   would make an `actionNamed` shape available instead of `wireAction`.)
 
-Nothing here is dynamic reflection: every name in `nibSetValue`/`nibAction`/`xgNibNew` resolves to
-a member the compiler validated at its declaration, so a typo is a compile error at the source, and
-a stale *wire* is caught by Rocks against manifest (a). It's the minimum metadata that lets one
-generic loader replace a per-app generated wiring file — which is what keeps everything in the one
-`.rsc`.
+**Implemented (2026-07-19)** — the runtime side is done and proven end to end (`test_nib.xt`): the
+RSC engine writes/reads the XGNB chunk, `rscload_nib_*` exposes it, and `XGNib.loadWired` /
+`loadWiredMem` build a wired tree through `UIDesignable` + the registered factories. Hand-written
+conformance/factory stand-ins fill in for the compiler-generated bits; the test loads a nib,
+binds an outlet, and fires an action. **v1 restrictions** (until #9): an outlet *owner* / action
+*target* is `owner` or a top-level object (both `UIDesignable` already), and an outlet *value* is
+a view — the common shape (a controller owns outlets and is the action target; controls are the
+sources). A designable *view* in an owner/target role, or a top-level object as an outlet value,
+awaits #9.
+
+Nothing here is dynamic reflection: every name resolves to a member the compiler validated at its
+declaration, so a typo is a compile error, and a stale *wire* is caught by Rocks against the DWARF
+manifest. It's the minimum metadata that lets one generic loader replace a per-app generated wiring
+file — which is what keeps everything in the one `.rsc`.
 
 ---
 
