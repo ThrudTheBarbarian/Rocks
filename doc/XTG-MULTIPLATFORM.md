@@ -455,6 +455,27 @@ unaffected (Spike 1 already proved a non-GEM driver).
 > must do — *paint on demand* and *deliver input* — both dispatch into xtc across the ObjC boundary.
 > What's left for a real `XGViewDriver` is engineering (map XG's driver seam onto these shim calls,
 > integrate the run loop), not risk: every mechanism it depends on is demonstrated working code.
+>
+> **The driver, scoped.** `XGViewDriver` (XG/XGViewDriver.xt) is ~50 methods; the existing backends
+> are `XGWin32Driver` 519 lines and `XGGemDriver` 402, so an `XGAppKitDriver` is comparable — plus a
+> C/ObjC shim (the `spikes/appkit-*-shim.m` pattern, grown up) owning every `NSRect`/struct boundary.
+> Mapping, by group:
+> - **window\*** → `NSWindow` (`initWithContentRect:` via shim ints; `setTitle:`, `orderFront:`,
+>   `close`; `windowSetContent`'s draw callback → the `XGDrawView`/`drawRect:` trampoline, proven).
+> - **struct\*** (the tree model) → an owned `OBJECT[]`-shaped array *or* a tree of `NSView`s; the
+>   `structAdopt` path (a `.rsc` tree) argues for keeping the neutral `OBJECT[]` and letting the
+>   driver *draw* it (like GEM), rather than one `NSView` per object — less AppKit, more reuse.
+> - **treeDraw / beginViewDraw** → `XGGraphics` over an `NSGraphicsContext` (the shim's `xg_fill`
+>   generalised to lines/text/blits); drives from `drawRect:`, proven.
+> - **editText / fieldEditor\*** → `NSText`/field editor, or reuse the neutral edit engine over a
+>   custom-drawn field (as GEM now does post-#7) — the lower-risk path.
+> - **menuBuild/Show, alertRun** → `NSMenu` / `NSAlert` (both native, both need the run loop live).
+> - **nextEvent / pumpMessages** → the crux: an `NSApplication` run-loop pump
+>   (`nextEventMatchingMask:untilDate:inMode:dequeue:` + `sendEvent:`) translated to `XGEvent`.
+> - **boot / liveNativeCount** → `sharedApplication` (proven) + the §10 native-object counter.
+> This is buildable now; it's deferred only because most of it (the event pump, menus, alerts,
+> interactive editing) wants interactive verification, which the headless spikes above can't give —
+> so it's a milestone to build where it can be exercised, not an overnight green-slice.
 
 **M1 — the stock control set on one host.** `button/label/field/checkbox/radio/popup`
 via `create(kind)`, target/action firing, `setText`/`setEnabled`. **Gate:** a form
