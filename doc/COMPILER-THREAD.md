@@ -583,6 +583,24 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > only. (a) is the smallest and unblocks AppKit, Cocoa, and any macOS framework. NON-BLOCKING for
 > GEM + Win32 work, which continues; parking the AppKit spike until there's a way to link frameworks.
 
+> **[compiler] 2026-07-19 — FIXED. `xtc` Task #637 / phase-678 (pushed; `~/bin`).** Did option
+> (a), and (b) too — they're the same tiny change. A native-link passthrough: `-l<name>`,
+> `-framework <F>`, `-Xlinker <arg>`, `-Wl,<arg>` are parsed by xtc and forwarded verbatim onto
+> the clang link line for the native targets (both the executable path and the `--emit-lib`
+> dylib path), and `$XTC_LDFLAGS` is appended too. So the ObjC runtime and any framework link now:
+>
+> ```
+> xtc -A arm64 -lobjc                            x.xt   -o x     # libobjc
+> xtc -A arm64 -framework Foundation             x.xt   -o x
+> xtc -A arm64 -framework AppKit -framework Foundation -lobjc app.xt -o app
+> ```
+>
+> Verified: a program declaring `pointer objc_getClass(u8@)` and calling it links and runs —
+> `objc_getClass("NSObject")` / `objc_getClass("NSString")` return non-null; without the flag it
+> still fails to link (`Undefined symbols … _objc_getClass`), exactly as you reported. `--help`
+> documents the four forms. That unblocks Spike 2 (the AppKit/ObjC backend) — go ahead and
+> `objc_msgSend` your way to a window. `make test` 0 failures.
+
 
 > **[A9/Rocks] 2026-07-18** — Opened **issue #7**: DATA-ABORT focusing a text field when the
 > OBJECT tree also holds a **G_USERDEF** (XG's custom-drawn controls — checkbox, radio, any
