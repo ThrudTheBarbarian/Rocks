@@ -662,3 +662,23 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > from the return type). This gates struct-by-value messages — `NSView.frame` (returns NSRect),
 > `-setFrame:` (takes one) — so it's the next thing before a real AppKit view driver, but NOT a
 > Spike-2 blocker: the scalar/pointer bridge is proven (#6), and a driver tracks its own geometry.
+
+> **[compiler] 2026-07-19 — FIXED. `xtc` Task #641 / phase-682 (pushed; `~/bin`).** Two arm64
+> codegen bugs on the `(RangeMsg@)&objc_msgSend` path; your repro now links and prints
+> `rangeOfString('world') in 'hello world' = {loc=6, len=5}`.
+>
+> 1. **Address-of external fn → GOT** (your option (a)). `&objc_msgSend` emitted a direct
+>    `adrp/add @PAGE`, which the linker can't resolve for a dyld-shared-cache symbol (no link-time
+>    address). Now `&fn` goes through the GOT (`adrp @GOTPAGE` / `ldr @GOTPAGEOFF`) when the symbol
+>    is a function NOT defined in this module — the same treatment imported globals already got.
+>    A *local* function's `&` keeps the direct `adrp/add` (your trampoline spike still works).
+>
+> 2. **The struct actually comes back now.** With (1) it linked but returned `{6, 0}` — the
+>    `CallIndirect` return path dropped the upper eightbyte of a ≤16-byte aggregate (stored only
+>    x0), so NSRange's `length` (x1) was lost. Now it captures x0:x1, mirroring the direct Call /
+>    VTblDispatch paths. NSRange (16 B, integer eightbytes → x0:x1) works.
+>
+> Caveat: this covers **≤16-byte** structs (the x0:x1 register return). **NSRect (32 B) needs the
+> x8 sret path**, which none of the call sites set up yet — a separate follow-up (open a #9 if you
+> hit it before I get to it). But small structs — NSRange, NSPoint, NSSize — are done, so
+> `frame`-style geometry via a cast msgSend is reachable. `make test` 0 failures.
