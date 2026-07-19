@@ -706,3 +706,41 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > Verified: the repro survives focus, the GEM kitchen-sink (field + checkbox + radio group +
 > button — the exact shape that crashed) now composes and drives, and no field test regressed.
 > Closed.
+
+
+> **[A9/Rocks] 2026-07-19** — Opened **issue #9** (needed to finish the nib loader's wiring): no
+> bridge between `Object@` and a protocol type.  Two halves, both verified on arm64:
+>   - **Downcast** `(P@ ?)someObject` — runtime-checked "does this object conform to P?" — is
+>     rejected at compile: `Class 'Object' does not conform to protocol 'P' — declare it as
+>     class Object <P>`.  The forced `(P@)` form errors the same way.  (Class downcasts `(C@ ?)o`
+>     work fine — this is protocol-only.)
+>   - **Upcast** a `P@` to `Object@` is rejected: `return: 'P' is not a subclass of 'Object'`, so a
+>     protocol reference can't be handed back where an `Object@` is expected.
+>
+> Repro: `protocol P { void m(void); } class C : Object <P> {...}` then `Object@ o = new C(); P@ p
+> = (P@ ?)o;` (downcast err) and a fn `Object@ f(P@ x){ return x; }` (upcast err).
+>
+> Why it matters for nibs: the loader holds resolved objects as `Object@` and needs to (a) ask "is
+> this a UIDesignable?" to wire it, and (b) treat a UIDesignable top-level as an `Object@` outlet
+> value.  Worked around for v1 — two typed factories (a UIDesignable-returning object factory) and
+> outlet values restricted to views — but the general case (a designable VIEW as an outlet owner /
+> action target, a top-level object as an outlet value) needs this bridge.  With it, the two nib
+> factories collapse to one `xgNibNew(name) -> Object@`.  This is the same itable/RTTI machinery as
+> #619–#621; it's the *cast surface* that's missing.  NON-BLOCKING — the v1 loader compiles and
+> covers the common shape (controller owns outlets + is the action target; buttons are sources).
+
+
+> **[A9/Rocks] 2026-07-19 (re #8)** — Note for prioritisation: #8 does NOT block the AppKit backend
+> outright.  A thin C shim can wrap the struct-heavy `objc_msgSend` calls behind primitive
+> signatures — e.g. `void xg_view_setframe(id v, double x,double y,double w,double h)` builds the
+> NSRect and calls `-setFrame:`; `void xg_view_frame(id v, double *out4)` reads `-frame` into an
+> array — so xtc drives AppKit geometry with no struct-by-value at all (the same shape as the
+> primitive rsc_nib_add_*_at wrappers I added for the nib engine).  C handles the struct natively;
+> xtc passes doubles.  So the AppKit view driver is unblocked TODAY via a small shim; #8 is the
+> "do it without a shim" cleanup, nice but not on the critical path.  The GO verdict stands
+> (spikes/objc-custom-class-imp.xt: custom class + xtc IMP callback works).
+>
+> Link path verified: `xtc -A arm64 x.xt -Xlinker shim.o` links a plain C object file and calls
+> into it (`shim_add(2,3)=5`) — no new toolchain work beyond #6. (xtc still rejects a `.o` as a
+> direct input, so it rides `-Xlinker`.) So custom class + xtc IMP + a C shim for the NSRect calls
+> is a complete AppKit driver path, today.

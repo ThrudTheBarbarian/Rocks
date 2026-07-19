@@ -1,0 +1,3 @@
+#import <Stdio.xt>
+i32 shim_add(i32 a, i32 b);
+void main(void) { Stdio.printf("shim_add(2,3)=%d\n", shim_add((i32)2,(i32)3)); }
