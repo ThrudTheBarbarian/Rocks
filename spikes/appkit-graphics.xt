@@ -1,0 +1,34 @@
+// Build: cc -c appkit-graphics-shim.m -o shim.o
+//        xtc -A arm64 appkit-graphics.xt -Xlinker shim.o -framework Cocoa -o demo
+// The XGGraphics/treeDraw seam, verifiable headless: xtc drives AppKit fill/stroke/text into an
+// offscreen NSBitmapImageRep, then reads pixels back to confirm the drawing landed.
+// Proven 2026-07-19: fill@(20,20) reads the exact red; the blue stroke lands on the diagonal.
+// (Note: colorAtX:y: is top-left-origin while the bitmap context is y-up, so a drawn diagonal
+//  reads back as the anti-diagonal — sample accordingly.)
+
+#import <Stdio.xt>
+pointer xg_gfx_begin(i32 w, i32 h);
+void    xg_gfx_fill(i32 x, i32 y, i32 w, i32 h, i32 r, i32 g, i32 b);
+void    xg_gfx_line(i32 x1, i32 y1, i32 x2, i32 y2, i32 r, i32 g, i32 b);
+void    xg_gfx_text(i32 x, i32 y, u8@ s, i32 r, i32 g, i32 b);
+void    xg_gfx_end(void);
+i32     xg_gfx_pixel(pointer rep, i32 x, i32 y);
+
+bool isRed(i32 px)  { return ((px>>(i32)16)&(i32)$FF)>(i32)150 && ((px>>(i32)8)&(i32)$FF)<(i32)100 && (px&(i32)$FF)<(i32)100; }
+bool isBlue(i32 px) { return (px&(i32)$FF)>(i32)150 && ((px>>(i32)16)&(i32)$FF)<(i32)100 && ((px>>(i32)8)&(i32)$FF)<(i32)100; }
+
+void main(void) {
+    pointer rep = xg_gfx_begin((i32)100, (i32)100);
+    xg_gfx_fill((i32)0, (i32)0, (i32)100, (i32)100, (i32)220, (i32)40, (i32)40);  // red fill
+    xg_gfx_line((i32)0, (i32)0, (i32)99, (i32)99, (i32)0, (i32)0, (i32)255);      // blue diagonal
+    xg_gfx_text((i32)5, (i32)80, (u8@)"XG", (i32)0, (i32)0, (i32)0);              // text (exercise)
+    xg_gfx_end();
+    i32 pFill = xg_gfx_pixel(rep, (i32)20, (i32)20);   // off the diagonal -> the fill
+    i32 pLine = xg_gfx_pixel(rep, (i32)50, (i32)50);   // on the diagonal -> the line
+    Stdio.printf("fill@(20,20)=R%d/G%d/B%d  line@(50,50)=R%d/G%d/B%d\n",
+        (pFill>>(i32)16)&(i32)$FF,(pFill>>(i32)8)&(i32)$FF,pFill&(i32)$FF,
+        (pLine>>(i32)16)&(i32)$FF,(pLine>>(i32)8)&(i32)$FF,pLine&(i32)$FF);
+    bool ok = isRed(pFill) && isBlue(pLine);
+    Stdio.printf("%s\n", ok ? (u8@)"PASS: xtc drove AppKit fill + stroke; pixel readback confirms both landed"
+                            : (u8@)"FAIL");
+}
