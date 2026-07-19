@@ -424,6 +424,19 @@ IMP, receive a click into an xtc method; native on the dev Mac. *If it passes*, 
 is a committed backend; *if not*, macOS uses a draw-everything fallback — the seam is
 unaffected (Spike 1 already proved a non-GEM driver).
 
+> **VERDICT: GO (2026-07-19).** The two hard bridge mechanisms are proven from xtc, native on
+> arm64: **linking** (`xtc -A arm64 -framework Foundation` after COMPILER-THREAD #6 —
+> `[[NSString stringWithUTF8String:] length]` == 5) and, the crux, **a custom ObjC class whose
+> method IMP is an xtc function** — `objc_allocateClassPair` + `class_addMethod(&xtcFn, "v@:")` +
+> `objc_registerClassPair`, then `objc_msgSend(inst, greet)` dispatches *into the xtc code*
+> (`spikes/objc-custom-class-imp.xt`). That is the AppKit analogue of the Win32 WndProc / the GEM
+> G_USERDEF callback: an `NSView` subclass whose `drawRect:` and action targets are xtc functions.
+> So a real AppKit `XGViewDriver` is feasible. The one remaining gate for a *view* driver is
+> COMPILER-THREAD #8 (struct-by-value through `objc_msgSend` — `NSRect` for `frame`/`setFrame:`
+> geometry); a driver that tracks its own frames minimises the surface, but positioning `NSView`s
+> needs it, so the full driver waits on #8. Everything else — class registration, dispatch,
+> callbacks — is in hand.
+
 **M1 — the stock control set on one host.** `button/label/field/checkbox/radio/popup`
 via `create(kind)`, target/action firing, `setText`/`setEnabled`. **Gate:** a form
 with live controls, driven by injected events, same source as the GEM form (+ memory

@@ -1,0 +1,24 @@
+#import <Stdio.xt>
+pointer objc_getClass(u8@ name);
+pointer sel_registerName(u8@ name);
+pointer objc_msgSend(pointer self, pointer sel);
+pointer objc_allocateClassPair(pointer super, u8@ name, u32 extra);
+void    objc_registerClassPair(pointer cls);
+i32     class_addMethod(pointer cls, pointer sel, pointer imp, u8@ types);
+
+i32 gRan;
+// An xtc function used as an ObjC method IMP: (id self, SEL _cmd).
+void greetIMP(pointer self, pointer sel) { gRan = gRan + (i32)1; Stdio.printf("  IMP ran (xtc code), self=%s\n", self != (pointer)0 ? "obj":"nil"); }
+
+void main(void) {
+    pointer NSObject = objc_getClass((u8@)"NSObject");
+    pointer cls = objc_allocateClassPair(NSObject, (u8@)"XGProbeClass", (u32)0);
+    Stdio.printf("allocated class = %s\n", cls != (pointer)0 ? "ok":"NULL");
+    i32 added = class_addMethod(cls, sel_registerName((u8@)"greet"), (pointer)&greetIMP, (u8@)"v@:");
+    Stdio.printf("class_addMethod = %d\n", added);
+    objc_registerClassPair(cls);
+    pointer inst = objc_msgSend(objc_msgSend(cls, sel_registerName((u8@)"alloc")), sel_registerName((u8@)"init"));
+    Stdio.printf("instance = %s; sending greet...\n", inst != (pointer)0 ? "ok":"NULL");
+    objc_msgSend(inst, sel_registerName((u8@)"greet"));   // ObjC dispatch -> our xtc IMP
+    Stdio.printf(gRan == (i32)1 ? "PASS: ObjC called back into an xtc IMP\n" : "FAIL\n");
+}
