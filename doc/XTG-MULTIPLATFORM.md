@@ -449,10 +449,14 @@ unaffected (Spike 1 already proved a non-GEM driver).
 > cleanup (drive `objc_msgSend` structs directly, no shim), not a prerequisite. Spike 2 is not merely
 > GO — its hardest loop (window → custom view → xtc `drawRect:` → xtc paint) is working code.
 >
-> **Both halves of the loop now run.** Output is `spikes/appkit-drawrect.*` (above). Input is
-> `spikes/appkit-action.*`: an `NSButton` with a target/action wired to an xtc function — AppKit
-> sends the action into xtc on `performClick:` (headless, no user). So the two things a UI backend
-> must do — *paint on demand* and *deliver input* — both dispatch into xtc across the ObjC boundary.
+> **Both halves of the loop now run, and the paint vocabulary is pixel-verified.** Three spikes:
+> - `spikes/appkit-drawrect.*` — the *draw callback*: a custom `NSView`'s `drawRect:` is an xtc function.
+> - `spikes/appkit-action.*` — *input*: an `NSButton` target/action fires into xtc on `performClick:`.
+> - `spikes/appkit-graphics.*` — the *drawing vocabulary*: xtc drives fill/stroke/text into an offscreen
+>   `NSBitmapImageRep`, and pixel readback confirms it landed (fill@(20,20) reads the exact red asked
+>   for). This is the one draw-path piece that's fully headless-verifiable, and it is.
+> So the three things a UI backend must do — *paint on demand*, *have something to paint with*, and
+> *deliver input* — all dispatch into xtc across the ObjC boundary, as working code.
 > What's left for a real `XGViewDriver` is engineering (map XG's driver seam onto these shim calls,
 > integrate the run loop), not risk: every mechanism it depends on is demonstrated working code.
 >
