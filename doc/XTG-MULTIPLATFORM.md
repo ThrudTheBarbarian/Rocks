@@ -436,6 +436,18 @@ unaffected (Spike 1 already proved a non-GEM driver).
 > geometry); a driver that tracks its own frames minimises the surface, but positioning `NSView`s
 > needs it, so the full driver waits on #8. Everything else — class registration, dispatch,
 > callbacks — is in hand.
+>
+> **UPGRADE: the full view+draw path now RUNS (2026-07-19).** Not just the primitives — the actual
+> AppKit driver core is demonstrated end to end (`spikes/appkit-drawrect.xt` + `-shim.m`). A custom
+> `NSView` subclass (`XGDrawView`) is registered, made the window's `contentView`, and *drawn*; AppKit's
+> own draw machinery calls `drawRect:` **into an xtc function** (registered as `&myDraw`), which then
+> **paints** via a drawing primitive — verified headless via an offscreen bitmap cache
+> (`cacheDisplayInRect:toBitmapImageRep:`), so it needs no visible window or run loop. This also
+> dissolves the #8 caveat: a thin ObjC shim owns the `NSRect` boundary (`drawRect:`'s rect is absorbed
+> by a C trampoline and handed to xtc as `x,y,w,h` primitives; `initWithFrame:`/`setFrame:` take ints),
+> so **struct-by-value never crosses into xtc** and the driver is unblocked *today*. #8 remains a
+> cleanup (drive `objc_msgSend` structs directly, no shim), not a prerequisite. Spike 2 is not merely
+> GO — its hardest loop (window → custom view → xtc `drawRect:` → xtc paint) is working code.
 
 **M1 — the stock control set on one host.** `button/label/field/checkbox/radio/popup`
 via `create(kind)`, target/action firing, `setText`/`setEnabled`. **Gate:** a form

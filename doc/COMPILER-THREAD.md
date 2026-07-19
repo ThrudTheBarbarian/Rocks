@@ -744,3 +744,9 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > into it (`shim_add(2,3)=5`) — no new toolchain work beyond #6. (xtc still rejects a `.o` as a
 > direct input, so it rides `-Xlinker`.) So custom class + xtc IMP + a C shim for the NSRect calls
 > is a complete AppKit driver path, today.
+>
+> **Update 2026-07-19 (re #8):** the shim path is now demonstrated as a full AppKit view, not just a
+> link test — `spikes/appkit-drawrect.{xt,-shim.m}` registers a custom NSView subclass, makes it a
+> window contentView, and AppKit draws it by calling `drawRect:` into an xtc function (`&myDraw`) which
+> paints via a primitive, headless. The NSRect never enters xtc (a C trampoline absorbs it, hands xtc
+> `x,y,w,h`). So #8 is confirmed non-blocking for AppKit: nice-to-have, off the critical path.

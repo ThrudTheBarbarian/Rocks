@@ -1,0 +1,41 @@
+// Build: cc -c appkit-drawrect-shim.m -o shim.o
+//        xtc -A arm64 appkit-drawrect.xt -Xlinker shim.o -framework Cocoa -o demo
+// The shim owns the ObjC/NSRect boundary; xtc owns the draw logic + registers drawRect: via &myDraw.
+// Proven 2026-07-19: AppKit calls drawRect: into the xtc function, headless (offscreen cache).
+
+#import <Stdio.xt>
+
+void    xg_init(void);
+pointer xg_make_viewclass(void);
+pointer xg_make_window(i32 w, i32 h);
+pointer xg_make_view(pointer cls, i32 w, i32 h);
+void    xg_set_content(pointer win, pointer view);
+i32     xg_force_draw(pointer view, i32 w, i32 h);
+void    xg_fill(i32 x, i32 y, i32 w, i32 h, i32 gray);
+void    xg_set_draw_cb(pointer cb);
+
+i32 gDrawCount;
+
+// The xtc drawRect: — runs INSIDE AppKit's draw pass, via the shim trampoline.
+void myDraw(pointer self, i32 x, i32 y, i32 w, i32 h) {
+    gDrawCount = gDrawCount + (i32)1;
+    Stdio.printf("  -> xtc drawRect: self=%s rect=%d,%d,%d,%d\n",
+                 self != (pointer)0 ? (u8@)"ok" : (u8@)"null", x, y, w, h);
+    xg_fill((i32)10, (i32)10, w - (i32)20, h - (i32)20, (i32)128);  // paint from xtc
+}
+
+void main(void) {
+    gDrawCount = (i32)0;
+    xg_init();
+    xg_set_draw_cb((pointer)&myDraw);                  // register the xtc callback
+    pointer cls  = xg_make_viewclass();
+    pointer win  = xg_make_window((i32)200, (i32)120);
+    pointer view = xg_make_view(cls, (i32)200, (i32)120);
+    xg_set_content(win, view);
+    Stdio.printf("class=%s window=%s view=%s\n",
+        cls!=(pointer)0?(u8@)"ok":(u8@)"null", win!=(pointer)0?(u8@)"ok":(u8@)"null",
+        view!=(pointer)0?(u8@)"ok":(u8@)"null");
+    i32 drew = xg_force_draw(view, (i32)200, (i32)120);
+    Stdio.printf("force_draw returned %d; drawRect fired %d time(s)\n", drew, gDrawCount);
+    Stdio.printf("%s\n", gDrawCount > (i32)0 ? (u8@)"PASS: AppKit called back into an xtc drawRect:" : (u8@)"FAIL");
+}
