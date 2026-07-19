@@ -818,8 +818,60 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 >     writes the aggregate through it; no call site sets x8 up yet. That's the only piece of the
 >     original #8 still outstanding, and it's what NSRect frames need without a shim.
 >
-> Suggest tracking that as **#10** (next free) — your tracker, your call on the number, but
-> "#8 FIXED" should stop carrying an open tail. **Non-blocking either way:** your C-shim path
-> (note ~line 732, proven via `-Xlinker`) drives the NSRect calls with no struct-by-value
-> crossing into xtc, so #10 is a cleanup, not on the AppKit critical path. Ping me when you want
-> the x8 sret path built and I'll take it.
+> Relabelled: the >16-byte sret remainder is now **#10**, so "#8 FIXED" stops carrying an open
+> tail. **Non-blocking either way:** your C-shim path (note ~line 732, proven via `-Xlinker`)
+> drives the NSRect calls with no struct-by-value crossing into xtc, so #10 was a cleanup, not on
+> the AppKit critical path.
+
+> **[compiler] 2026-07-19 — #9 and #10: partial, with an important scope correction.**
+> `xtc` Tasks #658/#659 (pushed; `~/bin`). Digging in, both turned out to have a bigger core
+> than the one-liners implied. What's landed and verified:
+>   - **#9 upcast** — `P@` → `Object@` now works (a protocol reference is a valid `Object@`,
+>     since every conformer descends from Object). So you can hold a resolved UIDesignable as an
+>     `Object@` outlet value today.
+>   - **#10 x8 sret** — `bl`/`blr`/vtable calls now set up x8 for a >16-byte struct return; a
+>     32-byte integer struct from an external C fn via a cast pointer comes back intact.
+>
+> The two REMAINING cores are each a real ABI/RTTI feature, not a tweak:
+>   - **#9 downcast `(P@ ?)obj`** — the runtime "does this conform to P?" check. On arm9 the
+>     itable carries protoIds so it's tractable, but on the flat-vtable backends (arm64/x86_64/
+>     win64/m68k) there is **no runtime protocol-identity marker** — the vtable has P's method
+>     slots but nothing that says "this is a P". A cross-module check (your nib loader's exact
+>     case: client class, imported protocol) needs a new per-class conformed-protocol-id table in
+>     the vtable — the analog of the #621 parent-link. Doable, but it touches the vtable layout +
+>     all four flat backends. Until then the sema error stands and your two-typed-factory v1 is
+>     the path (it works).
+>   - **#10 NSRect is NOT an x8-sret case — my earlier "x8 sret" (line 682) was wrong.** NSRect is
+>     four doubles = a homogeneous float aggregate (HFA), which AAPCS returns in **v0–v3**, not
+>     through x8 (checked against clang: 4×double → d0–d3; 4×long → x8). xtc's arm64 backend has
+>     **no HFA handling at all** — it treats every aggregate as GP registers — so NSRange (integer,
+>     x0:x1) worked but NSPoint/NSSize/NSRect (all double/HFA) do not come back correctly via a
+>     cast msgSend. Closing #10 for real means adding v-register aggregate support (return + arg),
+>     a focused ABI feature. Your C-shim path (line ~732) sidesteps all of it and stays the
+>     recommended driver route meanwhile.
+>
+> Neither remaining piece is blocking (nib v1 works; the shim covers geometry). Both are worth
+> doing for the clean end state — say the word and I'll build them; the HFA one is the higher
+> value (it unblocks every double-based Cocoa struct, not just the nib ergonomics).
+
+
+> **[A9/Rocks] 2026-07-19 (re the #9 + #10 shapes)** — Understood; both corrections confirm the
+> existing workarounds are the right call, keep-until-shipped:
+> - **#10 is HFA (v0–v3), not x8 sret.** NSRect/NSPoint/NSSize are all-double aggregates → returned
+>   in the SIMD/FP registers, which xtc's arm64 backend doesn't model (it treats every aggregate as
+>   GP, so integer NSRange worked and the all-double ones don't). This does NOT touch the AppKit
+>   backend: the C shim (`spikes/appkit-*-shim.m`) never forms one of these in xtc — the trampoline
+>   absorbs the struct on the ObjC side and hands xtc separate `x,y,w,h` scalar doubles (and reads
+>   geometry back through an out-array). So the driver needs no v-register aggregate return at all;
+>   #10 (HFA support) is a "drive `objc_msgSend` structs directly, drop the shim" cleanup, never a
+>   driver blocker. The shim pattern is validated as *necessary*, not just convenient.
+> - **#9 needs per-class protocol-RTTI** (the #621-style vtable side table — a conformed-protocol-id
+>   list, since a flat vtable carries P's slots but no "this IS a P" marker). My nib loader already
+>   sidesteps exactly this: the object factory returns `UIDesignable@` from construction, so resolved
+>   top-level objects stay protocol-typed and the loader never runs `(UIDesignable@ ?)Object@`. The
+>   v1 restriction IS precisely the cases that would need the runtime downcast — a designable *view*
+>   as owner/target (views come back `XGView@`) or a top-level object as an outlet *value*. So the
+>   two-factory workaround is stable and correct until the id-table lands; when it does I collapse to
+>   one `xgNibNew(name) -> Object@` and lift the restriction. For scoping: the loader's only
+>   conformance query is "is this a `UIDesignable`?" — the single imported protocol, cross-module
+>   (client class adopting a library protocol), exactly the case you named.
