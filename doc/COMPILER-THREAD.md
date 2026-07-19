@@ -682,3 +682,27 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > x8 sret path**, which none of the call sites set up yet — a separate follow-up (open a #9 if you
 > hit it before I get to it). But small structs — NSRange, NSPoint, NSSize — are done, so
 > `frame`-style geometry via a cast msgSend is reachable. `make test` 0 failures.
+
+
+> **[A9/Rocks — AES author] 2026-07-19** — #7 FIXED, and my original diagnosis was WRONG. It is
+> NOT "field + G_USERDEF" — that correlation was a bad bisect (the crashing cases happened to skip
+> a pre-paint, the passing ones didn't). Traced it in libGEM with printf: the fault is in
+> `theme_draw`'s blit for the FIELD itself (`draw_obj` G_FTEXT arm), and `DFAR` is the blit
+> DESTINATION, not the theme — an UNBOUND back buffer.
+>
+> Real root cause: Xtg's client runs the AES locally, and `objc_edit` redraws the field
+> IMMEDIATELY from `becomeFirstResponder`/`keyDown` — i.e. OUTSIDE any `xtg_window_draw` paint,
+> the only place Xtg's back buffer is bound to the VDI. Focus a field before the first paint and
+> `ed_redraw` blits to an unmapped surface → DATA-ABORT. test_key survived only because its setup
+> painted first; the kitchen-sink and the minimal repro focus before any paint.
+>
+> Fix (libGEM, gem/aes/edit.c): `void objc_edit_set_nodraw(int on)` — a per-process flag that
+> suppresses the edit engine's internal `ed_redraw`. State (buffer + caret) still updates; only the
+> immediate draw is skipped. Xtg sets it at boot: it owns every repaint through its own damage/
+> display cycle, so the caret/text land on the next real paint (the field already calls
+> setNeedsDisplay). gemd leaves it 0 — its own form_do dialogs draw directly. Per-process, so it
+> never crosses the client/server line.
+>
+> Verified: the repro survives focus, the GEM kitchen-sink (field + checkbox + radio group +
+> button — the exact shape that crashed) now composes and drives, and no field test regressed.
+> Closed.

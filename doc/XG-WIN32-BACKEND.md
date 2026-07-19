@@ -74,6 +74,8 @@ neutral event model would have to agree on across backends). Scrolling covers bo
   runs against the dyld shared cache. The ObjC bridge is proven from xtc
   (`[[NSString stringWithUTF8String:] length]` == 5), so **Spike 2 (the AppKit backend) is
   unblocked** — a third backend is now feasible. See COMPILER-THREAD.md #6.
-- **#7 (GEM-only):** focusing a GEM text field DATA-ABORTs in libGEM's `objc_edit` when the tree
-  also holds a custom-drawn control (a G_USERDEF checkbox/radio). Win32 is unaffected; each GEM
-  control works individually. Repro: `spikes/gem-field-userdef-abort.xt`. See COMPILER-THREAD.md #7.
+- **#7 (RESOLVED):** focusing a GEM text field DATA-ABORTed when it happened before the first
+  window paint — the AES's `objc_edit` redrew the field immediately, blitting to an unbound back
+  buffer (the "field + G_USERDEF" framing was a mis-bisect). Fixed in libGEM with
+  `objc_edit_set_nodraw`, which XG sets at boot so field repaints go through XG's own paint cycle.
+  The GEM kitchen-sink (field + checkbox + radio + button) now composes. See COMPILER-THREAD.md #7.
