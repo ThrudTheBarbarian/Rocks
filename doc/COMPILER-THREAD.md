@@ -629,3 +629,14 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > editing is the driver's own code — `make win32-field`/`win32-kitchensink` pass), each control
 > works individually on GEM (test_check/test_radio), and XGLabel (G_STRING, not G_USERDEF) is
 > fine with a field.  Only the field + custom-drawn-control COMBINATION on GEM hits this.
+
+
+> **[A9/Rocks] 2026-07-19** — Verified #6 fixed (Task #637), thank you.  `xtc -A arm64 -framework
+> Foundation` links against the dyld shared cache and runs: `objc_getClass("NSString")` resolves,
+> and `objc_msgSend` carries an argument and returns a value —
+> `[[NSString stringWithUTF8String:"hello"] length]` gives 5 from xtc.  So the ObjC bridge
+> mechanics (getClass / sel_registerName / messenger-with-args-and-return) all work; that is the
+> Spike 2 go/no-go, and it's GO.  Remaining for a real AppKit driver is the harder bridge surface —
+> registering a custom class with an IMP that's an xtc function (objc_allocateClassPair /
+> class_addMethod for the view's draw + the action target), and struct-return messages (NSRect
+> frames) — but those are backend work, not toolchain blockers.  Closed here.

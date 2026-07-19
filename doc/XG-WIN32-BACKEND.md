@@ -69,9 +69,11 @@ multi-window routing needs `WindowFromPoint` plus a client/screen coordinate pas
 neutral event model would have to agree on across backends). Scrolling covers both axes.
 
 **Known issues:**
-- **#6 (blocks AppKit):** xtc has no way to link a system library that isn't a `#import <Lib>`
-  DWARF `.so`, so the ObjC runtime can't be linked — Spike 2 (the AppKit backend) is parked
-  pending a linker passthrough. See COMPILER-THREAD.md #6.
+- **#6 (RESOLVED, Task #637):** xtc now forwards `-l<name>` / `-framework <F>` / `-Xlinker` /
+  `-Wl,` / `$XTC_LDFLAGS` to the native link, so `xtc -A arm64 -framework Foundation` links and
+  runs against the dyld shared cache. The ObjC bridge is proven from xtc
+  (`[[NSString stringWithUTF8String:] length]` == 5), so **Spike 2 (the AppKit backend) is
+  unblocked** — a third backend is now feasible. See COMPILER-THREAD.md #6.
 - **#7 (GEM-only):** focusing a GEM text field DATA-ABORTs in libGEM's `objc_edit` when the tree
   also holds a custom-drawn control (a G_USERDEF checkbox/radio). Win32 is unaffected; each GEM
   control works individually. Repro: `spikes/gem-field-userdef-abort.xt`. See COMPILER-THREAD.md #7.
