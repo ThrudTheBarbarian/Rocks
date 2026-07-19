@@ -192,10 +192,14 @@ generated code.
 3. Auto-conform any class with `outlet`/`action` members to `UIDesignable`, generating `setOutlet`
    / `wireAction` and a per-module `xgNibNew` factory from the decorations.
 4. Auto-register each module's factory via a per-module `.init_array` entry calling
-   `XGNib.registerObjectFactory(&xgNibNew)` — app-invisible. The XTOS loader already runs
-   `.init_array` deps-first before entry (`xtld_run_init`), so arm9 needs no loader work; native
-   uses `__mod_init_func` / `.init_array` under dyld. (Explicit registration is the fallback the
-   loader also supports.)
+   `XGNib.registerObjectFactory(&xgNibNew)` — app-invisible. **LANDED across all five live backends
+   (xtc #657), no per-app code on any of them.** The XTOS loader runs `.init_array` deps-first before
+   entry (`xtld_run_init`), so arm9 needs no loader work; arm64/x86_64 use `__mod_init_func` /
+   `.init_array` under dyld; win64 rides the per-program mingw runtime stub's
+   `__attribute__((constructor))` (a hand-emitted PE `.CRT$XCU` ctor gets dead-stripped by that
+   linker, so the stub's constructor lands it in the `_initterm` range instead). The earlier win64
+   "register manually" caveat is therefore gone. (Explicit `registerObjectFactory` remains only as a
+   fallback the loader still supports.)
 5. Emit the design-time manifest into a named DWARF section.
 6. **#9 — an `Object@` ↔ protocol bridge** (runtime downcast `(P@ ?)Object@` + `P@`→`Object@`
    upcast). With it, the two factories collapse to one `xgNibNew(name) -> Object@` and the v1

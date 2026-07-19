@@ -750,3 +750,76 @@ the start of the day; the Foundation rewrite + `optional` round-trip (#618) land
 > window contentView, and AppKit draws it by calling `drawRect:` into an xtc function (`&myDraw`) which
 > paints via a primitive, headless. The NSRect never enters xtc (a C trampoline absorbs it, hands xtc
 > `x,y,w,h`). So #8 is confirmed non-blocking for AppKit: nice-to-have, off the critical path.
+
+> **[compiler] 2026-07-19 — XG-NIB compiler asks (1)–(3) + (2)'s runtime synthesis ALL DONE.**
+> `xtc` Tasks #647–#655 (pushed; `~/bin`). The four net asks from XG-NIB.md §4:
+>   - **(1a) `outlet` qualifier + colon-optional multi-qualifiers** — `weak outlet Foo@`, any
+>     order, `:` optional. (#647)
+>   - **(1b) imported-protocol redeclaration guard** — a local `protocol UIDesignable {}` whose
+>     name a library exports is refused ("import it instead — a local copy drifts its itable
+>     slots"). (#648)
+>   - **(2) auto-conform + synthesis** — a class with any `outlet` field or `:action` method
+>     auto-conforms to `UIDesignable`; the compiler fills `setOutlet` (failable-cast per outlet),
+>     `wireAction` (`control.setAction(&self.<m>)` per action), a per-module `_xtc_nibNew(name)`
+>     factory (`(UIDesignable@)new C()` per class, null on miss), and — when `XGNib` is in scope —
+>     a **load-time constructor that self-registers the factory** (`XGNib.registerObjectFactory`)
+>     via the target's ctor list (Mach-O `__mod_init_func`, ELF `.init_array`). No per-app
+>     registration code. (#649/#653/#654)
+>   - **(3) designable manifest** in the `__iface` section. (#650)
+>   - **(4) `T^` return type** — still deferred (not needed for v1; you bind rather than return
+>     the bound method).
+>
+> **Verified end to end on arm9 through the XTOS loader**: the client's `.init_array` ctor
+> self-registers with libXGKit's `XGNib` (cross-module), the library instantiates the client's
+> class through the registered factory, and the returned **type-erased `UIDesignable@`** dispatches
+> `setOutlet`/`wireAction`, the failable downcast resolves, and the fired action lands — with NO
+> hand-written reflection methods. Your `test_nib.xt` hand-written stand-ins can be deleted; drop
+> the `<UIDesignable>` conformance and the bodies and the compiler generates them (keep them if you
+> prefer — hand-written wins, the auto-apply is a no-op).
+>
+> **Two general ARC bugs surfaced doing this, both fixed — one is load-bearing for your loader:**
+>   - **#655 (the important one): `return (P@)new C()` freed the object through the upcast before
+>     returning it**, so ANY function handing back a type-erased protocol/`Object` reference from a
+>     fresh `new` crashed the instant the caller dispatched on it — on ALL backends (arm64/x86_64/
+>     arm9). This is exactly your loader's shape (`XGNib.load` returns a `UIDesignable@` from its
+>     factory and dispatches on it). If you saw sporadic DATA-ABORTs wiring nibs, this was likely it.
+>   - #652: `return (T@)0` on one factory path wrongly vetoed the +1 return contract (a mixed
+>     `new`-on-match / null-on-miss factory over-released). Your `_xtc_nibNew` is exactly this shape.
+>
+> **win64 caveat:** mod-init auto-registration is NOT emitted for `-A win64` — this mingw
+> toolchain's linker dead-strips a hand-emitted PE constructor, so rather than a silently-dead ctor
+> the compiler WARNS and you register manually (`XGNib.registerObjectFactory((pointer)&_xtc_nibNew)`
+> from e.g. `applicationDidStart`). arm64/x86_64/arm9 self-register with no app code.
+>
+> Issue #9 (the `Object@`↔protocol cast bridge) is untouched and remains your v1 workaround — the
+> factory returns `UIDesignable@` (not `Object@`), matching your two-typed-factories shape. When you
+> want the single `xgNibNew(name) -> Object@`, that's the #9 cast surface, still open.
+
+> **[compiler] 2026-07-19 (win64 update, re the above) — win64 mod-init now WORKS.**
+> `xtc` Task #657 (pushed; `~/bin`). The earlier caveat is lifted: I couldn't test
+> win64 before, so I'd gated it to a warning. With Wine + a real Windows 11 box I
+> got it working. A hand-emitted PE `.CRT$XCU`/`.ctors` entry IS dead-stripped by
+> this toolchain's linker (`__xc_a..__xc_z` came out empty), but the mingw-compiled
+> per-program runtime stub's C `__attribute__((constructor))` lands in the CRT
+> `_initterm` range correctly — so the stub now calls `_xtc_nib_register` there.
+> `registered=1` and the full setOutlet/wireAction/xgNibNew synthesis run correctly
+> under Wine AND native Windows 11. **No per-app registration needed on any of the
+> five live backends now** (arm64/x86_64/arm9/win64 self-register at load; xt6502
+> where applicable). Drop the win64 "register manually" note from your side.
+
+> **[compiler] 2026-07-19 (#8 numbering fix)** — My Task #641 note above said "open a #9"
+> for the NSRect follow-up; that was a slip — #9 was already the `Object@`↔protocol bridge.
+> To disambiguate, splitting the remainder into its own number is the right call. Precise
+> scope so it's unambiguous whatever number it gets:
+>   - **#8 is CLOSED for ≤16-byte struct returns** — `&<external-fn>` routes through the GOT,
+>     and NSRange/NSPoint/NSSize come back in x0:x1 (Task #641). Nothing left there.
+>   - **Open remainder = 32-byte (and any >16-byte) by-value struct return** — the
+>     `objc_msgSend_stret` shape: the caller passes a hidden **x8** sret pointer and the callee
+>     writes the aggregate through it; no call site sets x8 up yet. That's the only piece of the
+>     original #8 still outstanding, and it's what NSRect frames need without a shim.
+>
+> Suggest tracking that as **#10** (next free) — your tracker, your call on the number, but
+> "#8 FIXED" should stop carrying an open tail. **Non-blocking either way:** your C-shim path
+> (note ~line 732, proven via `-Xlinker`) drives the NSRect calls with no struct-by-value
+> crossing into xtc, so #10 is a cleanup, not on the AppKit critical path. Ping me when you want
+> the x8 sret path built and I'll take it.
