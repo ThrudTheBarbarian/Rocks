@@ -1,0 +1,19 @@
+// Build: cc -c objc-hfa-return-shim.m -o shim.o
+//        xtc -A arm64 objc-hfa-return.xt -Xlinker shim.o -framework Cocoa -o demo
+// #10 verification: a 4-double HFA struct (NSRect) returned by value through a cast objc_msgSend.
+// Proven 2026-07-20: NSView.frame reads back {10,20,300,150} — HFA v0-v3 return handled.
+
+#import <Stdio.xt>
+struct NSRect { double x; double y; double w; double h; }
+pointer mkview(i32 x, i32 y, i32 w, i32 h);
+pointer sel_registerName(u8@ name);
+pointer objc_msgSend(pointer self, pointer sel);
+typedef NSRect RectMsg(pointer self, pointer sel);   // HFA (4 doubles) struct-return messenger
+void main(void) {
+    pointer v = mkview((i32)10, (i32)20, (i32)300, (i32)150);
+    RectMsg@ mr = (RectMsg@)&objc_msgSend;
+    NSRect r = mr(v, sel_registerName((u8@)"frame"));
+    Stdio.printf("frame = {%d,%d,%d,%d}  (expect {10,20,300,150})\n", (i32)r.x, (i32)r.y, (i32)r.w, (i32)r.h);
+    bool ok = (i32)r.x==(i32)10 && (i32)r.y==(i32)20 && (i32)r.w==(i32)300 && (i32)r.h==(i32)150;
+    Stdio.printf("%s\n", ok ? (u8@)"PASS: HFA NSRect returned correctly via cast objc_msgSend (#10)" : (u8@)"FAIL");
+}

@@ -202,19 +202,24 @@ generated code.
    fallback the loader still supports.)
 5. Emit the design-time manifest into a named DWARF section.
 6. **#9 — an `Object@` ↔ protocol bridge** (runtime downcast `(P@ ?)Object@` + `P@`→`Object@`
-   upcast). With it, the two factories collapse to one `xgNibNew(name) -> Object@` and the v1
-   restrictions (below) lift. *(optional for v1)*  ·  (Also optional: `T^` return types, which
-   would make an `actionNamed` shape available instead of `wireAction`.)
+   upcast). **LANDED (2026-07-20).** The two factories collapsed to one `xgNibNew(name) -> Object@`
+   and the v1 restrictions lifted (see below). Implemented cross-module via a per-class
+   conformed-protocol-id table in the vtable (the #621-style side table).  ·  (Still optional: `T^`
+   return types, which would make an `actionNamed` shape available instead of `wireAction`.)
 
 **Implemented (2026-07-19)** — the runtime side is done and proven end to end (`test_nib.xt`): the
 RSC engine writes/reads the XGNB chunk, `rscload_nib_*` exposes it, and `XGNib.loadWired` /
 `loadWiredMem` build a wired tree through `UIDesignable` + the registered factories. Hand-written
-conformance/factory stand-ins fill in for the compiler-generated bits; the test loads a nib,
-binds an outlet, and fires an action. **v1 restrictions** (until #9): an outlet *owner* / action
-*target* is `owner` or a top-level object (both `UIDesignable` already), and an outlet *value* is
-a view — the common shape (a controller owns outlets and is the action target; controls are the
-sources). A designable *view* in an owner/target role, or a top-level object as an outlet value,
-awaits #9.
+conformance/factory stand-ins fill in for the compiler-generated bits.
+
+**#9 landed → the v1 restrictions are lifted (2026-07-20).** With the `Object@`↔protocol bridge in
+`xtc`, the loader holds every instantiated object as `Object@` and downcasts `(UIDesignable@ ?)` on
+the designable side of each wire, `(XGView@ ?)` for a view — so the two typed factories collapsed to
+one `xgNibNew(name) -> Object@` per module (`XGNib.make`), and **any** object can play **any** role:
+a designable *view* as an outlet owner or action target, and a top-level object as an outlet *value*,
+both work. `test_nib` proves the full set on arm9 (qemu), cross-module (a client `Gauge : XGView
+<UIDesignable>` downcast to the library protocol inside libXG): `outlet-view`, `outlet-toplevel`,
+`owner-action`, and `view-action` all fire. Nothing in the wiring is restricted now.
 
 Nothing here is dynamic reflection: every name resolves to a member the compiler validated at its
 declaration, so a typo is a compile error, and a stale *wire* is caught by Rocks against the DWARF
