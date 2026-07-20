@@ -480,6 +480,31 @@ unaffected (Spike 1 already proved a non-GEM driver).
 > This is buildable now; it's deferred only because most of it (the event pump, menus, alerts,
 > interactive editing) wants interactive verification, which the headless spikes above can't give —
 > so it's a milestone to build where it can be exercised, not an overnight green-slice.
+>
+> **BUILT (2026-07-20) — the third backend runs, four verified slices.** `XGAppKitDriver` +
+> `XGCocoaGraphics` + the `libXGAppKit.m` shim now run the ACTUAL neutral layer (XGWindow/XGView/
+> XGViewTree/XGButton/XGTextField) native on macOS, the only backend-aware line being `gDriver = new
+> XGAppKitDriver()`. It reuses the Win32 driver's shadow-tree / hit-test / editText / state
+> (backend-neutral) and swaps drawing (NSGraphicsContext), windowing (NSWindow), events (the
+> NSApplication run loop), and boot for shim calls; the `XGDrawView` is flipped so the toolkit's
+> coordinates map straight through. All four slices verify headless (offscreen `cacheDisplayInRect:`,
+> synthetic `NSEvent`s through the real queue), each a `make` target:
+> - **`appkit`** — paint: the custom view draws through the neutral seam, pixel readback confirms it,
+>   a click routes through the shared hit-test (canvas mouseDown + button action fire).
+> - **`appkit-loop`** — the run loop: a posted `NSEvent` travels `nextEvent -> dispatchEvent -> the
+>   view` under `XGApplication.run()`. (Wrinkle solved: without a full `[NSApp run]`, a `postEvent:`
+>   is invisible to `nextEventMatchingMask` until the CFRunLoop is pumped.)
+> - **`appkit-field`** — keyboard: a posted key-down edits the focused field via the reused `editText`
+>   engine (`Hi`+BS+`o` -> `Ho`).
+> - **`appkit-memgate`** — §10: a create/destroy loop returns the native-object counter to zero
+>   (deterministic MRC lifetime; the malloc-address heap oracle is printed but not asserted — Cocoa
+>   churns its own caches, so it isn't a valid leak detector for this backend).
+>
+> What remains for a full driver is **menus (`NSMenu`), alerts (`NSAlert`), and scrolling** — the
+> pieces that are genuinely modal/interactive and want a shown-window GUI session to verify (they are
+> stubs today). Also #10's HFA `objc_msgSend` means the shim's int-based geometry could later drive
+> `NSView.frame` directly. Everything the "neutral layer runs native with full input" milestone needs
+> is working code.
 
 **M1 — the stock control set on one host.** `button/label/field/checkbox/radio/popup`
 via `create(kind)`, target/action firing, `setText`/`setEnabled`. **Gate:** a form
